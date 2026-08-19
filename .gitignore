@@ -1,0 +1,66 @@
+# ==============================================================================
+# AMTCE & Gemini Editor GitIgnore — Production & Security Configuration
+# ==============================================================================
+
+# Environment variables & secrets
+.env
+*.env
+Credentials/
+!Credentials/README.md
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.pytest_cache/
+
+# Data & cache
+data/
+downloads/
+Processed Shorts/
+Original_audio/
+cache/
+debug_frames/
+temp_watermark/
+storage/
+claw-code/
+scratch/
+publish_queue.json
+.clip_intelligence.json
+gemini_routing.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Media & binary formats
+*.mp4
+*.mp3
+*.wav
+*.aac
+*.m4a
+*.png
+*.jpg
+*.jpeg
+*.webm
+*.avi
+*.mov
+*.flac
+
+# AI Model weights
+models/*.caffemodel
+models/*.pth
+models/*.onnx
+models/*.bin
+models/*.weights
+
+# Knowledge graph output
+graphify-out/
+
+# Logs & transient session data
+logs/
+*.log
