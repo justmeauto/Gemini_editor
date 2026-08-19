@@ -32,6 +32,10 @@ on:
         default: ''
         type: string
 
+  push:
+    branches:
+      - main
+
   schedule:
     # 4 clean 6-hour windows (Indian Standard Time — IST):
     - cron: '50 22 * * *'  # 04:20 AM IST
