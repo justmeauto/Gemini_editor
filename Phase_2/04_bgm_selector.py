@@ -105,9 +105,11 @@ def select_clip_bgm(
     if not resolved_path:
         try:
             pool = AudioPoolManager(base_dir=audio_dir)
-            resolved_path = pool.select_best_audio()
+            resolved_path = pool.select_best_audio(exclude_filenames=exclude_filenames)
             if resolved_path:
                 selected_track_name = os.path.basename(resolved_path)
+                res["selected_audio_track"] = selected_track_name
+                res["alignment_score"] = res.get("alignment_score") or 0.80
         except Exception as pool_err:
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 

@@ -244,11 +244,16 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
         index_path = os.path.join(_AUDIO_DIR, "indexed_audio_analysis.json")
         os.makedirs(active_dir, exist_ok=True)
 
-        target_wav = os.path.join(active_dir, f"{stem}.wav")
+        clip_folder = os.path.basename(os.path.dirname(wav_path))
+        clean_stem = stem
+        if clean_stem.lower() in ("video", "video_extracted", "audio") and clip_folder and clip_folder != ".":
+            clean_stem = f"bgm_{clip_folder}"
+
+        target_wav = os.path.join(active_dir, f"{clean_stem}.wav")
         if not os.path.exists(target_wav):
             import shutil
             shutil.copy2(wav_path, target_wav)
-            logger.info("🎶 [POOL_INGEST] Ingested clip audio into BGM pool: %s.wav", stem)
+            logger.info("🎶 [POOL_INGEST] Ingested clip audio into BGM pool: %s.wav", clean_stem)
 
         # Update global indexed_audio_analysis.json
         index_data = {}

@@ -796,7 +796,7 @@ class FFmpegCommandGenerator:
         preserve_orig = False
         if extra_inputs and extra_inputs.get("preserve_original_audio"):
             preserve_orig = True
-        elif not bgm_path:
+        elif not bgm_path and (is_preserve_input or video_volume > 0.01):
             preserve_orig = True
 
         has_input_audio = self._has_audio_stream(input_path) and preserve_orig
@@ -1002,7 +1002,7 @@ class FFmpegCommandGenerator:
 
         # ── Step F: Audio Assembly ────────────────────────────────────────────────
         has_bgm = bgm_idx is not None
-        has_audio = has_bgm or has_input_audio
+        has_audio = has_bgm or (has_input_audio and video_volume > 0.01)
 
         if has_bgm and has_input_audio and video_volume > 0.01:
             filter_parts.append(
@@ -1014,8 +1014,10 @@ class FFmpegCommandGenerator:
             filter_parts.append(
                 f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[aout]"
             )
+        elif has_input_audio and video_volume > 0.01:
+            filter_parts.append(f"[ac]volume={video_volume:.2f}[aout]")
         elif has_input_audio:
-            filter_parts.append(f"[ac]volume=1.00[aout]")
+            filter_parts.append(f"[ac]volume=0.00[aout]")
 
         # ── Assemble full filtergraph ─────────────────────────────────────────────
         filtergraph = ";".join(filter_parts)

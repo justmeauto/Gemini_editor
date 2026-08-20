@@ -650,6 +650,23 @@ def select_best_audio_for_clip(
         else:
             pool_files[fname] = meta
 
+    # Also include physical files on disk in Original_audio/active/ if not yet in index
+    try:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        active_dir = os.path.join(repo_root, "Original_audio", "active")
+        if os.path.isdir(active_dir):
+            for lf in os.listdir(active_dir):
+                if lf.lower().endswith((".mp3", ".wav", ".m4a")) and lf not in pool_files:
+                    pool_files[lf] = {
+                        "usage_count": 0,
+                        "last_used": 0,
+                        "bpm": 120.0,
+                        "energy": 0.5,
+                        "dominant_emotion": "hype"
+                    }
+    except Exception as _dir_err:
+        logger.debug(f"[BGM SELECTOR] Local disk check notice: {_dir_err}")
+
     if not pool_files:
         logger.warning("🎶 [BGM Selector] Neither Telegram Vault index nor local pool has candidates.")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "Empty pool index."}
@@ -664,11 +681,13 @@ def select_best_audio_for_clip(
             disqualified_tracks.add(ef.lower())
             disqualified_tracks.add(os.path.basename(ef).lower())
 
-    # Build candidate list from merged pool index (EXCLUDE raw pipeline artifacts like sess_*.wav, video.wav)
+    # Build candidate list from merged pool index (EXCLUDE raw pipeline artifacts like sess_*.wav, video_extracted.wav)
     try:
         from Audio_Modules.audio_pool_manager import _is_pipeline_artifact
     except ImportError:
-        def _is_pipeline_artifact(f): return f.lower().startswith("sess_") or "extracted" in f.lower() or "video" in f.lower()
+        def _is_pipeline_artifact(f):
+            fl = f.lower()
+            return fl.startswith("sess_") or "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
 
     all_candidates = [
         fname for fname, meta in pool_files.items()
