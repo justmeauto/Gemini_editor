@@ -458,20 +458,18 @@ async def handle_telegram_callback(update, context):
             _wizard_sessions[chat_id]["step"] = 4
         return
 
-    # ── 🔑 Assign Credentials Wizard ──────────────────────────────────────────
+    # ── 🔑 Assign Credentials Menu ──────────────────────────────────────────
     if data == "menu_credentials":
-        _wizard_sessions[chat_id] = {"wizard": "credentials", "step": 1, "data": {}}
-        back_kbd = build_back_button_keyboard()
-        await query.edit_message_text(
-            text=(
-                "🔑 **Assign Credentials — Step 1/4: Apify Token**\n\n"
-                "Apify is used to scrape Instagram, YouTube & TikTok.\n\n"
-                "Send your Apify API token now:\n"
-                "`/setapify YOUR_APIFY_TOKEN`\n\n"
-                "*(Get it from: https://console.apify.com → Settings → API Token)*"
-            ),
-            reply_markup=back_kbd
-        )
+        try:
+            from Publishing_Modules.telegram_user_manager import format_user_credentials_summary
+            summary_text = format_user_credentials_summary(str(chat_id))
+            back_kbd = build_back_button_keyboard()
+            await query.edit_message_text(
+                text=summary_text,
+                reply_markup=back_kbd
+            )
+        except Exception as _e:
+            logger.warning(f"Error in menu_credentials callback: {_e}")
         return
 
     # ── 🔗 Direct URL / Manual ─────────────────────────────────────────────────
@@ -1368,8 +1366,9 @@ async def handle_telegram_incoming_msg(update, context):
     if msg.text:
         text = msg.text.strip()
 
-        if text.startswith("/start") or text.startswith("/help") or text.startswith("/mode"):
-            await handle_telegram_start(update, context)
+        if text.startswith("/"):
+            if text.startswith("/start") or text.startswith("/help") or text.startswith("/mode"):
+                await handle_telegram_start(update, context)
             return
 
         elif text.startswith("http://") or text.startswith("https://") or "instagram.com" in text or "youtube.com" in text or "youtu.be" in text or "tiktok.com" in text:
@@ -1897,6 +1896,34 @@ def start_telegram_bot_service():
 
                 bot_user = await application.bot.get_me()
                 bot_id = str(bot_user.id)
+
+                # Register native Telegram Bot Command Menu for auto-complete in chat
+                try:
+                    from telegram import BotCommand
+                    commands = [
+                        BotCommand("start", "Show welcome & platform selection menu"),
+                        BotCommand("myconfig", "View your SaaS credential checklist & setup commands"),
+                        BotCommand("autosetup", "Run interactive 6-step setup wizard"),
+                        BotCommand("setgemini", "Set your Google Gemini API Key"),
+                        BotCommand("setapify", "Set your Apify Scraper Token"),
+                        BotCommand("setbranding", "Set your custom brand watermark text"),
+                        BotCommand("setgroup", "Set your Telegram Public Group ID"),
+                        BotCommand("setschedule", "Set daily scraping schedule times (HH:MM)"),
+                        BotCommand("instagramtoken", "Set Instagram Access Token"),
+                        BotCommand("instagramid", "Set Instagram Business Account ID"),
+                        BotCommand("facebookid", "Set Facebook Page ID"),
+                        BotCommand("setytclient", "Set YouTube client_secret.json"),
+                        BotCommand("ytcode", "Set YouTube OAuth code/token"),
+                        BotCommand("tiktoktoken", "Set TikTok Access Token"),
+                        BotCommand("addaccount", "Add Instagram/YouTube handle to scrape"),
+                        BotCommand("removeaccount", "Remove a handle from scraping list"),
+                        BotCommand("listaccounts", "List active source handles"),
+                    ]
+                    await application.bot.set_my_commands(commands)
+                    logger.info("📋 Registered Telegram Bot Command Menu with Telegram API")
+                except Exception as _cmd_err:
+                    logger.debug(f"set_my_commands notice: {_cmd_err}")
+
                 admin_id = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_ADMIN_ID")
                 if admin_id and str(admin_id).strip() != bot_id:
                     try:
@@ -1932,9 +1959,7 @@ def start_telegram_bot_service():
         app = ApplicationBuilder().token(token).request(request).post_init(_on_startup).build()
         app.add_handler(CommandHandler("start", handle_telegram_start))
         app.add_handler(CommandHandler("help", handle_telegram_start))
-        app.add_handler(CommandHandler("ytcode", cmd_ytcode))
         app.add_handler(CallbackQueryHandler(handle_telegram_callback))
-        app.add_handler(MessageHandler(filters.TEXT | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         # ── Wizard shortcut commands ──────────────────────────────────────────
         async def _cmd_auto_setup(update, context):
@@ -1996,12 +2021,152 @@ def start_telegram_bot_service():
             except Exception as _e:
                 logger.debug(f"setgemini: {_e}")
             await update.message.reply_text("✅ Gemini API key saved!")
+        async def _cmd_ytcode(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/ytcode YOUR_AUTHORIZATION_CODE_OR_JSON`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_youtube_token
+                set_user_youtube_token(str(update.effective_chat.id), args_text)
+                await update.message.reply_text("✅ YouTube OAuth token saved and synced to GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving YouTube token: {_e}")
+
+        async def _cmd_setbranding(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setbranding your_brand_watermark`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_branding
+                set_user_branding(str(update.effective_chat.id), args_text)
+                await update.message.reply_text(f"🏷️ **Personal branding watermark updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving branding watermark: {_e}")
+
+        async def _cmd_setgroup(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setgroup YOUR_PUBLIC_GROUP_ID` (e.g., -1001234567890)")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_public_group_id
+                set_user_public_group_id(str(update.effective_chat.id), args_text)
+                await update.message.reply_text(f"📢 **Public Group ID updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving group ID: {_e}")
+
+        async def _cmd_setschedule(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setschedule HH:MM,HH:MM` (e.g., `/setschedule 06:00,19:00`)")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_schedule_times
+                set_user_schedule_times(str(update.effective_chat.id), args_text)
+                await update.message.reply_text(f"⏰ **Schedule times updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving schedule times: {_e}")
+
+        async def _cmd_setytclient(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/setytclient YOUR_CLIENT_SECRET_JSON`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_youtube_client_secret
+                set_user_youtube_client_secret(str(update.effective_chat.id), args_text)
+                await update.message.reply_text("🔐 **YouTube Client Secret saved and synced to GitHub Secrets!**")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving YouTube client secret: {_e}")
+
+        async def _cmd_instagramtoken(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/instagramtoken YOUR_INSTAGRAM_ACCESS_TOKEN`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_instagram_token
+                set_user_instagram_token(str(update.effective_chat.id), args_text)
+                await update.message.reply_text("📸 **Instagram Access Token saved & synced to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets!**")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Instagram token: {_e}")
+
+        async def _cmd_instagramid(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/instagramid YOUR_INSTAGRAM_BUSINESS_ACCOUNT_ID`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_instagram_id
+                set_user_instagram_id(str(update.effective_chat.id), args_text)
+                await update.message.reply_text(f"🆔 **Instagram Business Account ID updated to:** `{args_text}`\nSynced to IG_BUSINESS_ID in GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Instagram Business ID: {_e}")
+
+        async def _cmd_facebookid(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/facebookid YOUR_FACEBOOK_PAGE_ID`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_facebook_id
+                set_user_facebook_id(str(update.effective_chat.id), args_text)
+                await update.message.reply_text(f"📘 **Facebook Page ID updated to:** `{args_text}`\nSynced to META_PAGE_ID in GitHub Secrets!")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Facebook Page ID: {_e}")
+
+        async def _cmd_facebooktoken(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/facebooktoken YOUR_FACEBOOK_PAGE_ACCESS_TOKEN`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_facebook_token
+                set_user_facebook_token(str(update.effective_chat.id), args_text)
+                await update.message.reply_text("🔑 **Facebook Page Access Token saved & synced to META_PAGE_TOKEN in GitHub Secrets!**")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving Facebook token: {_e}")
+
+        async def _cmd_tiktoktoken(update, context):
+            args_text = " ".join(context.args).strip() if context.args else ""
+            if not args_text:
+                await update.message.reply_text("Usage: `/tiktoktoken YOUR_TIKTOK_ACCESS_TOKEN`")
+                return
+            try:
+                from Publishing_Modules.telegram_user_manager import set_user_tiktok_token
+                set_user_tiktok_token(str(update.effective_chat.id), args_text)
+                await update.message.reply_text("🎵 **TikTok Access Token saved & synced to TIKTOK_ACCESS_TOKEN in GitHub Secrets!**")
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
+
+        async def _cmd_myconfig(update, context):
+            try:
+                from Publishing_Modules.telegram_user_manager import format_user_credentials_summary
+                summary_text = format_user_credentials_summary(str(update.effective_chat.id))
+                await update.message.reply_text(summary_text)
+            except Exception as _e:
+                await update.message.reply_text(f"⚠️ Error fetching config: {_e}")
+
         app.add_handler(CommandHandler("autosetup", _cmd_auto_setup))
         app.add_handler(CommandHandler("addaccount", _cmd_addaccount))
         app.add_handler(CommandHandler("removeaccount", _cmd_removeaccount))
         app.add_handler(CommandHandler("listaccounts", _cmd_listaccounts))
         app.add_handler(CommandHandler("setapify", _cmd_setapify))
         app.add_handler(CommandHandler("setgemini", _cmd_setgemini))
+        app.add_handler(CommandHandler("ytcode", _cmd_ytcode))
+        app.add_handler(CommandHandler("setbranding", _cmd_setbranding))
+        app.add_handler(CommandHandler("setgroup", _cmd_setgroup))
+        app.add_handler(CommandHandler("setschedule", _cmd_setschedule))
+        app.add_handler(CommandHandler("setytclient", _cmd_setytclient))
+        app.add_handler(CommandHandler("instagramtoken", _cmd_instagramtoken))
+        app.add_handler(CommandHandler("instagramid", _cmd_instagramid))
+        app.add_handler(CommandHandler("facebookid", _cmd_facebookid))
+        app.add_handler(CommandHandler("facebooktoken", _cmd_facebooktoken))
+        app.add_handler(CommandHandler("tiktoktoken", _cmd_tiktoktoken))
+        app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
+        app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)

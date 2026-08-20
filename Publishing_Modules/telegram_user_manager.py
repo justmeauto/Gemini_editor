@@ -38,28 +38,68 @@ def load_all_users() -> Dict[str, Dict]:
         return {}
 
 
+def _upload_file_to_telegram_storage(file_path: str, caption: str = "") -> Optional[str]:
+    """Uploads a file to TELEGRAM_STORAGE_GROUP_ID using urllib multipart payload."""
+    import uuid
+    import urllib.request
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not storage_group_id or not os.path.exists(file_path):
+        return None
+    
+    try:
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+        body = bytearray()
+        
+        # Add chat_id
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="chat_id"\r\n\r\n{storage_group_id}\r\n'.encode("utf-8"))
+        
+        if caption:
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'.encode("utf-8"))
+        
+        # Add document file
+        filename = os.path.basename(file_path)
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode("utf-8"))
+        body.extend(b'Content-Type: application/json\r\n\r\n')
+        with open(file_path, "rb") as f:
+            body.extend(f.read())
+        body.extend(b'\r\n')
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+        req = urllib.request.Request(
+            url,
+            data=bytes(body),
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "AMTCE-Vault-Uploader"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("ok"):
+                return data.get("result", {}).get("document", {}).get("file_id")
+    except Exception as e:
+        logger.warning("Notice uploading %s to Telegram Vault: %s", file_path, e)
+    return None
+
+
 def sync_users_json_to_telegram_vault(upload_fn=None):
     """Uploads updated telegram_users.json to Storage Group & updates pinned master_vault_index.json."""
     try:
-        if not upload_fn:
-            try:
-                from Downloader_Modules.telegram_listener import _send_file_multipart
-                upload_fn = _send_file_multipart
-            except Exception:
-                upload_fn = None
-
         from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
-        if storage_group_id and upload_fn and os.path.exists(USERS_JSON_PATH):
-            res = upload_fn("sendDocument", storage_group_id, "document", USERS_JSON_PATH, caption=f"👤 **[VAULT BACKUP]** `telegram_users.json` (Updated {time.strftime('%H:%M:%S')})")
-            if res and isinstance(res, dict):
-                users_doc_id = res.get("document", {}).get("file_id")
-                if users_doc_id:
-                    indexer = TelegramVaultIndexer()
-                    indexer.vault_index["telegram_users_file_id"] = users_doc_id
-                    indexer._save_local_index()
-                    indexer.upload_and_pin_vault_index_sync(upload_fn)
-                    logger.info("✅ [USER VAULT BACKUP] Uploaded & PINNED updated telegram_users.json to Storage Group (file_id: %s)", users_doc_id[:15])
+        if os.path.exists(USERS_JSON_PATH):
+            caption = f"👤 **[VAULT BACKUP]** `telegram_users.json` (Updated {time.strftime('%H:%M:%S')})"
+            users_doc_id = _upload_file_to_telegram_storage(USERS_JSON_PATH, caption=caption)
+            if users_doc_id:
+                indexer = TelegramVaultIndexer()
+                indexer.vault_index["telegram_users_file_id"] = users_doc_id
+                indexer._save_local_index()
+                indexer.upload_and_pin_vault_index_sync(upload_fn)
+                logger.info("✅ [USER VAULT BACKUP] Uploaded & PINNED updated telegram_users.json to Storage Group (file_id: %s)", users_doc_id[:15])
     except Exception as err:
         logger.warning("Notice uploading telegram_users.json to vault: %s", err)
 
@@ -287,6 +327,181 @@ def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
         logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved for User ID %s", user_id_str)
         return True
     return False
+
+
+def set_user_branding(user_id_str: str, brand_text: str) -> bool:
+    """Saves user personal brand watermark text and syncs to GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_brand = brand_text.strip()
+    if user_id_str in users and clean_brand:
+        users[user_id_str]["brand_watermark"] = clean_brand
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK", clean_brand)
+        logger.info("🏷️ [TELEGRAM USER MANAGER] Personal brand watermark saved for User ID %s: %s", user_id_str, clean_brand)
+        return True
+    return False
+
+
+def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
+    """Saves user personal Telegram Public Group ID and syncs to GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_group = group_id.strip()
+    if user_id_str in users and clean_group:
+        users[user_id_str]["telegram_public_group_id"] = clean_group
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "TELEGRAM_PUBLIC_GROUP_ID", clean_group)
+        logger.info("📢 [TELEGRAM USER MANAGER] Telegram Public Group ID saved for User ID %s: %s", user_id_str, clean_group)
+        return True
+    return False
+
+
+def set_user_schedule_times(user_id_str: str, schedule_times: str) -> bool:
+    """Saves user personal auto-input schedule times and syncs to GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_sched = schedule_times.strip()
+    if user_id_str in users and clean_sched:
+        users[user_id_str]["auto_input_schedule_times"] = clean_sched
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "AUTO_INPUT_SCHEDULE_TIMES", clean_sched)
+        logger.info("⏰ [TELEGRAM USER MANAGER] Schedule times saved for User ID %s: %s", user_id_str, clean_sched)
+        return True
+    return False
+
+
+def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> bool:
+    """Saves user personal YouTube client_secret.json content and syncs to GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_secret = client_secret_str.strip()
+    if user_id_str in users and clean_secret:
+        users[user_id_str]["youtube_client_secret"] = clean_secret
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "YOUTUBE_CLIENT_SECRET", clean_secret)
+        logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def set_user_instagram_token(user_id_str: str, token: str) -> bool:
+    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_tok = token.strip()
+    if user_id_str in users and clean_tok:
+        users[user_id_str]["ig_business_token"] = clean_tok
+        users[user_id_str]["meta_page_token"] = clean_tok
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_tok)
+        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
+        logger.info("📸 [TELEGRAM USER MANAGER] Instagram Access Token saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def set_user_instagram_id(user_id_str: str, ig_id: str) -> bool:
+    """Saves user Instagram Business Account ID and syncs to IG_BUSINESS_ID in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_id = ig_id.strip()
+    if user_id_str in users and clean_id:
+        users[user_id_str]["ig_business_id"] = clean_id
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "IG_BUSINESS_ID", clean_id)
+        logger.info("🆔 [TELEGRAM USER MANAGER] Instagram Business ID saved for User ID %s: %s", user_id_str, clean_id)
+        return True
+    return False
+
+
+def set_user_facebook_id(user_id_str: str, fb_page_id: str) -> bool:
+    """Saves user Facebook Page ID and syncs to META_PAGE_ID in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_id = fb_page_id.strip()
+    if user_id_str in users and clean_id:
+        users[user_id_str]["meta_page_id"] = clean_id
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "META_PAGE_ID", clean_id)
+        logger.info("📘 [TELEGRAM USER MANAGER] Facebook Page ID saved for User ID %s: %s", user_id_str, clean_id)
+        return True
+    return False
+
+
+def set_user_facebook_token(user_id_str: str, fb_token: str) -> bool:
+    """Saves user Facebook Page Access Token and syncs to META_PAGE_TOKEN in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_tok = fb_token.strip()
+    if user_id_str in users and clean_tok:
+        users[user_id_str]["meta_page_token"] = clean_tok
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
+        logger.info("🔑 [TELEGRAM USER MANAGER] Facebook Page Token saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
+    """Saves user TikTok Access Token and syncs to TIKTOK_ACCESS_TOKEN in GitHub Secrets."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    clean_tok = tiktok_token.strip()
+    if user_id_str in users and clean_tok:
+        users[user_id_str]["tiktok_access_token"] = clean_tok
+        save_all_users(users)
+        sync_user_secret_to_github(user_id_str, "TIKTOK_ACCESS_TOKEN", clean_tok)
+        logger.info("🎵 [TELEGRAM USER MANAGER] TikTok Access Token saved for User ID %s", user_id_str)
+        return True
+    return False
+
+
+def format_user_credentials_summary(user_id_str: str) -> str:
+    """Formats a status checklist of all configured user credentials with exact command syntax."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    u_rec = users.get(user_id_str, {})
+    
+    def _chk(key):
+        return "✅ Configured" if u_rec.get(key, "").strip() else "❌ Not Set"
+
+    lines = [
+        "⚙️ **Your SaaS Configuration Checklist & Command Guide**\n",
+        f"🤖 **Gemini API Key:** `{_chk('gemini_api_key')}`",
+        "   👉 Command: `/setgemini YOUR_GEMINI_KEY`\n",
+        f"🕷️ **Apify Scraper Token:** `{_chk('apify_api_token')}`",
+        "   👉 Command: `/setapify YOUR_APIFY_TOKEN`\n",
+        f"🏷️ **Brand Watermark:** `{u_rec.get('brand_watermark') or 'Not Set'}`",
+        "   👉 Command: `/setbranding YOUR_WATERMARK_TEXT`\n",
+        f"📢 **Public Group ID:** `{u_rec.get('telegram_public_group_id') or 'Not Set'}`",
+        "   👉 Command: `/setgroup YOUR_GROUP_ID`\n",
+        f"⏰ **Schedule Times:** `{u_rec.get('auto_input_schedule_times') or 'Not Set'}`",
+        "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
+        f"📸 **Instagram Token:** `{_chk('ig_business_token')}`",
+        "   👉 Command: `/instagramtoken YOUR_ACCESS_TOKEN`\n",
+        f"🆔 **Instagram Business ID:** `{u_rec.get('ig_business_id') or 'Not Set'}`",
+        "   👉 Command: `/instagramid YOUR_BUSINESS_ID`\n",
+        f"📘 **Facebook Page ID:** `{u_rec.get('meta_page_id') or 'Not Set'}`",
+        "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
+        f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json')}`",
+        "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
+        f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token')}`",
+        "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
+        "💡 *Tip: Run `/autosetup` for the 6-step wizard, or `/myconfig` anytime to check your refreshed status!*"
+    ]
+    return "\n".join(lines)
+
+
+def get_user_branding(user_id_str: str) -> str:
+    """Returns user personal brand watermark text, or defaults to BRAND_WATERMARK_TEXT from env."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    if user_id_str in users:
+        brand = users[user_id_str].get("brand_watermark", "").strip()
+        if brand:
+            return brand
+    return os.getenv("BRAND_WATERMARK_TEXT", "fitsbydisha").strip('"').strip("'")
 
 
 def set_user_nickname(user_id_str: str, nickname_text: str) -> Tuple[bool, str]:

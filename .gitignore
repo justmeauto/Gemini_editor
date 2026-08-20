@@ -19,6 +19,7 @@ venv/
 
 # Data & cache
 data/
+user_sessions/
 downloads/
 Processed Shorts/
 Original_audio/

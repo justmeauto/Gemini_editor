@@ -234,11 +234,33 @@ class TelegramVaultIndexer:
             # Step 1: Download pinned index from Telegram Storage Group first!
             results["pinned_index"] = self.sync_pinned_index_from_telegram_sync()
 
-            # Step 2: Download telegram_users.json
+            # Step 2: Download telegram_users.json and merge with local records
             users_file_id = self.vault_index.get("telegram_users_file_id")
             if users_file_id:
-                from Publishing_Modules.telegram_user_manager import USERS_JSON_PATH
-                results["telegram_users"] = self.download_vault_file_by_id(users_file_id, USERS_JSON_PATH)
+                from Publishing_Modules.telegram_user_manager import USERS_JSON_PATH, load_all_users, save_all_users
+                local_users = load_all_users()
+                temp_download_path = USERS_JSON_PATH + ".download.tmp"
+                if self.download_vault_file_by_id(users_file_id, temp_download_path):
+                    try:
+                        with open(temp_download_path, "r", encoding="utf-8") as f:
+                            downloaded_users = json.load(f)
+                        for uid, udata in downloaded_users.items():
+                            if uid not in local_users:
+                                local_users[uid] = udata
+                            else:
+                                for k, v in udata.items():
+                                    if v and not local_users[uid].get(k):
+                                        local_users[uid][k] = v
+                        save_all_users(local_users, sync_to_vault=False)
+                        results["telegram_users"] = True
+                    except Exception as _m_err:
+                        logger.warning("Notice merging hydrated users: %s", _m_err)
+                    finally:
+                        if os.path.exists(temp_download_path):
+                            try:
+                                os.remove(temp_download_path)
+                            except Exception:
+                                pass
 
             # Step 3: Download metadata_pool.json
             pool_file_id = self.vault_index.get("metadata_pool_file_id")
