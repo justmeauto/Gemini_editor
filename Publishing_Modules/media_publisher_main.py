@@ -37,10 +37,55 @@ except ImportError:
     pass
 
 
-def publish_to_youtube(video_path: str, title: str, description: str = "", tags: str = "", niche: Optional[str] = None) -> Dict[str, Any]:
+def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Resolves per-user social media credentials.
+    If user_id is passed and user is NOT admin and has NOT set their credentials,
+    returns None to PREVENT non-admin users from uploading to admin's socials.
+    """
+    if not user_id:
+        return {
+            "meta_token": os.getenv("IG_BUSINESS_TOKEN") or os.getenv("META_PAGE_TOKEN"),
+            "meta_id": os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("IG_BUSINESS_ID") or os.getenv("META_PAGE_ID"),
+            "yt_token": os.getenv("YOUTUBE_TOKEN_FILE"),
+            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN")
+        }
+    try:
+        from Publishing_Modules.telegram_user_manager import load_all_users
+        users = load_all_users()
+        u_rec = users.get(str(user_id), {})
+        is_admin = u_rec.get("role") == "admin"
+        
+        meta_tok = u_rec.get("ig_business_token") or u_rec.get("meta_page_token") or (os.getenv("IG_BUSINESS_TOKEN") if is_admin else None)
+        meta_id = u_rec.get("ig_business_id") or u_rec.get("meta_page_id") or (os.getenv("IG_BUSINESS_ID") if is_admin else None)
+        yt_tok = u_rec.get("youtube_token_json") or (os.getenv("YOUTUBE_TOKEN_FILE") if is_admin else None)
+        tt_tok = u_rec.get("tiktok_access_token") or (os.getenv("TIKTOK_ACCESS_TOKEN") if is_admin else None)
+        
+        return {
+            "meta_token": meta_tok,
+            "meta_id": meta_id,
+            "yt_token": yt_tok,
+            "tiktok_token": tt_tok,
+            "is_admin": is_admin
+        }
+    except Exception:
+        return {
+            "meta_token": os.getenv("IG_BUSINESS_TOKEN"),
+            "meta_id": os.getenv("IG_BUSINESS_ID"),
+            "yt_token": os.getenv("YOUTUBE_TOKEN_FILE"),
+            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN")
+        }
+
+
+def publish_to_youtube(video_path: str, title: str, description: str = "", tags: str = "", niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Uploads video reel to YouTube Shorts via YouTube Data API v3."""
     logger.info("🔴 [PUBLISHER 1/4] Uploading to YouTube Shorts...")
     try:
+        user_creds = _resolve_user_credentials(user_id)
+        if not user_creds.get("yt_token"):
+            logger.warning("⚠️ YouTube API credentials missing for User %s. Skipping YouTube upload.", user_id or "default")
+            return {"status": "skipped", "message": "Personal YouTube credentials not configured for user"}
+
         from Publishing_Modules.uploader import _upload_sync
         cred_file = os.getenv("CLIENT_SECRET_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "client_secret.json"))
         if not os.path.exists(cred_file):
@@ -56,8 +101,6 @@ def publish_to_youtube(video_path: str, title: str, description: str = "", tags:
 
         if not os.path.exists(cred_file) and not os.path.exists(token_file):
             logger.warning("⚠️ YouTube API credentials missing (Credentials/youtube/client_secret.json or token.json not found). Skipping YouTube upload.")
-            logger.info("💡 To enable YouTube upload, run: python scripts/auth_youtube.py --secret Credentials/youtube/client_secret.json --token Credentials/youtube/token.json --admin-id YOUR_TELEGRAM_ID")
-            logger.info("   Then send the localhost link to your Telegram chat with /ytcode {link} to complete authentication.")
             return {"status": "skipped", "message": "Credentials/token.json missing"}
 
         video_id = _upload_sync(
@@ -80,17 +123,18 @@ def publish_to_youtube(video_path: str, title: str, description: str = "", tags:
         return {"status": "failed", "error": str(e)}
 
 
-async def publish_to_meta(video_path: str, caption: str, niche: Optional[str] = None) -> Dict[str, Any]:
+async def publish_to_meta(video_path: str, caption: str, niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Uploads video reel to Instagram & Facebook via Meta Graph API."""
     logger.info("📸 [PUBLISHER 2/4] Uploading to Meta (Instagram & Facebook Reels)...")
     try:
         from Publishing_Modules.meta_uploader import AsyncMetaUploader
-        token = os.getenv("IG_BUSINESS_TOKEN") or os.getenv("META_PAGE_TOKEN")
-        ig_user_id = os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("IG_BUSINESS_ID") or os.getenv("META_IG_ACCOUNT_ID") or os.getenv("META_PAGE_ID")
+        user_creds = _resolve_user_credentials(user_id)
+        token = user_creds.get("meta_token")
+        ig_user_id = user_creds.get("meta_id")
 
         if not token or not ig_user_id:
-            logger.warning("⚠️ Meta Graph API credentials missing. Skipping Meta upload.")
-            return {"instagram": {"status": "skipped", "message": "Credentials missing"}, "facebook": {"status": "skipped", "message": "Credentials missing"}}
+            logger.warning("⚠️ Meta Graph API credentials missing for User %s. Skipping Meta upload.", user_id or "default")
+            return {"instagram": {"status": "skipped", "message": "Personal Instagram credentials not configured for user"}, "facebook": {"status": "skipped", "message": "Personal Facebook credentials not configured for user"}}
 
         uploader = AsyncMetaUploader()
         res = await uploader.upload_to_meta(
@@ -105,9 +149,9 @@ async def publish_to_meta(video_path: str, caption: str, niche: Optional[str] = 
         return {"instagram": {"status": "failed", "error": str(e)}, "facebook": {"status": "failed", "error": str(e)}}
 
 
-async def publish_to_instagram(video_path: str, caption: str, niche: Optional[str] = None) -> Dict[str, Any]:
+async def publish_to_instagram(video_path: str, caption: str, niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Uploads video reel to Instagram via Meta Graph API."""
-    meta_res = await publish_to_meta(video_path, caption, niche)
+    meta_res = await publish_to_meta(video_path, caption, niche, user_id=user_id)
     ig_result = meta_res.get("instagram", {})
     if ig_result.get("status") == "success":
         media_id = ig_result.get("id")
@@ -119,10 +163,15 @@ async def publish_to_instagram(video_path: str, caption: str, niche: Optional[st
         return ig_result
 
 
-async def publish_to_tiktok(video_path: str, title: str, tags: str = "", niche: Optional[str] = None) -> Dict[str, Any]:
+async def publish_to_tiktok(video_path: str, title: str, tags: str = "", niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Uploads video reel to TikTok Creator account via TikTok Direct Post API."""
     logger.info("🎵 [PUBLISHER 3/4] Uploading to TikTok...")
     try:
+        user_creds = _resolve_user_credentials(user_id)
+        if not user_creds.get("tiktok_token"):
+            logger.warning("⚠️ TikTok credentials missing for User %s. Skipping TikTok upload.", user_id or "default")
+            return {"status": "skipped", "message": "Personal TikTok credentials not configured for user"}
+
         from Publishing_Modules.tiktok_uploader import upload_to_tiktok
         res = await upload_to_tiktok(
             file_path=video_path,
