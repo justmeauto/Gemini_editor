@@ -109,6 +109,8 @@ jobs:
         TELEGRAM_CONFIG_JSON: ${{ secrets.TELEGRAM_CONFIG_JSON }}
         CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
         TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+        BRAND_WATERMARK_TEXT: ${{ secrets.BRAND_WATERMARK_TEXT }}
+        AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES }}
       run: |
         mkdir -p Credentials
         rm -f .env Credentials/.env
@@ -130,6 +132,8 @@ jobs:
         [ -n "$IG_BUSINESS_ID" ] && echo "IG_BUSINESS_ID=$IG_BUSINESS_ID" >> .env
         [ -n "$IG_BUSINESS_ID" ] && echo "IG_BUSINESS_ACCOUNT_ID=$IG_BUSINESS_ID" >> .env
         [ -n "$IG_BUSINESS_TOKEN" ] && echo "IG_BUSINESS_TOKEN=$IG_BUSINESS_TOKEN" >> .env
+        [ -n "$BRAND_WATERMARK_TEXT" ] && echo "BRAND_WATERMARK_TEXT=$BRAND_WATERMARK_TEXT" >> .env
+        [ -n "$AUTO_INPUT_SCHEDULE_TIMES" ] && echo "AUTO_INPUT_SCHEDULE_TIMES=$AUTO_INPUT_SCHEDULE_TIMES" >> .env
         echo "CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json" >> .env
         echo "YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json" >> .env
         echo "AUTO_PUBLISH_CLIPS=yes" >> .env
