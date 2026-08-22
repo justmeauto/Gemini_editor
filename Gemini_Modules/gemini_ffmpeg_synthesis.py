@@ -925,12 +925,34 @@ class FFmpegCommandGenerator:
                 h_raw = int(op_vecs.get("effective_h") if op_vecs.get("effective_h") is not None else box0.get("h", 50))
 
                 # Transform raw video coordinates to 9:16 vertical frame (1080x1920)
-                orig_w = int(box0.get("video_width") or box0.get("orig_w") or 1080)
-                orig_h = int(box0.get("video_height") or box0.get("orig_h") or 1920)
+                orig_w = int(box0.get("video_width") or box0.get("orig_w") or 0)
+                orig_h = int(box0.get("video_height") or box0.get("orig_h") or 0)
+
+                # Dynamic resolution probe if missing in box0
+                if orig_w <= 0 or orig_h <= 0:
+                    try:
+                        import cv2
+                        cap = cv2.VideoCapture(input_path)
+                        if cap.isOpened():
+                            orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1080
+                            orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1920
+                            cap.release()
+                    except Exception:
+                        pass
+
+                if orig_w <= 0:
+                    orig_w = 1080
+                if orig_h <= 0:
+                    orig_h = 1920
 
                 scale_w = tw / float(orig_w) if orig_w > 0 else 1.0
                 scale_h = th / float(orig_h) if orig_h > 0 else 1.0
-                scale_fg = min(scale_w, scale_h)
+
+                # Correct scaling factor per scale_mode (crop uses max, blur_pad/pad uses min)
+                if scale_mode == "crop":
+                    scale_fg = max(scale_w, scale_h)
+                else:
+                    scale_fg = min(scale_w, scale_h)
 
                 fg_w = int(orig_w * scale_fg)
                 fg_h = int(orig_h * scale_fg)

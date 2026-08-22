@@ -84,10 +84,24 @@ def run_watermark_removal(input_path: str, output_path: str = None, keywords: st
         log("✅ PROCESS COMPLETE: Video was already clean.")
         return output_path, "\n".join(log_lines)
 
+    # Probe raw input video dimensions for downstream aspect-ratio scaling & brand overlay alignment
+    v_w, v_h = 1080, 1920
+    try:
+        import cv2
+        cap = cv2.VideoCapture(input_path)
+        if cap.isOpened():
+            v_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1080
+            v_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1920
+            cap.release()
+    except Exception as _ve:
+        logger.debug("Could not probe video dimensions via OpenCV: %s", _ve)
+
     # Enrich watermarks with OpenCV inpaint mathematical vectors (effective padded ROI & inpaint math)
     enriched_watermarks = []
     for box in watermarks:
         b_copy = dict(box)
+        b_copy["video_width"] = v_w
+        b_copy["video_height"] = v_h
         bx = int(b_copy.get("x", 0))
         by = int(b_copy.get("y", 0))
         bw = int(b_copy.get("w", 100))
@@ -111,8 +125,13 @@ def run_watermark_removal(input_path: str, output_path: str = None, keywords: st
     try:
         coords_sidecar = output_path + ".coords.json"
         with open(coords_sidecar, "w", encoding="utf-8") as f:
-            json.dump({"watermark_boxes": enriched_watermarks, "input_video": input_path}, f)
-        log(f"💾 Saved {len(enriched_watermarks)} watermark box(es) with OpenCV math vectors to sidecar: {os.path.basename(coords_sidecar)}")
+            json.dump({
+                "watermark_boxes": enriched_watermarks,
+                "input_video": input_path,
+                "video_width": v_w,
+                "video_height": v_h
+            }, f)
+        log(f"💾 Saved {len(enriched_watermarks)} watermark box(es) with OpenCV math vectors ({v_w}x{v_h}) to sidecar: {os.path.basename(coords_sidecar)}")
     except Exception as _se:
         logger.warning(f"⚠️ Failed to save coords sidecar: {_se}")
 
