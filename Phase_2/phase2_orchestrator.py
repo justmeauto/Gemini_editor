@@ -210,9 +210,30 @@ def run_phase2_pipeline(
 
             # Step 4: Gemini Call 2 BGM Selector
             _emit("step_04", "running", {"message": f"Selecting optimal BGM track for clip '{folder_name}'..."})
+
+            exclude_bgm = set()
+            force_new_music = False
+            if user_edit_directive:
+                d_lower = user_edit_directive.lower()
+                if any(kw in d_lower for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio"]):
+                    force_new_music = True
+                    try:
+                        from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+                        _st = ClipIntelligenceStore(clip_id=folder_name, clip_folder=clip_dir)
+                        _prev_aud = _st.get("audio_data") or {}
+                        _prev_track = _prev_aud.get("selected_bgm_track") or _prev_aud.get("selected_audio_track")
+                        if _prev_track:
+                            exclude_bgm.add(_prev_track)
+                            exclude_bgm.add(os.path.basename(_prev_track))
+                            logger.info(f"🚫 [STEP 04 RE-EDIT] User requested music change! Excluding previous BGM: '{_prev_track}'")
+                    except Exception as _ex_err:
+                        logger.debug(f"Exclusion lookup notice: {_ex_err}")
+
             bgm_res = step04.select_clip_bgm(
                 clip_id=folder_name,
                 clip_folder=clip_dir,
+                intent_vector={"preserve_music": not force_new_music},
+                exclude_filenames=exclude_bgm if exclude_bgm else None,
             )
             selected_bgm_path = bgm_res.get("physical_path")
             _emit("step_04", "success", {"message": f"BGM selected: '{bgm_res.get('selected_audio_track')}'."})

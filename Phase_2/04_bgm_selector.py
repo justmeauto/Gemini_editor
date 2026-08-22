@@ -114,6 +114,20 @@ def select_clip_bgm(
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 
     res["physical_path"] = resolved_path
+
+    # Save selected BGM track choice to ClipIntelligenceStore
+    if selected_track_name:
+        try:
+            from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+            store = ClipIntelligenceStore(clip_id=clip_id, clip_folder=clip_folder)
+            audio_data = store.get("audio_data") or {}
+            audio_data["selected_bgm_track"] = selected_track_name
+            audio_data["selected_audio_track"] = selected_track_name
+            audio_data["alignment_score"] = res.get("alignment_score", 0.85)
+            store.set("audio_data", audio_data)
+        except Exception as _st_err:
+            logger.debug(f"[STEP 04] Store update notice: {_st_err}")
+
     logger.info(
         f"✓ [STEP 04 SUCCESS] BGM Selected: '{selected_track_name}' "
         f"(score={res.get('alignment_score', 0.0):.2f}) -> {resolved_path}"
