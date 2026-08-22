@@ -731,25 +731,37 @@ def select_best_audio_for_clip(
         c_vocals = bool(meta.get("has_vocals", False))
         c_lang = str(meta.get("language", "unknown"))
 
+        # Check if candidate is the clip's own harvested audio
+        is_self_audio = (
+            c_file.lower() == f"bgm_{clip_id.lower()}.wav"
+            or c_file.lower().startswith(f"bgm_{clip_id.lower()}")
+            or (clip_folder and os.path.basename(clip_folder).lower() in c_file.lower())
+        )
+
         # LRU Recency Decay Math
         hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
         recency_penalty = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
         usage_penalty = 1.0 / (1.0 + u_count * 0.25)
+        # Apply a mild self-audio discount (0.85x) so strong external tracks rank higher in top math candidates
+        self_discount = 0.85 if is_self_audio else 1.0
 
         bpm_match = max(0.0, 1.0 - (abs(clip_bpm - c_bpm) / 100.0))
         emotion_match = 1.0 if c_emotion in clip_tone or clip_tone in c_emotion else 0.5
-        math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty
+        math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * self_discount
+
+        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - BASELINE FALLBACK]" if is_self_audio else ""
 
         candidate_scores.append((math_score, c_file))
         candidate_lines[c_file] = (
-            f"- '{c_file}': genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
+            f"- '{c_file}'{self_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
     candidate_scores.sort(key=lambda x: x[0], reverse=True)
     best_math_candidate = candidate_scores[0][1] if candidate_scores else available_candidates[0]
     selected_track = best_math_candidate
-    reasoning = f"Smart Mathematical & Semantic Audio Match (score={candidate_scores[0][0]:.2f})."
+    alignment_score = float(candidate_scores[0][0]) if candidate_scores else 0.85
+    reasoning = f"Smart Mathematical & Semantic Audio Match (score={alignment_score:.2f})."
     # Send top-10 candidates to Gemini
     top_candidates = candidate_scores[:10]
     top_lines = []
@@ -763,9 +775,10 @@ def select_best_audio_for_clip(
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
-- Pick the single BEST candidate from the TOP-10 list below that best matches the visual intent, tone, and pacing of the clip
-- Prioritize musical style, emotional vibe, and BPM alignment with the video
-- Do NOT reference past clips — judge purely on the clip context and track metadata below
+- FIRST PRIORITY: Evaluate all external candidate tracks. Search for an external track that elevates, enhances, or brings a fresher, higher-quality musical energy/vibe to the clip than the original audio.
+- SECOND PRIORITY: You MAY select '[CLIP'S ORIGINAL HARVESTED AUDIO - BASELINE FALLBACK]' if and ONLY if no external candidate in the list matches the visual intent, tone, or BPM sufficiently well.
+- Prioritize musical style, emotional vibe, and BPM alignment with the video.
+- Do NOT reference past clips — judge purely on the clip context and track metadata below.
 
 [FORBIDDEN TRACKS — DO NOT SELECT]
 {forbidden_str}
@@ -784,7 +797,7 @@ Return ONLY valid JSON:
 {{
   "selected_audio_track": "chosen_filename.mp3",
   "alignment_score": 0.95,
-  "reasoning": "One sentence: why this specific track fits this clip's intent/tone."
+  "reasoning": "One sentence: why this specific track fits or elevates this clip's intent/tone over alternatives."
 }}
 """
 
