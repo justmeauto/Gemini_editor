@@ -835,7 +835,7 @@ async def handle_telegram_start(update, context):
 async def cmd_ytcode(update, context):
     """
     /ytcode          -> Triggers YouTube auth refresh (sends Google sign-in link to Telegram)
-    /ytcode <code>   -> Submits auth code/URL back to complete YouTube OAuth flow
+    /ytcode <code>   -> Submits auth code/URL/JSON back to complete YouTube OAuth flow
     """
     msg = update.effective_message
     user_id = update.effective_user.id
@@ -847,7 +847,7 @@ async def cmd_ytcode(update, context):
             "The Google sign-in link will appear here in a moment.\n"
             "1️⃣ Tap the Google Sign-in link\n"
             "2️⃣ Sign in and copy the entire `http://localhost/?code=...` URL\n"
-            "3️⃣ Paste that URL directly into this chat to authorize!",
+            "3️⃣ Paste that URL directly into this chat (or `/ytcode YOUR_URL`) to authorize!",
             parse_mode="Markdown"
         )
         import threading
@@ -865,8 +865,18 @@ async def cmd_ytcode(update, context):
         threading.Thread(target=_run_auth, daemon=True).start()
         return
 
-    # User provided code/URL via args
+    # User provided code/URL/JSON via args
     raw = " ".join(context.args).strip()
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            from Publishing_Modules.telegram_user_manager import set_user_youtube_token
+            set_user_youtube_token(str(update.effective_chat.id), raw)
+            await msg.reply_text("✅ YouTube OAuth token JSON saved & synced to GitHub Secrets!")
+            return
+        except Exception as _e:
+            await msg.reply_text(f"⚠️ Error saving YouTube token JSON: {_e}")
+            return
+
     await process_yt_auth_code_input(msg, raw)
 
 
@@ -2022,16 +2032,7 @@ def start_telegram_bot_service():
                 logger.debug(f"setgemini: {_e}")
             await update.message.reply_text("✅ Gemini API key saved!")
         async def _cmd_ytcode(update, context):
-            args_text = " ".join(context.args).strip() if context.args else ""
-            if not args_text:
-                await update.message.reply_text("Usage: `/ytcode YOUR_AUTHORIZATION_CODE_OR_JSON`")
-                return
-            try:
-                from Publishing_Modules.telegram_user_manager import set_user_youtube_token
-                set_user_youtube_token(str(update.effective_chat.id), args_text)
-                await update.message.reply_text("✅ YouTube OAuth token saved and synced to GitHub Secrets!")
-            except Exception as _e:
-                await update.message.reply_text(f"⚠️ Error saving YouTube token: {_e}")
+            await cmd_ytcode(update, context)
 
         async def _cmd_setbranding(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
@@ -2155,7 +2156,7 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("listaccounts", _cmd_listaccounts))
         app.add_handler(CommandHandler("setapify", _cmd_setapify))
         app.add_handler(CommandHandler("setgemini", _cmd_setgemini))
-        app.add_handler(CommandHandler("ytcode", _cmd_ytcode))
+        app.add_handler(CommandHandler("ytcode", cmd_ytcode))
         app.add_handler(CommandHandler("setbranding", _cmd_setbranding))
         app.add_handler(CommandHandler("setgroup", _cmd_setgroup))
         app.add_handler(CommandHandler("setschedule", _cmd_setschedule))
