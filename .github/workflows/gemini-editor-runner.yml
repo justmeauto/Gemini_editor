@@ -96,6 +96,7 @@ jobs:
     - name: Setup Environment Variables & Tokens
       env:
         ENV_FILE_CONTENT: ${{ secrets.ENV || secrets.ENV_FILE_CONTENT }}
+        GH_PAT: ${{ secrets.GH_PAT }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TELEGRAM_PUBLIC_GROUP_ID: ${{ secrets.TELEGRAM_PUBLIC_GROUP_ID }}
@@ -121,6 +122,7 @@ jobs:
         fi
 
         # Write explicit individual secrets into root .env
+        [ -n "$GH_PAT" ] && echo "GH_PAT=$GH_PAT" >> .env
         [ -n "$TELEGRAM_BOT_TOKEN" ] && echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> .env
         [ -n "$TELEGRAM_CHAT_ID" ] && echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> .env
         [ -n "$TELEGRAM_PUBLIC_GROUP_ID" ] && echo "TELEGRAM_PUBLIC_GROUP_ID=$TELEGRAM_PUBLIC_GROUP_ID" >> .env
