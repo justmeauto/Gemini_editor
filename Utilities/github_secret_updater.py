@@ -226,24 +226,30 @@ def sync_custom_secret_to_github(secret_name: str, secret_value: str) -> bool:
 
     pat = _get_github_pat()
     if not pat:
-        logger.debug("ℹ️ No GH_PAT_TOKEN / GITHUB_TOKEN found in environment. Skipping custom secret sync.")
+        logger.warning("⚠️ [GITHUB SYNC] No GH_PAT found in environment variables (GH_PAT, GH_PAT_TOKEN, GITHUB_TOKEN). Secret '%s' NOT synced.", secret_name)
         return False
 
     repo = _get_github_repo()
     if not repo:
-        logger.debug("ℹ️ Could not determine GitHub repository (owner/repo). Skipping custom secret sync.")
+        logger.warning("⚠️ [GITHUB SYNC] Could not determine GitHub repository. Check GITHUB_REPOSITORY env var. Secret '%s' NOT synced.", secret_name)
         return False
+
+    logger.info("🔐 [GITHUB SYNC] Attempting to sync secret '%s' to repo '%s'...", secret_name, repo)
 
     key_info = _get_repo_public_key(repo, pat)
     if not key_info:
+        logger.warning("⚠️ [GITHUB SYNC] Failed to fetch GitHub repo public key for '%s'. Check GH_PAT has 'repo' or 'secrets:write' scope.", repo)
         return False
 
     key_id, public_key = key_info
     encrypted = _encrypt_secret(public_key, secret_value)
     if not encrypted:
+        logger.warning("⚠️ [GITHUB SYNC] Encryption failed for secret '%s'. PyNaCl may not be installed properly.", secret_name)
         return False
 
     if _put_github_secret(repo, secret_name, encrypted, key_id, pat):
-        logger.info(f"🔒 [GITHUB SECRETS] Successfully synced custom secret: {repo} -> {secret_name}")
+        logger.info("🔒 [GITHUB SECRETS] Successfully synced secret '%s' → %s", secret_name, repo)
         return True
+
+    logger.warning("⚠️ [GITHUB SYNC] API PUT failed for secret '%s' → %s. Check GH_PAT permissions.", secret_name, repo)
     return False
