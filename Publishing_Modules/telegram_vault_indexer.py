@@ -158,11 +158,13 @@ class TelegramVaultIndexer:
                     f_path = res_data["result"]["file_path"]
                     dl_url = f"https://api.telegram.org/file/bot{bot_token}/{f_path}"
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    temp_dest = dest_path + ".tmp"
                     dl_resp = requests.get(dl_url, headers=headers, timeout=30, stream=True)
                     if dl_resp.status_code == 200:
-                        with open(dest_path, "wb") as out_f:
+                        with open(temp_dest, "wb") as out_f:
                             for chunk in dl_resp.iter_content(chunk_size=8192):
                                 out_f.write(chunk)
+                        os.replace(temp_dest, dest_path)
                         logger.info("✅ [VAULT HYDRATION] Successfully downloaded %s from Telegram Storage Group (file_id: %s)", os.path.basename(dest_path), file_id[:15])
                         return True
         except Exception as req_err:
@@ -182,9 +184,11 @@ class TelegramVaultIndexer:
                     f_path = res_data["result"]["file_path"]
                     dl_url = f"https://api.telegram.org/file/bot{bot_token}/{f_path}"
                     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    temp_dest = dest_path + ".tmp"
                     dl_req = urllib.request.Request(dl_url, headers=headers)
-                    with urllib.request.urlopen(dl_req, timeout=30) as dl_resp, open(dest_path, "wb") as out_f:
+                    with urllib.request.urlopen(dl_req, timeout=30) as dl_resp, open(temp_dest, "wb") as out_f:
                         out_f.write(dl_resp.read())
+                    os.replace(temp_dest, dest_path)
                     logger.info("✅ [VAULT HYDRATION] Successfully downloaded %s from Telegram Storage Group (file_id: %s)", os.path.basename(dest_path), file_id[:15])
                     return True
             except Exception as _dl_err:

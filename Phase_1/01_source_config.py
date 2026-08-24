@@ -10,6 +10,7 @@ Resolves target celebrity/actress/paparazzi account handles from:
 import os
 import sys
 import json
+import re
 import logging
 from typing import List, Dict, Any, Optional, Callable
 
@@ -36,8 +37,6 @@ def resolve_target_accounts(
     except Exception:
         pass
 
-    import re
-
     resolved_sources = []
     if target_accounts and isinstance(target_accounts, list):
         valid_candidates = []
@@ -60,11 +59,24 @@ def resolve_target_accounts(
                 resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
                 logger.info(f"📋 [STEP 01] Loaded accounts from source_accounts.json: {resolved_sources}")
         except Exception as e:
-            logger.warning(f"⚠️ [STEP 01] Failed to read source_accounts.json: {e}")
+            logger.warning(f"⚠️ [STEP 01] Failed to read source_accounts.json: {e}. Attempting auto-recovery...")
+            try:
+                from Downloader_Modules.scheduled_scraper_manager import _load_accounts_json
+                data = _load_accounts_json()
+                raw_accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+                resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
+                logger.info(f"📋 [STEP 01 RECOVERY] Recovered accounts from default pool: {resolved_sources}")
+            except Exception as _re:
+                logger.error(f"❌ Auto-recovery failed: {_re}")
 
     if not resolved_sources:
-        logger.warning("⚠️ [STEP 01] No valid target accounts configured. Please add accounts via Telegram Chat /addaccount <handle>.")
-        resolved_sources = []
+        try:
+            from Downloader_Modules.scheduled_scraper_manager import _load_accounts_json
+            data = _load_accounts_json()
+            raw_accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+            resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
+        except Exception:
+            resolved_sources = []
 
     # Enforce max limit for batch run
     final_targets = resolved_sources[:max_limit]

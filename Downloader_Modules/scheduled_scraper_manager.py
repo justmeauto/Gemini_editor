@@ -22,22 +22,54 @@ ACCOUNTS_JSON = os.path.join(_REPO_ROOT, "Content_Scraper_Modules", "source_acco
 
 THIRTY_DAYS_SECONDS = 30 * 86400  # 30 Days in Seconds
 
+DEFAULT_SOURCE_ACCOUNTS = ["glitz.in", "mobile_multiplex", "papsdesk", "justbollywood.in"]
+
+
+def _save_accounts_json(data: Dict[str, Any]) -> bool:
+    """Atomically saves data to source_accounts.json using a temp file."""
+    try:
+        os.makedirs(os.path.dirname(ACCOUNTS_JSON), exist_ok=True)
+        tmp_path = ACCOUNTS_JSON + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as wf:
+            json.dump(data, wf, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, ACCOUNTS_JSON)
+        return True
+    except Exception as e:
+        logger.error("❌ Failed to save source_accounts.json: %s", e)
+        return False
+
+
+def _load_accounts_json() -> Dict[str, Any]:
+    """Loads source_accounts.json with automatic repair on JSON corruption."""
+    if os.path.exists(ACCOUNTS_JSON):
+        try:
+            with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and ("source_accounts" in data or "_paparazzi" in data):
+                    return data
+        except Exception as e:
+            logger.error("❌ JSON error reading %s: %s. Rebuilding with default accounts...", ACCOUNTS_JSON, e)
+
+    default_data = {
+        "platform": "instagram",
+        "source_accounts": list(DEFAULT_SOURCE_ACCOUNTS),
+        "account_added_timestamps": {acc: time.time() for acc in DEFAULT_SOURCE_ACCOUNTS},
+        "account_last_scraped": {},
+        "account_last_scraped_iso": {}
+    }
+    _save_accounts_json(default_data)
+    return default_data
+
 
 def purge_expired_accounts() -> List[str]:
     """
     Checks all configured source accounts and purges any account older than 30 days.
     Returns list of removed handles.
     """
-    if not os.path.exists(ACCOUNTS_JSON):
-        return []
-
     try:
-        with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Support clean top-level schema (and fallback to _paparazzi)
+        data = _load_accounts_json()
         accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
-        timestamps = data.setdefault("account_added_timestamps", {})
+        timestamps = data.get("account_added_timestamps") or data.get("_paparazzi", {}).get("account_timestamps", {})
         now = time.time()
 
         expired = []
@@ -52,9 +84,11 @@ def purge_expired_accounts() -> List[str]:
                 data.get("account_last_scraped_iso", {}).pop(handle, None)
 
         if expired:
-            data["source_accounts"] = accs
-            with open(ACCOUNTS_JSON, "w", encoding="utf-8") as wf:
-                json.dump(data, wf, indent=2, ensure_ascii=False)
+            if "source_accounts" in data:
+                data["source_accounts"] = accs
+            elif "_paparazzi" in data:
+                data["_paparazzi"]["source_accounts"] = accs
+            _save_accounts_json(data)
             sync_source_accounts_to_telegram_vault()
             logger.info("⏰ [EXPIRATION] Purged %d expired account(s) after 30 days: %s", len(expired), expired)
 
@@ -67,11 +101,8 @@ def purge_expired_accounts() -> List[str]:
 def get_active_accounts_metadata() -> List[Dict[str, Any]]:
     """Returns list of active target accounts with creation timestamps and days remaining until 30-day limit."""
     purge_expired_accounts()
-    if not os.path.exists(ACCOUNTS_JSON):
-        return []
     try:
-        with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_accounts_json()
         accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
         timestamps = data.get("account_added_timestamps") or data.get("_paparazzi", {}).get("account_timestamps", {})
         now = time.time()
@@ -100,15 +131,15 @@ def get_rotated_max_two_accounts(max_accounts: int = 2) -> List[str]:
     6:00 AM and 7:00 PM sessions never duplicate scraping on the same account!
     """
     purge_expired_accounts()
-    if not os.path.exists(ACCOUNTS_JSON):
-        logger.warning(f"⚠️ {ACCOUNTS_JSON} not found. Please add target source accounts via Telegram Chat /addaccount.")
-        return []
 
     try:
-        with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_accounts_json()
 
         all_accounts = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+        if not all_accounts:
+            data = _load_accounts_json()
+            all_accounts = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+
         if not all_accounts:
             logger.warning("⚠️ No target source accounts configured in source_accounts.json. Use /addaccount <handle> to add accounts.")
             return []
@@ -244,34 +275,28 @@ def add_source_account(account_handle: str, platform: str = "instagram") -> bool
     if not clean_handle:
         return False
     try:
-        data = {"platform": platform, "source_accounts": []}
-        if os.path.exists(ACCOUNTS_JSON):
-            try:
-                with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = {"platform": platform, "source_accounts": []}
-
+        data = _load_accounts_json()
         data["platform"] = platform
-        accs = data.setdefault("source_accounts", [])
-        timestamps = data.setdefault("account_added_timestamps", {})
-
-        # Clean legacy _paparazzi if present
-        data.pop("_paparazzi", None)
+        
+        if "source_accounts" in data:
+            accs = data.setdefault("source_accounts", [])
+            timestamps = data.setdefault("account_added_timestamps", {})
+        else:
+            pap = data.setdefault("_paparazzi", {})
+            accs = pap.setdefault("source_accounts", [])
+            timestamps = pap.setdefault("account_timestamps", {})
 
         if clean_handle not in accs:
             accs.append(clean_handle)
             timestamps[clean_handle] = time.time()
-            with open(ACCOUNTS_JSON, "w", encoding="utf-8") as wf:
-                json.dump(data, wf, indent=2, ensure_ascii=False)
+            _save_accounts_json(data)
             sync_source_accounts_to_telegram_vault()
             logger.info("➕ [SOURCE ACCOUNTS] Added @%s (%s) with 30-day limit to source_accounts.json & synced to Telegram Vault", clean_handle, platform)
             return True
         else:
             # Refresh timestamp on re-adding
             timestamps[clean_handle] = time.time()
-            with open(ACCOUNTS_JSON, "w", encoding="utf-8") as wf:
-                json.dump(data, wf, indent=2, ensure_ascii=False)
+            _save_accounts_json(data)
             return True
     except Exception as e:
         logger.error("❌ Failed to add source account @%s: %s", clean_handle, e)
@@ -284,26 +309,25 @@ def remove_source_account(account_handle: str) -> bool:
     if not clean_handle:
         return False
     try:
-        if os.path.exists(ACCOUNTS_JSON):
-            with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        data = _load_accounts_json()
+        if "source_accounts" in data:
             accs = data.get("source_accounts", [])
             timestamps = data.get("account_added_timestamps", {})
+        else:
+            pap = data.get("_paparazzi", {})
+            accs = pap.get("source_accounts", [])
+            timestamps = pap.get("account_timestamps", {})
 
-            # Clean legacy _paparazzi
-            data.pop("_paparazzi", None)
+        if clean_handle in accs:
+            accs.remove(clean_handle)
+            timestamps.pop(clean_handle, None)
+            data.get("account_last_scraped", {}).pop(clean_handle, None)
+            data.get("account_last_scraped_iso", {}).pop(clean_handle, None)
 
-            if clean_handle in accs:
-                accs.remove(clean_handle)
-                timestamps.pop(clean_handle, None)
-                data.get("account_last_scraped", {}).pop(clean_handle, None)
-                data.get("account_last_scraped_iso", {}).pop(clean_handle, None)
-
-                with open(ACCOUNTS_JSON, "w", encoding="utf-8") as wf:
-                    json.dump(data, wf, indent=2, ensure_ascii=False)
-                sync_source_accounts_to_telegram_vault()
-                logger.info("🗑️ [SOURCE ACCOUNTS] Removed @%s from source_accounts.json & synced to Telegram Vault", clean_handle)
-                return True
+            _save_accounts_json(data)
+            sync_source_accounts_to_telegram_vault()
+            logger.info("🗑️ [SOURCE ACCOUNTS] Removed @%s from source_accounts.json & synced to Telegram Vault", clean_handle)
+            return True
     except Exception as e:
         logger.error("❌ Failed to remove source account @%s: %s", clean_handle, e)
     return False
@@ -316,19 +340,9 @@ def mark_and_sync_scraped_accounts(scraped_accounts: Optional[List[str]] = None)
     Saves clean schema and uploads to Telegram Storage Group Cloud Vault.
     """
     try:
-        data = {}
-        if os.path.exists(ACCOUNTS_JSON):
-            try:
-                with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                data = {}
-
+        data = _load_accounts_json()
         data.setdefault("platform", "instagram")
         data.setdefault("source_accounts", [])
-
-        # Remove legacy _paparazzi key
-        data.pop("_paparazzi", None)
 
         if scraped_accounts:
             now_ts = time.time()
@@ -341,8 +355,7 @@ def mark_and_sync_scraped_accounts(scraped_accounts: Optional[List[str]] = None)
                 last_scraped_map[acc] = now_ts
                 last_scraped_iso_map[acc] = iso_now
 
-            with open(ACCOUNTS_JSON, "w", encoding="utf-8") as wf:
-                json.dump(data, wf, indent=2, ensure_ascii=False)
+            _save_accounts_json(data)
             logger.info("📝 [ACCOUNT SCRAPE TIMESTAMPS MARKED] Updated last_scraped timestamps for: %s", scraped_accounts)
 
         return sync_source_accounts_to_telegram_vault()

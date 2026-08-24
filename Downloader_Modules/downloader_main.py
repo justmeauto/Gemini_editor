@@ -173,12 +173,14 @@ def run_phase1_ingestion(
 
         # Update source_accounts.json active target list
         try:
-            if os.path.exists(accounts_file):
+            if os.path.exists(accounts_file) and sources:
                 with open(accounts_file, "r", encoding="utf-8") as f:
                     acc_data = json.load(f)
                 acc_data.setdefault("_paparazzi", {})["source_accounts"] = sources
-                with open(accounts_file, "w", encoding="utf-8") as f:
-                    json.dump(acc_data, f, indent=2)
+                tmp_accounts_file = accounts_file + ".tmp"
+                with open(tmp_accounts_file, "w", encoding="utf-8") as f:
+                    json.dump(acc_data, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_accounts_file, accounts_file)
         except Exception as _se:
             logger.warning(f"   ⚠ Could not update source_accounts.json: {_se}")
 
