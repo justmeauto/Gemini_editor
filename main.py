@@ -1111,7 +1111,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
             for acc in data.get("accounts", []):
                 add_source_account(acc["handle"], acc["platform"])
         except Exception as _sa_err:
-            logger.debug(f"add_source_account error: {_sa_err}")
+            logger.warning(f"⚠️ add_source_account notice: {_sa_err}")
         _wizard_sessions.pop(chat_id, None)
         accs = "\n".join([f"  • `{a['platform'].title()}`: `@{a['handle']}`" for a in data.get("accounts", [])])
         
@@ -1953,7 +1953,7 @@ def start_telegram_bot_service():
                     await application.bot.set_my_commands(commands)
                     logger.info("📋 Registered Telegram Bot Command Menu with Telegram API")
                 except Exception as _cmd_err:
-                    logger.debug(f"set_my_commands notice: {_cmd_err}")
+                    logger.warning(f"⚠️ set_my_commands notice: {_cmd_err}")
 
                 admin_id = os.getenv("TELEGRAM_ADMIN_ID")
                 if admin_id and str(admin_id).strip() != bot_id:
@@ -1985,7 +1985,7 @@ def start_telegram_bot_service():
                 # Spawn background auto-input schedule task alongside Telegram bot polling
                 asyncio.create_task(_async_static_scheduler_task(application))
             except Exception as _init_err:
-                logger.debug(f"Startup check exception: {_init_err}")
+                logger.warning(f"⚠️ Startup check exception: {_init_err}")
 
         app = ApplicationBuilder().token(token).request(request).post_init(_on_startup).build()
         app.add_handler(CommandHandler("start", handle_telegram_start))
@@ -2247,7 +2247,7 @@ if __name__ == "__main__":
                 logger.info("📡 [STARTUP] Syncing master vault index & pool_metadata.json from Telegram Storage Group...")
                 TelegramVaultIndexer().hydrate_all_vault_jsons_on_startup()
             except Exception as _h_err:
-                logger.debug(f"Startup vault hydration notice: {_h_err}")
+                logger.warning(f"⚠️ Startup vault hydration notice: {_h_err}")
             run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
 
     except KeyboardInterrupt:
