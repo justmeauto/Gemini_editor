@@ -366,12 +366,13 @@ def set_user_public_group_id(user_id_str: str, group_id: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_group = group_id.strip()
-    if user_id_str in users and clean_group:
-        users[user_id_str]["telegram_public_group_id"] = clean_group
+    if clean_group:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["telegram_public_group_id"] = clean_group
         save_all_users(users)
-        sync_user_secret_to_github(user_id_str, "TELEGRAM_PUBLIC_GROUP_ID", clean_group)
-        logger.info("📢 [TELEGRAM USER MANAGER] Telegram Public Group ID saved for User ID %s: %s", user_id_str, clean_group)
-        return True
+        synced = sync_user_secret_to_github(user_id_str, "TELEGRAM_PUBLIC_GROUP_ID", clean_group)
+        logger.info("📢 [TELEGRAM USER MANAGER] Telegram Public Group ID saved for User ID %s: %s (GitHub Synced: %s)", user_id_str, clean_group, synced)
+        return synced
     return False
 
 
@@ -380,12 +381,13 @@ def set_user_schedule_times(user_id_str: str, schedule_times: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_sched = schedule_times.strip()
-    if user_id_str in users and clean_sched:
-        users[user_id_str]["auto_input_schedule_times"] = clean_sched
+    if clean_sched:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["auto_input_schedule_times"] = clean_sched
         save_all_users(users)
-        sync_user_secret_to_github(user_id_str, "AUTO_INPUT_SCHEDULE_TIMES", clean_sched)
-        logger.info("⏰ [TELEGRAM USER MANAGER] Schedule times saved for User ID %s: %s", user_id_str, clean_sched)
-        return True
+        synced = sync_user_secret_to_github(user_id_str, "AUTO_INPUT_SCHEDULE_TIMES", clean_sched)
+        logger.info("⏰ [TELEGRAM USER MANAGER] Schedule times saved for User ID %s: %s (GitHub Synced: %s)", user_id_str, clean_sched, synced)
+        return synced
     return False
 
 
