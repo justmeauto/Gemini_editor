@@ -457,38 +457,51 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     return False
 
 
+def get_user_gemini_key(user_id_str: str) -> Optional[str]:
+    """Returns user personal Gemini API key if present."""
+    users = load_all_users()
+    user_id_str = str(user_id_str)
+    if user_id_str in users:
+        return users[user_id_str].get("gemini_api_key", "").strip() or None
+    return None
+
+
 def format_user_credentials_summary(user_id_str: str) -> str:
     """Formats a status checklist of all configured user credentials with exact command syntax."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     u_rec = users.get(user_id_str, {})
     
-    def _chk(key):
-        return "✅ Configured" if u_rec.get(key, "").strip() else "❌ Not Set"
+    def _chk(key, env_var):
+        if u_rec.get(key, "").strip():
+            return "✅ Personal Key"
+        elif os.getenv(env_var, "").strip():
+            return "✅ Active (Shared Pool)"
+        return "❌ Not Set"
 
     lines = [
         "⚙️ **Your SaaS Configuration Checklist & Command Guide**\n",
-        f"🤖 **Gemini API Key:** `{_chk('gemini_api_key')}`",
+        f"🤖 **Gemini API Key:** `{_chk('gemini_api_key', 'GEMINI_API_KEY')}`",
         "   👉 Command: `/setgemini YOUR_GEMINI_KEY`\n",
-        f"🕷️ **Apify Scraper Token:** `{_chk('apify_api_token')}`",
+        f"🕷️ **Apify Scraper Token:** `{_chk('apify_api_token', 'APIFY_API_TOKEN')}`",
         "   👉 Command: `/setapify YOUR_APIFY_TOKEN`\n",
-        f"🏷️ **Brand Watermark:** `{u_rec.get('brand_watermark') or 'Not Set'}`",
+        f"🏷️ **Brand Watermark:** `{u_rec.get('brand_watermark') or os.getenv('BRAND_WATERMARK_TEXT') or 'Not Set'}`",
         "   👉 Command: `/setbranding YOUR_WATERMARK_TEXT`\n",
-        f"📢 **Public Group ID:** `{u_rec.get('telegram_public_group_id') or 'Not Set'}`",
+        f"📢 **Public Group ID:** `{u_rec.get('telegram_public_group_id') or os.getenv('TELEGRAM_PUBLIC_GROUP_ID') or 'Not Set'}`",
         "   👉 Command: `/setgroup YOUR_GROUP_ID`\n",
-        f"⏰ **Schedule Times:** `{u_rec.get('auto_input_schedule_times') or 'Not Set'}`",
+        f"⏰ **Schedule Times:** `{u_rec.get('auto_input_schedule_times') or os.getenv('AUTO_INPUT_SCHEDULE_TIMES') or 'Not Set'}`",
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
-        f"📸 **Instagram Token:** `{_chk('ig_business_token')}`",
+        f"📸 **Instagram Token:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
         "   👉 Command: `/instagramtoken YOUR_ACCESS_TOKEN`\n",
-        f"🆔 **Instagram Business ID:** `{u_rec.get('ig_business_id') or 'Not Set'}`",
+        f"🆔 **Instagram Business ID:** `{u_rec.get('ig_business_id') or os.getenv('IG_BUSINESS_ID') or 'Not Set'}`",
         "   👉 Command: `/instagramid YOUR_BUSINESS_ID`\n",
-        f"📘 **Facebook Page ID:** `{u_rec.get('meta_page_id') or 'Not Set'}`",
+        f"📘 **Facebook Page ID:** `{u_rec.get('meta_page_id') or os.getenv('META_PAGE_ID') or 'Not Set'}`",
         "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
-        f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json')}`",
+        f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'YOUTUBE_TOKEN_JSON')}`",
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
-        f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token')}`",
+        f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
-        "💡 *Tip: Run `/autosetup` for the 6-step wizard, or `/myconfig` anytime to check your refreshed status!*"
+        "💡 *Tip: Personal keys bypass queues and rate limits! Run `/autosetup` for the 6-step wizard or `/myconfig` anytime.*"
     ]
     return "\n".join(lines)
 
