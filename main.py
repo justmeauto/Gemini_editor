@@ -2074,8 +2074,12 @@ def start_telegram_bot_service():
                 return
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_public_group_id
-                set_user_public_group_id(str(update.effective_chat.id), args_text)
-                await update.message.reply_text(f"📢 **Public Group ID updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+                ok = set_user_public_group_id(str(update.effective_chat.id), args_text)
+                if ok:
+                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nSynced to GitHub Secrets!"
+                else:
+                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nSaved in session vault. (Note: Check GH_PAT to auto-sync with GitHub Secrets)"
+                await update.message.reply_text(msg)
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving group ID: {_e}")
 

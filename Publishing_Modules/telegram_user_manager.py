@@ -254,14 +254,32 @@ def increment_user_scrape_count(user_id_str: str) -> int:
 
 
 def sync_user_secret_to_github(user_id_str: str, secret_suffix: str, secret_value: str) -> bool:
-    """Syncs a user-specific secret (e.g. USER_1363193987_GEMINI_API_KEY) to GitHub Repository Secrets using GH_PAT."""
+    """
+    Syncs a user-specific secret (e.g. USER_1363193987_GEMINI_API_KEY) and,
+    if called by Admin, also syncs the root secret (e.g. TELEGRAM_PUBLIC_GROUP_ID) to GitHub Secrets using GH_PAT.
+    """
     try:
         from Utilities.github_secret_updater import sync_custom_secret_to_github
-        secret_name = f"USER_{user_id_str}_{secret_suffix.upper()}"
-        return sync_custom_secret_to_github(secret_name, secret_value)
+        admin_id = str(os.getenv("TELEGRAM_ADMIN_ID", "")).strip()
+        user_id_clean = str(user_id_str).strip()
+
+        ok1 = False
+        ok2 = False
+
+        # 1. Sync user-prefixed secret
+        user_secret_name = f"USER_{user_id_clean}_{secret_suffix.upper()}"
+        ok1 = sync_custom_secret_to_github(user_secret_name, secret_value)
+
+        # 2. If Admin, ALSO sync root secret directly
+        if not admin_id or user_id_clean == admin_id or admin_id == "":
+            root_secret_name = secret_suffix.upper()
+            ok2 = sync_custom_secret_to_github(root_secret_name, secret_value)
+
+        return ok1 or ok2
     except Exception as _ex:
-        logger.debug("Notice on user GitHub Secret sync: %s", _ex)
+        logger.warning("⚠️ Notice on user GitHub Secret sync: %s", _ex)
         return False
+
 
 
 def set_user_apify_token(user_id_str: str, apify_token: str) -> bool:
