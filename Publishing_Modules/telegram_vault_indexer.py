@@ -405,7 +405,44 @@ class TelegramVaultIndexer:
         except Exception as _pin_err:
             logger.warning("⚠️ Vault index upload/pin notice: %s", _pin_err)
 
+    def hydrate_raw_video_from_vault(self, social_url: str, dest_dir: str) -> Optional[str]:
+        """
+        ⚡ RAW VIDEO HYDRATION: Downloads already-stored raw source video from
+        Telegram Storage Group using the raw_video_file_id in Column 2.
+
+        Returns the local path to the downloaded video.mp4, or None if no cached
+        file_id exists (caller must then fall through to yt-dlp / Apify).
+
+        This is the PRIMARY path in 04_core_downloader.py — saves yt-dlp + Apify quota.
+        """
+        entry = self.lookup_downloaded_source(social_url)
+        if not entry:
+            return None
+
+        raw_file_id = entry.get("raw_video_file_id") or entry.get("raw_file_id")
+        if not raw_file_id:
+            logger.debug("[VAULT HYDRATE VIDEO] Cache hit but no raw_video_file_id stored for: %s", social_url[:60])
+            return None
+
+        os.makedirs(dest_dir, exist_ok=True)
+        out_path = os.path.join(dest_dir, "video.mp4")
+
+        # Already on disk from a previous run — skip Telegram download entirely
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+            logger.info("⚡ [VAULT HYDRATE VIDEO] Raw video already on disk — skipping Telegram download: %s", out_path)
+            return out_path
+
+        logger.info("⚡ [VAULT HYDRATE VIDEO] Downloading raw source video from Telegram Storage Group (file_id: %s)...", raw_file_id[:15])
+        success = self.download_vault_file_by_id(raw_file_id, out_path)
+        if success and os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+            logger.info("✅ [VAULT HYDRATE VIDEO] Raw source video hydrated from Telegram in ~1s: %s", os.path.basename(dest_dir))
+            return out_path
+
+        logger.debug("[VAULT HYDRATE VIDEO] Download failed or empty file for file_id: %s", raw_file_id[:15])
+        return None
+
     # ── LOOKUP APIs ───────────────────────────────────────────────────────────
+
 
     def lookup_downloaded_source(self, social_url: str) -> Optional[Dict[str, Any]]:
         """

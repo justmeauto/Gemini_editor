@@ -43,9 +43,19 @@ def check_deduplication(
     try:
         from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
         vault = TelegramVaultIndexer()
-        vault_hit = vault.lookup_downloaded_source(shortcode)
+        # Try direct URL form first (most reliable match)
+        ig_url = f"https://www.instagram.com/reel/{shortcode}/"
+        vault_hit = vault.lookup_downloaded_source(ig_url) or vault.lookup_downloaded_source(shortcode)
+        # Also check Column 2 by_session_id directly
+        if not vault_hit:
+            c2_sess = vault.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
+            for sess_id, entry in c2_sess.items():
+                if shortcode in sess_id or shortcode in str(entry.get("social_media_id", "")):
+                    vault_hit = entry
+                    break
     except Exception as _ve:
         logger.debug(f"[STEP 02] Vault dedup check notice: {_ve}")
+
 
     # 2. SECONDARY: Local Disk presence check
     already_on_disk = os.path.exists(meta_path) and os.path.exists(video_path)
