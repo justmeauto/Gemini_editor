@@ -796,7 +796,9 @@ class FFmpegCommandGenerator:
         preserve_orig = False
         if extra_inputs and extra_inputs.get("preserve_original_audio"):
             preserve_orig = True
-        elif not bgm_path and (is_preserve_input or video_volume > 0.01):
+        elif not bgm_path:
+            preserve_orig = True
+        elif is_preserve_input or video_volume > 0.01:
             preserve_orig = True
 
         has_input_audio = self._has_audio_stream(input_path) and preserve_orig
@@ -2121,7 +2123,13 @@ class GeminiFFmpegEngine:
         # Attempt to collapse all operations into ONE ffmpeg -filter_complex call.
         micro_shots   = extra_inputs.get("micro_shots") or []
         wm_boxes      = extra_inputs.get("watermark_boxes") or []
-        bgm_path      = extra_inputs.get("music") or extra_inputs.get("bgm") or ""
+        bgm_path      = extra_inputs.get("music") or extra_inputs.get("bgm") or extra_inputs.get("audio") or ""
+        if bgm_path and not os.path.exists(bgm_path):
+            _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            candidate = os.path.join(_repo, "Original_audio", "active", os.path.basename(bgm_path))
+            if os.path.exists(candidate):
+                bgm_path = candidate
+
         brand_text    = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()
             or os.getenv("WATERMARK_TEXT", "").strip()
@@ -2141,6 +2149,7 @@ class GeminiFFmpegEngine:
                     brand_text=brand_text if brand_text else None,
                     encoding_cfg=encoding_cfg,
                     gemini_operations=gemini_json.get("operations", []),
+                    extra_inputs=extra_inputs,
                 )
                 logger.info(f"🏆 [SINGLE-PASS] Executing 1 unified filtergraph: {sp_step['terminal_command']}")
                 clean_cmd = [str(a) for a in sp_step["cmd_list"]]
