@@ -742,30 +742,37 @@ def select_best_audio_for_clip(
         hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
         recency_penalty = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
         usage_penalty = 1.0 / (1.0 + u_count * 0.25)
-        # Apply a mild self-audio discount (0.85x) so strong external tracks rank higher in top math candidates
-        self_discount = 0.85 if is_self_audio else 1.0
+        # Apply a strong self-audio discount (0.05x) so external tracks always rank higher in candidate math
+        self_discount = 0.05 if is_self_audio else 1.0
 
         bpm_match = max(0.0, 1.0 - (abs(clip_bpm - c_bpm) / 100.0))
         emotion_match = 1.0 if c_emotion in clip_tone or clip_tone in c_emotion else 0.5
         math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * self_discount
 
-        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - BASELINE FALLBACK]" if is_self_audio else ""
+        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]" if is_self_audio else ""
 
-        candidate_scores.append((math_score, c_file))
+        candidate_scores.append((math_score, c_file, is_self_audio))
         candidate_lines[c_file] = (
             f"- '{c_file}'{self_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
-    candidate_scores.sort(key=lambda x: x[0], reverse=True)
-    best_math_candidate = candidate_scores[0][1] if candidate_scores else available_candidates[0]
+    # Sort candidates: external tracks first (sorted by math score descending), self-audio placed at the VERY END
+    external_candidates = [c for c in candidate_scores if not c[2]]
+    self_candidates = [c for c in candidate_scores if c[2]]
+
+    external_candidates.sort(key=lambda x: x[0], reverse=True)
+    self_candidates.sort(key=lambda x: x[0], reverse=True)
+
+    # Up to 9 external tracks + self audio at the very bottom (last option)
+    top_candidates = external_candidates[:9] + self_candidates[:1]
+    best_math_candidate = top_candidates[0][1] if top_candidates else available_candidates[0]
     selected_track = best_math_candidate
-    alignment_score = float(candidate_scores[0][0]) if candidate_scores else 0.85
+    alignment_score = float(top_candidates[0][0]) if top_candidates else 0.85
     reasoning = f"Smart Mathematical & Semantic Audio Match (score={alignment_score:.2f})."
-    # Send top-10 candidates to Gemini
-    top_candidates = candidate_scores[:10]
+
     top_lines = []
-    for rank, (sc, fname) in enumerate(top_candidates, start=1):
+    for rank, (sc, fname, is_self) in enumerate(top_candidates, start=1):
         line = candidate_lines.get(fname, f"- '{fname}': score={sc:.3f}")
         top_lines.append(f"#{rank} {line}")
     candidates_str = "\n".join(top_lines)
@@ -775,8 +782,8 @@ def select_best_audio_for_clip(
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
-- FIRST PRIORITY: Evaluate all external candidate tracks. Search for an external track that elevates, enhances, or brings a fresher, higher-quality musical energy/vibe to the clip than the original audio.
-- SECOND PRIORITY: You MAY select '[CLIP'S ORIGINAL HARVESTED AUDIO - BASELINE FALLBACK]' if and ONLY if no external candidate in the list matches the visual intent, tone, or BPM sufficiently well.
+- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(external_candidates[:9])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
+- LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
 - Prioritize musical style, emotional vibe, and BPM alignment with the video.
 - Do NOT reference past clips — judge purely on the clip context and track metadata below.
 
