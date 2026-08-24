@@ -551,23 +551,30 @@ class TelegramVaultIndexer:
         """
         Hydrates local disk stores (pool_metadata.json, .clip_intelligence.json)
         from the downloaded master_vault_index.json.
+        NOTE: sync_to_vault=False prevents re-upload loop during startup hydration.
         """
         try:
             c1_reels = self.vault_index.get("column_1_processed_reels", {}).get("by_session_id", {})
             if c1_reels:
-                from Audio_Modules.audio_pool_manager import AudioPoolManager
-                pm = AudioPoolManager()
-                for sess_id, rdata in c1_reels.items():
-                    adata = rdata.get("audio_data") or {}
-                    pool_meta = adata.get("pool_metadata") or {}
-                    track_name = pool_meta.get("selected_audio_track") or pool_meta.get("selected_bgm_track")
-                    if track_name and pool_meta:
-                        pm._set_file_metadata(os.path.basename(track_name), pool_meta)
-                pm._save_metadata()
+                from Audio_Modules.audio_pool_manager import AudioPoolManager, _VAULT_HYDRATION_IN_PROGRESS
+                import Audio_Modules.audio_pool_manager as _apm_mod
+                _apm_mod._VAULT_HYDRATION_IN_PROGRESS = True
+                try:
+                    pm = AudioPoolManager()
+                    for sess_id, rdata in c1_reels.items():
+                        adata = rdata.get("audio_data") or {}
+                        pool_meta = adata.get("pool_metadata") or {}
+                        track_name = pool_meta.get("selected_audio_track") or pool_meta.get("selected_bgm_track")
+                        if track_name and pool_meta:
+                            pm._set_file_metadata(os.path.basename(track_name), pool_meta)
+                    pm._save_metadata(sync_to_vault=False)  # NO re-upload during hydration
+                finally:
+                    _apm_mod._VAULT_HYDRATION_IN_PROGRESS = False
 
             logger.info("⚡ [VAULT HYDRATE] Local pool_metadata and clip caches updated from Vault Index.")
         except Exception as e:
             logger.debug(f"[VAULT HYDRATE] Cache hydration notice: {e}")
+
 
     # ── RECORDING APIS ───────────────────────────────────────────────────────
 

@@ -11,6 +11,11 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("audio_pool_manager")
 
+# Guard flag: prevents recursive vault hydration loops.
+# Set to True while hydrate_all_vault_jsons_on_startup() is running so that
+# any AudioPoolManager instantiated INSIDE the hydration cycle skips re-hydration.
+_VAULT_HYDRATION_IN_PROGRESS = False
+
 PIPELINE_BLOCKED_KWS = [
     "_reaction", "_textreaction", "first_shot", "first_shots",
     "general_intro", "watermark_clean", "intro_mixed_temp",
@@ -63,13 +68,21 @@ class AudioPoolManager:
 
     def _load_metadata(self) -> Dict:
         """Loads metadata safely with Telegram Vault cloud hydration fallback."""
+        global _VAULT_HYDRATION_IN_PROGRESS
         if not os.path.exists(self.meta_path) or os.path.getsize(self.meta_path) < 10:
-            try:
-                from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
-                indexer = TelegramVaultIndexer()
-                indexer.hydrate_all_vault_jsons_on_startup()
-            except Exception as _h_err:
-                logger.debug("Notice on pool metadata hydration: %s", _h_err)
+            if _VAULT_HYDRATION_IN_PROGRESS:
+                # Already inside a hydration cycle — skip to avoid infinite loop
+                logger.debug("[POOL_META] Skipping recursive vault hydration (already in progress)")
+            else:
+                try:
+                    _VAULT_HYDRATION_IN_PROGRESS = True
+                    from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                    indexer = TelegramVaultIndexer()
+                    indexer.hydrate_all_vault_jsons_on_startup()
+                except Exception as _h_err:
+                    logger.debug("Notice on pool metadata hydration: %s", _h_err)
+                finally:
+                    _VAULT_HYDRATION_IN_PROGRESS = False
 
         if not os.path.exists(self.meta_path):
             return {}
