@@ -1020,8 +1020,8 @@ class FFmpegCommandGenerator:
                 filter_parts.append(drawtext_filter)
                 current_label = "[vout]"
         else:
-            # No brand text — rename final node
-            filter_parts.append(f"{current_label}copy[vout]")
+            # No brand text — pass through final video node to [vout] via null filter
+            filter_parts.append(f"{current_label}null[vout]")
             current_label = "[vout]"
 
         # ── Step F: Audio Assembly ────────────────────────────────────────────────
@@ -2169,7 +2169,10 @@ class GeminiFFmpegEngine:
                         "duration_lock": duration_lock_res,
                     }
             except Exception as _sp_err:
-                logger.warning(f"⚠️ [SINGLE-PASS] Build or execution failed: {_sp_err}. Falling back to multi-step pipeline.")
+                err_msg = str(_sp_err)
+                if hasattr(_sp_err, "stderr") and _sp_err.stderr:
+                    err_msg += f"\nFFmpeg Stderr: {_sp_err.stderr.decode('utf-8', errors='ignore')}"
+                logger.warning(f"⚠️ [SINGLE-PASS] Build or execution failed: {err_msg}. Falling back to multi-step pipeline.")
 
         # ── 🔁 MULTI-STEP FALLBACK PATH ───────────────────────────────────────────
         steps = synthesis.get("command_steps", [])
