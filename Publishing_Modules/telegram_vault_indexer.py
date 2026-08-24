@@ -462,23 +462,38 @@ class TelegramVaultIndexer:
         if not social_url:
             return None
         clean_url = str(social_url).strip().rstrip("`").rstrip("%60")
-        c2 = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
+        c2_by_url = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
+        c2_by_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
         
-        hit = c2.get(clean_url) or c2.get(social_url.strip())
+        hit = c2_by_url.get(clean_url) or c2_by_url.get(social_url.strip())
         if hit:
             logger.info(f"⚡ [VAULT CACHE HIT] Column 2 found source for URL: {clean_url[:60]}...")
             return hit
 
         import re
         sc_match = re.search(r"/(?:reel|reels|p|shorts|v)/([A-Za-z0-9_-]{5,})", clean_url)
-        shortcode = sc_match.group(1) if sc_match else None
+        shortcode = sc_match.group(1) if sc_match else clean_url
+
         if shortcode:
-            for stored_url, entry in c2.items():
-                if shortcode in stored_url or shortcode in str(entry.get("session_id", "")):
+            # 1. Search by_social_media_id keys & entries
+            for stored_url, entry in c2_by_url.items():
+                if (shortcode in stored_url or 
+                    shortcode in str(entry.get("session_id", "")) or 
+                    shortcode in str(entry.get("shortcode", "")) or 
+                    shortcode in str(entry.get("file_name", ""))):
                     logger.info(f"⚡ [VAULT CACHE HIT] Column 2 matched shortcode '{shortcode}' -> {stored_url[:60]}")
                     return entry
 
-        for stored_url, entry in c2.items():
+            # 2. Search by_session_id keys & entries
+            for sess_id, entry in c2_by_sess.items():
+                if (shortcode in sess_id or 
+                    shortcode in str(entry.get("social_media_id", "")) or 
+                    shortcode in str(entry.get("shortcode", "")) or 
+                    shortcode in str(entry.get("file_name", ""))):
+                    logger.info(f"⚡ [VAULT CACHE HIT] Column 2 matched session/shortcode '{shortcode}' -> {sess_id}")
+                    return entry
+
+        for stored_url, entry in c2_by_url.items():
             s_clean = stored_url.split("?")[0].rstrip("/").rstrip("`").rstrip("%60")
             u_clean = clean_url.split("?")[0].rstrip("/")
             if s_clean and u_clean and (s_clean == u_clean or s_clean.endswith(u_clean) or u_clean.endswith(s_clean)):
@@ -686,7 +701,13 @@ class TelegramVaultIndexer:
             except Exception as _up_err:
                 logger.warning("⚠️ Storage Group upload warning: %s", _up_err)
 
+        import re
+        sc_m = re.search(r"/(?:reel|reels|p|shorts|v)/([A-Za-z0-9_-]{5,})", social_url)
+        shortcode_val = sc_m.group(1) if sc_m else ""
+
         clip_entry = {
+            "social_media_id": social_url,
+            "shortcode": shortcode_val,
             "raw_video_file_id": raw_file_id,
             "extracted_audio_file_id": extracted_audio_file_id,
             "file_name": filename,
