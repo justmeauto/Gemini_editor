@@ -36,6 +36,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_REPO_ROOT, "data")
 MASTER_INDEX_FILE = os.path.join(DATA_DIR, "master_vault_index.json")
 
+# Cooldown guard: prevents duplicate vault hydration within 60 seconds
+_LAST_HYDRATION_TIMESTAMP = 0.0
+
 
 def _empty_vault_index() -> Dict[str, Any]:
     return {
@@ -228,11 +231,18 @@ class TelegramVaultIndexer:
             logger.warning("⚠️ Sync pinned master index notice: %s", err)
         return False
 
-    def hydrate_all_vault_jsons_on_startup(self) -> Dict[str, bool]:
+    def hydrate_all_vault_jsons_on_startup(self, force: bool = False) -> Dict[str, bool]:
         """
         1. Downloads pinned master_vault_index.json from Telegram Storage Group.
         2. Downloads latest telegram_users.json, metadata_pool.json, and source_accounts.json using file_ids in index.
         """
+        global _LAST_HYDRATION_TIMESTAMP
+        now = time.time()
+        if not force and (now - _LAST_HYDRATION_TIMESTAMP) < 60.0:
+            logger.debug("⚡ [VAULT HYDRATION] Skipped duplicate hydration (completed %.1fs ago)", now - _LAST_HYDRATION_TIMESTAMP)
+            return {"pinned_index": True, "cached": True}
+        _LAST_HYDRATION_TIMESTAMP = now
+
         results = {"pinned_index": False, "telegram_users": False, "metadata_pool": False, "source_accounts": False}
         try:
             # Step 1: Download pinned index from Telegram Storage Group first!
