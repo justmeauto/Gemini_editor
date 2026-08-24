@@ -76,7 +76,7 @@ All credentials and parameters live in `Credentials/.env` (strictly ignored by `
 ```env
 # ── TELEGRAM BOT & VAULT STORAGE ───────────────────────────────────────────
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_admin_chat_id
+TELEGRAM_ADMIN_ID=your_admin_id
 TELEGRAM_STORAGE_GROUP_ID=your_storage_group_id
 TELEGRAM_PUBLIC_GROUP_ID=your_public_group_id
 

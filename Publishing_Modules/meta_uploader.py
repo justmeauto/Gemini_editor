@@ -695,6 +695,18 @@ class AsyncMetaUploader:
         
         caption = AsyncMetaUploader._clean_caption(caption)
         
+        # Auto-resolve Page Access Token if User Access Token was provided
+        try:
+            tok_url = f"{GRAPH_API_URL}/{page_id}"
+            tok_res = await AsyncMetaUploader._retry_request("GET", tok_url, params={"fields": "access_token", "access_token": page_token})
+            if isinstance(tok_res, dict) and tok_res.get("access_token"):
+                resolved_tok = tok_res["access_token"]
+                if resolved_tok != page_token:
+                    logger.info(f"🔑 Auto-resolved Facebook Page Access Token for Page ID {page_id}")
+                    page_token = resolved_tok
+        except Exception as _tok_err:
+            logger.debug(f"Notice auto-resolving FB Page token: {_tok_err}")
+
         try:
             endpoint = "video_reels" if upload_type_env == "REELS" else "videos"
             url = f"{GRAPH_API_URL}/{page_id}/{endpoint}"

@@ -43,7 +43,7 @@ def _upload_file_to_telegram_storage(file_path: str, caption: str = "") -> Optio
     import uuid
     import urllib.request
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+    storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
     if not bot_token or not storage_group_id or not os.path.exists(file_path):
         return None
     

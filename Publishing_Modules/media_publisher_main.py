@@ -43,22 +43,38 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
     If user_id is passed and user is NOT admin and has NOT set their credentials,
     returns None to PREVENT non-admin users from uploading to admin's socials.
     """
+    cred_file = os.getenv("CLIENT_SECRET_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "client_secret.json"))
+    if not os.path.exists(cred_file):
+        fallback_cred = os.path.join(_REPO_ROOT, "Credentials", "client_secret.json")
+        if os.path.exists(fallback_cred):
+            cred_file = fallback_cred
+
+    token_file = os.getenv("YOUTUBE_TOKEN_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "token.json"))
+    if not os.path.exists(token_file):
+        fallback_token = os.path.join(_REPO_ROOT, "Credentials", "token.json")
+        if os.path.exists(fallback_token):
+            token_file = fallback_token
+
+    has_yt = os.path.exists(cred_file) or os.path.exists(token_file) or bool(os.getenv("YOUTUBE_TOKEN_JSON"))
+
     if not user_id:
         return {
             "meta_token": os.getenv("IG_BUSINESS_TOKEN") or os.getenv("META_PAGE_TOKEN"),
             "meta_id": os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("IG_BUSINESS_ID") or os.getenv("META_PAGE_ID"),
-            "yt_token": os.getenv("YOUTUBE_TOKEN_FILE"),
-            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN")
+            "yt_token": token_file if has_yt else None,
+            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN"),
+            "is_admin": True
         }
     try:
         from Publishing_Modules.telegram_user_manager import load_all_users
         users = load_all_users()
         u_rec = users.get(str(user_id), {})
-        is_admin = u_rec.get("role") == "admin"
+        admin_id_env = os.getenv("TELEGRAM_ADMIN_ID")
+        is_admin = u_rec.get("role") == "admin" or str(user_id) == str(admin_id_env)
         
         meta_tok = u_rec.get("ig_business_token") or u_rec.get("meta_page_token") or (os.getenv("IG_BUSINESS_TOKEN") if is_admin else None)
         meta_id = u_rec.get("ig_business_id") or u_rec.get("meta_page_id") or (os.getenv("IG_BUSINESS_ID") if is_admin else None)
-        yt_tok = u_rec.get("youtube_token_json") or (os.getenv("YOUTUBE_TOKEN_FILE") if is_admin else None)
+        yt_tok = u_rec.get("youtube_token_json") or (token_file if (has_yt and is_admin) else None)
         tt_tok = u_rec.get("tiktok_access_token") or (os.getenv("TIKTOK_ACCESS_TOKEN") if is_admin else None)
         
         return {
@@ -72,8 +88,9 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
         return {
             "meta_token": os.getenv("IG_BUSINESS_TOKEN"),
             "meta_id": os.getenv("IG_BUSINESS_ID"),
-            "yt_token": os.getenv("YOUTUBE_TOKEN_FILE"),
-            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN")
+            "yt_token": token_file if has_yt else None,
+            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN"),
+            "is_admin": True
         }
 
 
@@ -82,27 +99,11 @@ def publish_to_youtube(video_path: str, title: str, description: str = "", tags:
     logger.info("🔴 [PUBLISHER 1/4] Uploading to YouTube Shorts...")
     try:
         user_creds = _resolve_user_credentials(user_id)
-        if not user_creds.get("yt_token"):
-            logger.warning("⚠️ YouTube API credentials missing for User %s. Skipping YouTube upload.", user_id or "default")
-            return {"status": "skipped", "message": "Personal YouTube credentials not configured for user"}
+        if user_id and not user_creds.get("is_admin") and not user_creds.get("yt_token"):
+            logger.warning("⚠️ YouTube API credentials missing for non-admin User %s. Skipping YouTube upload.", user_id)
+            return {"status": "skipped", "message": "Personal YouTube credentials not configured for non-admin user"}
 
         from Publishing_Modules.uploader import _upload_sync
-        cred_file = os.getenv("CLIENT_SECRET_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "client_secret.json"))
-        if not os.path.exists(cred_file):
-            fallback_cred = os.path.join(_REPO_ROOT, "Credentials", "client_secret.json")
-            if os.path.exists(fallback_cred):
-                cred_file = fallback_cred
-
-        token_file = os.getenv("YOUTUBE_TOKEN_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "token.json"))
-        if not os.path.exists(token_file):
-            fallback_token = os.path.join(_REPO_ROOT, "Credentials", "token.json")
-            if os.path.exists(fallback_token):
-                token_file = fallback_token
-
-        if not os.path.exists(cred_file) and not os.path.exists(token_file):
-            logger.warning("⚠️ YouTube API credentials missing (Credentials/youtube/client_secret.json or token.json not found). Skipping YouTube upload.")
-            return {"status": "skipped", "message": "Credentials/token.json missing"}
-
         video_id = _upload_sync(
             file_path=video_path,
             title=title,
@@ -191,8 +192,8 @@ async def publish_to_tiktok(video_path: str, title: str, tags: str = "", niche: 
 
 
 async def publish_to_telegram(video_path: str, title: str, caption: str = "") -> Dict[str, Any]:
-    """Dispatches published master reel to Telegram Storage Group & Target Chat."""
-    logger.info("✈️ [PUBLISHER 4/4] Publishing to Telegram Channel / Group...")
+    """Dispatches published master reel to Telegram Public Group & Vault Storage Group."""
+    logger.info("✈️ [PUBLISHER 4/4] Publishing to Telegram Public Group / Channel...")
     try:
         from telegram import Bot
         from telegram.request import HTTPXRequest
@@ -200,17 +201,25 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
         import asyncio
 
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_PUBLIC_GROUP_ID")
-        storage_group = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         public_group = os.getenv("TELEGRAM_PUBLIC_GROUP_ID")
+        storage_group = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_STORAGE_CHAT_ID")
 
         if not bot_token:
             logger.warning("⚠️ Telegram Bot Token missing. Skipping Telegram broadcast.")
             return {"status": "skipped", "message": "Bot token missing"}
 
-        if not chat_id:
-            logger.warning("⚠️ No Telegram Chat ID configured. Skipping Telegram broadcast.")
-            return {"status": "skipped", "message": "No chat ID configured"}
+        if not public_group:
+            logger.warning("⚠️ TELEGRAM_PUBLIC_GROUP_ID not configured in .env / GitHub Secrets. Skipping Public Telegram upload.")
+            return {"status": "skipped", "message": "TELEGRAM_PUBLIC_GROUP_ID not configured"}
+
+        # Format public group target ID (@channel_name, -100xxxxxxxxxx, or channel id)
+        raw_pub = str(public_group).strip()
+        if raw_pub.startswith("-"):
+            target_public = int(raw_pub)
+        elif raw_pub.isdigit():
+            target_public = int(f"-100{raw_pub}") if not raw_pub.startswith("100") else int(f"-{raw_pub}")
+        else:
+            target_public = raw_pub if raw_pub.startswith("@") else f"@{raw_pub}"
 
         req = HTTPXRequest(
             connection_pool_size=8,
@@ -220,10 +229,7 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
             write_timeout=300.0
         )
         bot = Bot(token=bot_token, request=req)
-
-        full_caption = f"🚀 **[PUBLISHED MULTI-PLATFORM]**\n📌 **Title**: `{title}`\n📁 `{os.path.basename(video_path)}`"
-        if caption:
-            full_caption += f"\n\n{caption}"
+        full_caption = f"🔥 **{title}**\n\n{caption or '#viral #shorts #reels'}"
 
         async def _send_video_safe(target_cid, file_or_id, text_caption, max_retries=3):
             for attempt in range(1, max_retries + 1):
@@ -255,63 +261,38 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
                         logger.warning(f"⚠️ Cannot send to chat ID {target_cid}: Bot cannot initiate conversation with user.")
                     raise
 
-        # 1. Dispatch to Primary Target Chat
+        # 1. Upload reel to Public Telegram Group / Channel
+        sent_msg = None
         try:
-            sent_msg = await _send_video_safe(int(chat_id), None, full_caption)
-        except Exception as send_err:
-            error_str = str(send_err)
-            if "Forbidden" in error_str or "can't initiate conversation" in error_str.lower():
-                logger.warning(f"⚠️ Cannot send to chat ID {chat_id}: Bot cannot initiate conversation with user. The user must start a conversation with the bot first (send /start), or use a group/channel ID instead.")
-                return {"status": "failed", "error": f"Bot cannot initiate conversation with user {chat_id}. User must message bot first or use group/channel ID."}
-            raise
+            sent_msg = await _send_video_safe(target_public, None, full_caption)
+            logger.info("📢 ✅ [TELEGRAM SUCCESS] Dispatched approved reel to Public Telegram Group (%s)", public_group)
+        except Exception as pg_e:
+            err_s = str(pg_e)
+            if "Chat not found" in err_s or "chat not found" in err_s.lower():
+                logger.error("❌ Public Telegram Group upload failed: Chat not found (%s). Make sure the Bot is added as Admin in your public group/channel!", public_group)
+                return {"status": "failed", "error": f"Chat not found for {public_group}. Add bot to group as admin!"}
+            else:
+                logger.error("❌ Public Telegram Group upload failed (%s): %s", public_group, pg_e)
+                return {"status": "failed", "error": str(pg_e)}
 
-        # Extract cached Telegram file_id for instantaneous, zero-bandwidth secondary dispatches
         cached_file_id = sent_msg.video.file_id if (sent_msg and sent_msg.video) else None
 
-        # 2. Dispatch to Public Telegram Channel / Group if configured (and not identical to primary chat)
-        if public_group and str(public_group).strip() != str(chat_id).strip():
+        # 2. Backup to Vault Storage Group if configured and distinct
+        if storage_group and str(storage_group).strip() != str(public_group).strip():
             try:
-                raw_pub = str(public_group).strip()
-                if raw_pub.startswith("-"):
-                    target_public = int(raw_pub)
-                elif raw_pub.isdigit():
-                    target_public = int(f"-100{raw_pub}") if not raw_pub.startswith("100") else int(f"-{raw_pub}")
-                else:
-                    target_public = raw_pub if raw_pub.startswith("@") else f"@{raw_pub}"
-
+                raw_sg = str(storage_group).strip()
+                target_sg = int(raw_sg) if (raw_sg.startswith("-") or raw_sg.isdigit()) else raw_sg
                 video_payload = cached_file_id if cached_file_id else None
                 await _send_video_safe(
-                    target_public,
-                    video_payload,
-                    f"🔥 **{title}**\n\n{caption or ''}"
-                )
-                logger.info("📢 Dispatched approved reel to Public Telegram Group (%s)", public_group)
-            except Exception as pg_e:
-                err_s = str(pg_e)
-                if "Chat not found" in err_s or "chat not found" in err_s.lower():
-                    logger.warning("⚠️ Public Telegram Group upload skipped: Chat not found (%s). Please add your Telegram Bot as Admin/Member to the group/channel!", public_group)
-                else:
-                    logger.warning("⚠️ Public Telegram Group upload warning: %s", pg_e)
-
-        # 3. Dispatch to Vault Storage Group if configured and distinct
-        if storage_group and str(storage_group) != str(chat_id) and str(storage_group) != str(public_group):
-            try:
-                video_payload = cached_file_id if cached_file_id else None
-                await _send_video_safe(
-                    int(storage_group),
+                    target_sg,
                     video_payload,
                     f"📦 **[VAULT PUBLISHED BACKUP]**\n📌 `{title}`\n📁 `{os.path.basename(video_path)}`"
                 )
             except Exception as sg_e:
-                if "Chat not found" in str(sg_e) or "chat not found" in str(sg_e).lower():
-                    logger.warning("⚠️ Vault storage group backup skipped: Storage group chat not found. Check TELEGRAM_STORAGE_GROUP_ID in .env")
-                else:
-                    logger.warning("⚠️ Vault storage group backup warning: %s", sg_e)
+                logger.warning("⚠️ Vault storage group backup warning: %s", sg_e)
 
         msg_id = sent_msg.message_id if sent_msg else None
-        tg_detail = "Uploaded successfully"
-        logger.info("✅ [TELEGRAM SUCCESS] Message ID: %s", msg_id)
-        return {"status": "success", "message_id": msg_id, "url": tg_detail, "link": tg_detail}
+        return {"status": "success", "message_id": msg_id, "url": f"Public Group ({public_group})", "link": f"Public Group ({public_group})"}
     except Exception as e:
         logger.error("❌ [TELEGRAM ERROR] %s", e)
         return {"status": "failed", "error": str(e)}

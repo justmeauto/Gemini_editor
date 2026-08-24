@@ -202,7 +202,7 @@ class TelegramVaultIndexer:
         Synchronously fetches TELEGRAM_STORAGE_GROUP_ID for pinned master_vault_index.json,
         downloads it, and updates local vault_index.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not storage_group_id or not bot_token:
             return False
@@ -382,7 +382,7 @@ class TelegramVaultIndexer:
         Synchronously uploads master_vault_index.json to TELEGRAM_STORAGE_GROUP_ID
         and pins the message so master_vault_index.json is NEVER lost!
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         if not storage_group_id or not upload_fn or not os.path.exists(self.index_file):
             return
 
@@ -518,7 +518,7 @@ class TelegramVaultIndexer:
         Startup Sync: Checks TELEGRAM_STORAGE_GROUP_ID for pinned master_vault_index.json.
         Downloads and merges it into local disk storage so ephemeral runners hydrate in 0.5s.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         if not storage_group_id or not bot:
             return False
 
@@ -592,7 +592,7 @@ class TelegramVaultIndexer:
         3. Updates metadata_pool.json (clip_source_math) with file_ids, audio_math, whisper_transcript, gemini_semantic.
         4. Updates Column 2 of Master Vault Index.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         filename = os.path.basename(raw_video_path)
         ext = os.path.splitext(filename)[1].lower()
         
@@ -706,7 +706,7 @@ class TelegramVaultIndexer:
         Column 2 Record: Uploads raw source video and extracted audio to TELEGRAM_STORAGE_GROUP_ID,
         saves file_ids under column_2_downloaded_sources, and re-pins master_vault_index.json.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         raw_file_id = None
         audio_file_id = None
 
@@ -778,7 +778,7 @@ class TelegramVaultIndexer:
         Column 1 Record: Saves rendered master reel intelligence and file_id into
         column_1_processed_reels, updates local index, and re-pins master_vault_index.json.
         """
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
 
         if not master_file_id and storage_group_id and bot and master_video_path and os.path.exists(master_video_path):
             try:
@@ -880,7 +880,7 @@ class TelegramVaultIndexer:
 
         session_entry["updated_at"] = time.time()
         self._save_local_index()
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         await self._upload_and_pin_index(bot, storage_group_id)
         logger.info(f"🧠 [TRAJECTORY RECORD] Updated {stage_key} for Session: {session_id}")
         return trajectory
@@ -916,7 +916,7 @@ class TelegramVaultIndexer:
         session_entry["editing_plan_history"] = sorted(history, key=lambda x: int(x.get("attempt_number", 0)))
 
         self._save_local_index()
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         await self._upload_and_pin_index(bot, storage_group_id)
         logger.info(f"🧠 [RAG PLAN RECORD] Recorded Attempt {attempt_number} (approved={user_approved}) for Session: {session_id}")
         return attempt_record

@@ -106,7 +106,7 @@ class AudioPoolManager:
         try:
             from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
             indexer = TelegramVaultIndexer()
-            storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+            storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
             
             if storage_group_id and bot_token and os.path.exists(self.meta_path):
@@ -296,7 +296,7 @@ class AudioPoolManager:
         captures their file_id, and indexes them exclusively in pool_metadata.json (the audio single source of truth).
         """
         results = {}
-        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not storage_group_id or not bot_token:
             return results

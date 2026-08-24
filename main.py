@@ -555,27 +555,16 @@ async def handle_telegram_callback(update, context):
         if sess:
             v_path = sess["video_path"]
             PublishQueue.add(v_path, channel_title="Viral Reel", channel_folder=sess.get("creator", "General"))
-            try:
-                from Publishing_Modules.media_publisher_main import run_phase4_publishing
-                pub_res = run_phase4_publishing(
-                    video_path=v_path,
-                    title="Viral Reel",
-                    tags="#viral #shorts #trending",
-                    niche=sess.get("creator", "General")
-                )
-                status_lines = []
-                for p_name, p_info in pub_res.get("platforms", {}).items():
-                    st = p_info.get("status")
-                    icon = "✅" if st == "success" else ("⏸️" if st == "skipped" else "❌")
-                    detail = p_info.get("url") or p_info.get("link") or p_info.get("message") or st
-                    status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
-
-                await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=f"🎉 **Phase 4 Multi-Platform Broadcasting Complete!**\n\n" + "\n".join(status_lines)
-                )
-            except Exception as pub_err:
-                logger.error(f"❌ Phase 4 publishing callback error: {pub_err}")
+            import asyncio
+            loop = asyncio.get_running_loop()
+            _dispatch_phase4_publishing_in_background(
+                bot_obj=context.bot,
+                chat_id=query.message.chat_id,
+                loop=loop,
+                video_path=v_path,
+                title="Viral Reel",
+                niche=sess.get("creator", "General")
+            )
 
     elif data.startswith("reedit_"):
         session_id = data.replace("reedit_", "").strip()
@@ -943,6 +932,52 @@ def _dispatch_pipeline_in_background(**kwargs):
             logger.error("❌ Background pipeline error: {_pe}")
         finally:
             ACTIVE_PIPELINE_JOBS.discard(job_id)
+
+    import threading
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
+def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video_path: str, title: str, niche: str = "General", tags: str = "#viral #shorts #trending"):
+    """Spawns non-blocking daemon thread for Phase 4 publishing so the Telegram bot asyncio event loop never freezes."""
+    def _worker():
+        try:
+            from Publishing_Modules.media_publisher_main import run_phase4_publishing
+            pub_res = run_phase4_publishing(
+                video_path=video_path,
+                title=title,
+                tags=tags,
+                niche=niche
+            )
+            status_lines = []
+            for p_name, p_info in pub_res.get("platforms", {}).items():
+                st = p_info.get("status")
+                icon = "✅" if st == "success" else ("⏸️" if st == "skipped" else "❌")
+                detail = p_info.get("url") or p_info.get("link") or p_info.get("message") or st
+                status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
+
+            if bot_obj and chat_id and loop:
+                import asyncio
+                msg_text = (
+                    f"🎉 **Phase 4 Multi-Platform Broadcasting Complete!**\n\n"
+                    f"📌 **Title**: `{title}`\n\n"
+                    + "\n".join(status_lines)
+                )
+                asyncio.run_coroutine_threadsafe(
+                    bot_obj.send_message(chat_id=chat_id, text=msg_text, parse_mode="Markdown"),
+                    loop
+                )
+        except Exception as pub_err:
+            logger.error(f"❌ Phase 4 background publishing error: {pub_err}")
+            if bot_obj and chat_id and loop:
+                try:
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(
+                        bot_obj.send_message(chat_id=chat_id, text=f"⚠️ Multi-platform broadcast warning: `{pub_err}`"),
+                        loop
+                    )
+                except Exception:
+                    pass
 
     import threading
     t = threading.Thread(target=_worker, daemon=True)
@@ -1337,30 +1372,16 @@ async def handle_telegram_incoming_msg(update, context):
                 f"📁 **Reel**: `{os.path.basename(v_path)}`"
             )
 
-            try:
-                from Publishing_Modules.media_publisher_main import run_phase4_publishing
-                pub_res = run_phase4_publishing(
-                    video_path=v_path,
-                    title=custom_title,
-                    tags="#viral #shorts #trending",
-                    niche=updated_sess.get("creator", "General")
-                )
-
-                status_lines = []
-                for p_name, p_info in pub_res.get("platforms", {}).items():
-                    st = p_info.get("status")
-                    icon = "✅" if st == "success" else ("⏸️" if st == "skipped" else "❌")
-                    detail = p_info.get("url") or p_info.get("link") or p_info.get("message") or st
-                    status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
-
-                await msg.reply_text(
-                    f"🎉 **Phase 4 Multi-Platform Broadcasting Complete!**\n\n"
-                    f"📌 **Title**: `{custom_title}`\n\n"
-                    + "\n".join(status_lines)
-                )
-            except Exception as pub_err:
-                logger.error(f"❌ Phase 4 publishing error: {pub_err}")
-                await msg.reply_text(f"⚠️ Multi-platform broadcast warning: `{pub_err}`")
+            import asyncio
+            loop = asyncio.get_running_loop()
+            _dispatch_phase4_publishing_in_background(
+                bot_obj=context.bot,
+                chat_id=chat_id,
+                loop=loop,
+                video_path=v_path,
+                title=custom_title,
+                niche=updated_sess.get("creator", "General")
+            )
             return
 
     target_url = None
@@ -1539,7 +1560,7 @@ def run_master_pipeline(
                     from telegram.request import HTTPXRequest
 
                     async def _send_single():
-                        storage_group = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_CHAT_ID")
+                        storage_group = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
                         req = HTTPXRequest(
                             connection_pool_size=16,
                             read_timeout=600.0,
@@ -1847,7 +1868,7 @@ async def _async_static_scheduler_task(bot_app=None):
         try:
             rendered = run_scheduled_scraper_batch(max_accounts=2)
             if bot_app and rendered:
-                admin_id = os.getenv("TELEGRAM_CHAT_ID")
+                admin_id = os.getenv("TELEGRAM_ADMIN_ID")
                 if admin_id:
                     for r_file in rendered:
                         try:
@@ -1934,7 +1955,7 @@ def start_telegram_bot_service():
                 except Exception as _cmd_err:
                     logger.debug(f"set_my_commands notice: {_cmd_err}")
 
-                admin_id = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_ADMIN_ID")
+                admin_id = os.getenv("TELEGRAM_ADMIN_ID")
                 if admin_id and str(admin_id).strip() != bot_id:
                     try:
                         keyboard = build_platform_selection_keyboard()
@@ -1951,11 +1972,11 @@ def start_telegram_bot_service():
                             ),
                             reply_markup=keyboard
                         )
-                        logger.info(f"📲 Automatically pushed Platform Selection Menu to Telegram Chat ID: {admin_id}")
+                        logger.info(f"📲 Automatically pushed Platform Selection Menu to Telegram Admin ID: {admin_id}")
                     except Exception as _st_err:
                         error_str = str(_st_err)
                         if "can't send messages to the bot" in error_str.lower() or "bot can't initiate" in error_str.lower():
-                            logger.info("ℹ️ Startup push skipped: TELEGRAM_CHAT_ID is set to bot ID or user has not sent /start yet.")
+                            logger.info("ℹ️ Startup push skipped: TELEGRAM_ADMIN_ID is set to bot ID or user has not sent /start yet.")
                         elif "Chat not found" in error_str or "chat not found" in error_str.lower():
                             logger.warning(f"⚠️ Startup welcome push warning: Admin chat ID {admin_id} not found. Bot may not have access to this chat, or the ID is incorrect.")
                         else:
