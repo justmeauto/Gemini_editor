@@ -41,12 +41,20 @@ def _load_env_tokens():
 
 
 def _get_github_pat() -> Optional[str]:
-    """Retrieves GitHub Personal Access Token from environment."""
-    _load_env_tokens()
-    for var in ["GH_PAT_TOKEN", "GH_PAT", "GITHUB_PAT", "GITHUB_TOKEN", "GH_TOKEN"]:
+    """Retrieves GitHub Personal Access Token from environment (must be a PAT, not default GITHUB_TOKEN)."""
+    # 1. Check direct environment variables first
+    for var in ["GH_PAT_TOKEN", "GH_PAT", "GITHUB_PAT"]:
         val = os.getenv(var, "").strip()
-        if val and val != "your_github_pat_here":
+        if val and val != "your_github_pat_here" and not val.startswith("ghs_"):
             return val
+
+    # 2. Check loaded .env files
+    _load_env_tokens()
+    for var in ["GH_PAT_TOKEN", "GH_PAT", "GITHUB_PAT"]:
+        val = os.getenv(var, "").strip()
+        if val and val != "your_github_pat_here" and not val.startswith("ghs_"):
+            return val
+
     return None
 
 
