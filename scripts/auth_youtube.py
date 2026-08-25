@@ -408,6 +408,7 @@ def authenticate(client_secret_file=None, token_file=None, admin_id=None):
 
     print(f"🚀 Starting YouTube Authentication across {len(targets)} target(s)...")
 
+    seen_client_ids = set()
     for secret_path, token_path in targets:
         print(f"\n🔑 Authenticating target: {secret_path}")
         try:
@@ -419,13 +420,39 @@ def authenticate(client_secret_file=None, token_file=None, admin_id=None):
         client_id     = secret["client_id"]
         client_secret = secret["client_secret"]
 
+        if client_id in seen_client_ids:
+            print(f"⏩ Client ID '{client_id[:15]}...' already authenticated in this run. Copying token to {token_path} and skipping duplicate prompt.")
+            # Copy active token to this target path if available
+            for _src in [DEFAULT_TOKEN_FILE, "Credentials/youtube/token.json", token_path]:
+                if os.path.exists(_src):
+                    try:
+                        os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
+                        with open(_src, "r", encoding="utf-8") as _rf, open(token_path, "w", encoding="utf-8") as _wf:
+                            _wf.write(_rf.read())
+                        break
+                    except Exception:
+                        pass
+            continue
+
+        seen_client_ids.add(client_id)
+
         # Try Device Flow first (fully automatic — no code pasting)
         handled = _try_device_flow(client_id, client_secret, tg_token, tg_admin, token_path)
 
         if not handled:
             # Device flow unsupported → fallback to URL + /ytcode paste
             print("⬇️ Falling back to URL auth flow...")
-            _fallback_url_flow(secret_path, token_path, tg_token, tg_admin)
+            success = _fallback_url_flow(secret_path, token_path, tg_token, tg_admin)
+            if success:
+                # Mirror token to both root and youtube/ paths for convenience
+                for _dst in [DEFAULT_TOKEN_FILE, "Credentials/youtube/token.json"]:
+                    if _dst != token_path:
+                        try:
+                            os.makedirs(os.path.dirname(_dst) or ".", exist_ok=True)
+                            with open(token_path, "r", encoding="utf-8") as _rf, open(_dst, "w", encoding="utf-8") as _wf:
+                                _wf.write(_rf.read())
+                        except Exception:
+                            pass
 
 
 if __name__ == "__main__":
