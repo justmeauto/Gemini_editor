@@ -357,6 +357,27 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
 def authenticate(client_secret_file=None, token_file=None, admin_id=None):
     tg_token, tg_admin = _get_telegram_creds(override_admin_id=admin_id)
 
+    # Auto-hydrate client_secret.json from env or user state if missing on disk
+    if not client_secret_file and not os.path.exists(DEFAULT_CLIENT_SECRET_FILE) and not os.path.exists("Credentials/youtube/client_secret.json"):
+        env_secret = os.getenv("CLIENT_SECRET_JSON") or os.getenv("YOUTUBE_CLIENT_SECRET")
+        if not env_secret:
+            try:
+                if os.path.exists("telegram_users.json"):
+                    with open("telegram_users.json", "r", encoding="utf-8") as _uf:
+                        _udata = json.load(_uf)
+                        for _uk, _uv in _udata.items():
+                            if isinstance(_uv, dict) and _uv.get("youtube_client_secret"):
+                                env_secret = _uv["youtube_client_secret"]
+                                break
+            except Exception:
+                pass
+        if env_secret:
+            for _fpath in ["Credentials/youtube/client_secret.json", DEFAULT_CLIENT_SECRET_FILE]:
+                os.makedirs(os.path.dirname(_fpath), exist_ok=True)
+                with open(_fpath, "w", encoding="utf-8") as _sf:
+                    _sf.write(env_secret.strip())
+            print("🔑 Auto-hydrated client_secret.json from environment/state.")
+
     # Smart discovery if explicit secret is not provided
     targets = []
     if client_secret_file:
@@ -368,9 +389,10 @@ def authenticate(client_secret_file=None, token_file=None, admin_id=None):
             ("Credentials/social_media/NSFW/client_secret.json", "Credentials/social_media/NSFW/token.json"),
             ("Credentials/social_media/General_Fallback/client_secret.json", "Credentials/social_media/General_Fallback/token.json"),
             (DEFAULT_CLIENT_SECRET_FILE, DEFAULT_TOKEN_FILE),
+            ("Credentials/youtube/client_secret.json", "Credentials/youtube/token.json"),
         ]
         for s_path, t_path in possible_pairs:
-            if os.path.exists(s_path):
+            if os.path.exists(s_path) and (s_path, t_path) not in targets:
                 targets.append((s_path, t_path))
                 
     if not targets:

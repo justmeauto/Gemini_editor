@@ -102,15 +102,15 @@ jobs:
         TELEGRAM_PUBLIC_GROUP_ID: ${{ secrets.TELEGRAM_PUBLIC_GROUP_ID }}
         TELEGRAM_STORAGE_GROUP_ID: ${{ secrets.TELEGRAM_STORAGE_GROUP_ID }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+        APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN || secrets.APIFY_TOKEN }}
         META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
-        META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+        META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN || secrets.META_TOKEN }}
         IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
-        IG_BUSINESS_TOKEN: ${{ secrets.IG_BUSINESS_TOKEN }}
+        IG_BUSINESS_TOKEN: ${{ secrets.IG_BUSINESS_TOKEN || secrets.META_PAGE_TOKEN || secrets.META_TOKEN }}
         TELEGRAM_CONFIG_JSON: ${{ secrets.TELEGRAM_CONFIG_JSON }}
-        CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
-        TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
-        BRAND_WATERMARK_TEXT: ${{ secrets.BRAND_WATERMARK_TEXT }}
+        CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
+        TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
+        BRAND_WATERMARK_TEXT: ${{ secrets.BRAND_WATERMARK_TEXT || secrets.BRAND_WATERMARK }}
         AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES }}
       run: |
         mkdir -p Credentials

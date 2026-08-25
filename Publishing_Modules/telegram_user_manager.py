@@ -287,10 +287,12 @@ def set_user_apify_token(user_id_str: str, apify_token: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_token = apify_token.strip()
-    if user_id_str in users and clean_token:
-        users[user_id_str]["apify_api_token"] = clean_token
+    if clean_token:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["apify_api_token"] = clean_token
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "APIFY_TOKEN", clean_token)
+        sync_user_secret_to_github(user_id_str, "APIFY_API_TOKEN", clean_token)
         logger.info("🔑 [TELEGRAM USER MANAGER] Personal Apify token saved for User ID %s", user_id_str)
         return True
     return False
@@ -310,8 +312,9 @@ def set_user_gemini_key(user_id_str: str, gemini_key: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_key = gemini_key.strip()
-    if user_id_str in users and clean_key:
-        users[user_id_str]["gemini_api_key"] = clean_key
+    if clean_key:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["gemini_api_key"] = clean_key
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "GEMINI_API_KEY", clean_key)
         logger.info("🤖 [TELEGRAM USER MANAGER] Personal Gemini API key saved for User ID %s", user_id_str)
@@ -324,25 +327,36 @@ def set_user_meta_token(user_id_str: str, meta_token: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_token = meta_token.strip()
-    if user_id_str in users and clean_token:
-        users[user_id_str]["meta_page_token"] = clean_token
+    if clean_token:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_page_token"] = clean_token
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "META_TOKEN", clean_token)
+        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_token)
         logger.info("📸 [TELEGRAM USER MANAGER] Personal Meta Access Token saved for User ID %s", user_id_str)
         return True
     return False
 
 
 def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
-    """Saves user personal YouTube OAuth token JSON and syncs to GitHub Secrets."""
+    """Saves user personal YouTube OAuth token JSON, writes token files locally, and syncs to GitHub Secrets."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_json = token_json_str.strip()
-    if user_id_str in users and clean_json:
-        users[user_id_str]["youtube_token_json"] = clean_json
+    if clean_json:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["youtube_token_json"] = clean_json
         save_all_users(users)
+        
+        # Write local disk files for immediate auth use
+        for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
+            os.makedirs(os.path.dirname(fpath), exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(clean_json)
+                
         sync_user_secret_to_github(user_id_str, "YOUTUBE_TOKEN_JSON", clean_json)
-        logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved for User ID %s", user_id_str)
+        sync_user_secret_to_github(user_id_str, "TOKEN_JSON", clean_json)
+        logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved locally & synced for User ID %s", user_id_str)
         return True
     return False
 
@@ -352,10 +366,12 @@ def set_user_branding(user_id_str: str, brand_text: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_brand = brand_text.strip()
-    if user_id_str in users and clean_brand:
-        users[user_id_str]["brand_watermark"] = clean_brand
+    if clean_brand:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["brand_watermark"] = clean_brand
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK", clean_brand)
+        sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK_TEXT", clean_brand)
         logger.info("🏷️ [TELEGRAM USER MANAGER] Personal brand watermark saved for User ID %s: %s", user_id_str, clean_brand)
         return True
     return False
@@ -392,15 +408,24 @@ def set_user_schedule_times(user_id_str: str, schedule_times: str) -> bool:
 
 
 def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> bool:
-    """Saves user personal YouTube client_secret.json content and syncs to GitHub Secrets."""
+    """Saves user personal YouTube client_secret.json content, writes files locally, and syncs to GitHub Secrets."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_secret = client_secret_str.strip()
-    if user_id_str in users and clean_secret:
-        users[user_id_str]["youtube_client_secret"] = clean_secret
+    if clean_secret:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["youtube_client_secret"] = clean_secret
         save_all_users(users)
+        
+        # Write local disk files for immediate auth use
+        for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
+            os.makedirs(os.path.dirname(fpath), exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(clean_secret)
+
         sync_user_secret_to_github(user_id_str, "YOUTUBE_CLIENT_SECRET", clean_secret)
-        logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved for User ID %s", user_id_str)
+        sync_user_secret_to_github(user_id_str, "CLIENT_SECRET_JSON", clean_secret)
+        logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved locally & synced for User ID %s", user_id_str)
         return True
     return False
 
@@ -410,9 +435,10 @@ def set_user_instagram_token(user_id_str: str, token: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_tok = token.strip()
-    if user_id_str in users and clean_tok:
-        users[user_id_str]["ig_business_token"] = clean_tok
-        users[user_id_str]["meta_page_token"] = clean_tok
+    if clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["ig_business_token"] = clean_tok
+        u_rec["meta_page_token"] = clean_tok
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_tok)
         sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
@@ -426,8 +452,9 @@ def set_user_instagram_id(user_id_str: str, ig_id: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_id = ig_id.strip()
-    if user_id_str in users and clean_id:
-        users[user_id_str]["ig_business_id"] = clean_id
+    if clean_id:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["ig_business_id"] = clean_id
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_ID", clean_id)
         logger.info("🆔 [TELEGRAM USER MANAGER] Instagram Business ID saved for User ID %s: %s", user_id_str, clean_id)
@@ -440,8 +467,9 @@ def set_user_facebook_id(user_id_str: str, fb_page_id: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_id = fb_page_id.strip()
-    if user_id_str in users and clean_id:
-        users[user_id_str]["meta_page_id"] = clean_id
+    if clean_id:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_page_id"] = clean_id
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "META_PAGE_ID", clean_id)
         logger.info("📘 [TELEGRAM USER MANAGER] Facebook Page ID saved for User ID %s: %s", user_id_str, clean_id)
@@ -454,8 +482,9 @@ def set_user_facebook_token(user_id_str: str, fb_token: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_tok = fb_token.strip()
-    if user_id_str in users and clean_tok:
-        users[user_id_str]["meta_page_token"] = clean_tok
+    if clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["meta_page_token"] = clean_tok
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
         logger.info("🔑 [TELEGRAM USER MANAGER] Facebook Page Token saved for User ID %s", user_id_str)
@@ -468,8 +497,9 @@ def set_user_tiktok_token(user_id_str: str, tiktok_token: str) -> bool:
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_tok = tiktok_token.strip()
-    if user_id_str in users and clean_tok:
-        users[user_id_str]["tiktok_access_token"] = clean_tok
+    if clean_tok:
+        u_rec = users.setdefault(user_id_str, {})
+        u_rec["tiktok_access_token"] = clean_tok
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "TIKTOK_ACCESS_TOKEN", clean_tok)
         logger.info("🎵 [TELEGRAM USER MANAGER] TikTok Access Token saved for User ID %s", user_id_str)
