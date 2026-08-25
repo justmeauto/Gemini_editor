@@ -529,7 +529,7 @@ async def handle_telegram_callback(update, context):
             f"✅ **Approved!**\n"
             f"✏️ **Send your custom title / subject clue below:**\n"
             f"📌 **Format**: `<Title Clue> <Affiliate URL>`\n"
-            f"*(Example: `Akanksha Puri Red Saree Look https://amzn.to/example`)*\n\n"
+            f"*(Example: `Trending Feature Reel https://amzn.to/example`)*\n\n"
             f"💡 Gemini will generate optimized SEO titles and embed commercial CTAs with policy disclosures (#ad)!"
         )
 

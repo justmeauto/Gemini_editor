@@ -102,7 +102,7 @@ def extract_main_subject_and_context(
     Analyzes video context, raw metadata (titles, captions, tags), prior Gemini call caches,
     and user-provided clues/hints/affiliate links to discover:
     1. main_subject: Primary hero entity, human name, pet name, brand name, or user hint
-       (e.g., 'Akanksha Puri', 'Mittu', 'Fingers', 'Elon Musk', '2026').
+       (e.g., 'Core Topic', 'Pet Name', 'Brand Name', '2026').
     2. applicable_context: Supporting descriptors, secondary context, action details.
     """
     metadata = metadata or {}
@@ -149,7 +149,7 @@ def extract_main_subject_and_context(
         main_subject = detected_entities[0]
 
     if not main_subject and full_text:
-        # Search for capitalized names/entities (e.g. "Akanksha Puri", "Elon Musk")
+        # Search for capitalized names/entities (e.g. "Main Subject", "Brand Name")
         cap_matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", full_text)
         if cap_matches:
             main_subject = cap_matches[0]
@@ -252,7 +252,7 @@ PRIOR GEMINI CALL CACHE (Forensic Perception, Audio, Editing Plan):
 {cache_context}
 
 CRITICAL RULES (STRICTLY ENFORCED):
-1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Akanksha Puri', write 'Akanksha Puri's Effortless Glow ✨ | Daily Look'; if 'Mittu', write 'Mittu the Dog Steals the Show 🐶'; if 'Fingers', write 'Fingers PC Cabinet Unboxing & Review 🖥️').
+1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Focal Subject', write 'Focal Subject | Core Feature Highlights ✨'; if 'Brand Product', write 'Brand Product Review & Setup 🖥️').
 2. ZERO REPETITION RULE (STRICT): ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration' or 'Trending Lookbook | Lookbook 2023'). Every title segment MUST be unique and complementary.
 3. WEAVE APPLICABLE DESCRIPTORS: Seamlessly integrate the applicable secondary context (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire') to create compelling hooks.
 4. COMMERCIAL AFFILIATE FRAMING & POLICY COMPLIANCE: If an AFFILIATE & PRODUCT PROMOTION LINK is provided, embed it seamlessly into YouTube, Instagram, Facebook, and Telegram descriptions with compelling CTAs (e.g., '🛒 Shop featured item / look: [link]'). ALWAYS include a platform policy disclosure at the end (e.g. 'Disclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate') so earnings/commissions are fully protected and compliant across Amazon, Myntra, Ajio, and ad networks.
@@ -261,7 +261,7 @@ CRITICAL RULES (STRICTLY ENFORCED):
 7. USER TITLE CLUE & SEMANTIC ALIGNMENT: If a USER PROVIDED TITLE / CLUE is provided, analyze its semantic similarity against the video context and metadata. Treat the clue as the explicit user intent for the main focal subject! Seamlessly incorporate the core keywords from the title clue across ALL platform outputs:
    - TITLES: Anchor the title using the subject/keywords from the title clue.
    - DESCRIPTIONS: Naturally integrate the title clue subject in the opening 1-2 lines.
-   - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Akanksha Puri Red Saree', include #AkankshaPuri #RedSaree #SareeLook).
+   - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Ethnic Outfit Look', include #EthnicOutfit #StyleLook).
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
