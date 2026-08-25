@@ -244,6 +244,12 @@ class ClipIntelligenceStore:
         try:
             with open(_POOL_FILE, "w", encoding="utf-8") as f:
                 json.dump(pool, f, indent=2, ensure_ascii=False)
+            # Automatic sync to visual_pool_metadata.json
+            try:
+                from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                TelegramVaultIndexer().sync_visual_pool_metadata(clip_id, data)
+            except Exception as _vp_err:
+                logger.debug(f"[ClipStore] Visual pool metadata sync notice: {_vp_err}")
         except Exception as e:
             logger.warning(f"[ClipStore] Pool write failed: {e}")
 

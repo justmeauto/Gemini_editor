@@ -151,7 +151,20 @@ def get_rotated_max_two_accounts(max_accounts: int = 2) -> List[str]:
 
         selected = sorted_accounts[:min(max_accounts, len(sorted_accounts))]
 
-        logger.info(f"🔄 [SCHEDULER SCRAPER] Anti-duplicate account pool selection (max {max_accounts}): selected={selected}")
+        # Save active rotation state to data/scraper_rotation_pointer.json
+        try:
+            pointer_path = os.path.join(DATA_DIR, "scraper_rotation_pointer.json")
+            pointer_state = {
+                "pointer": (all_accounts.index(selected[-1]) + 1) % len(all_accounts) if selected else 0,
+                "last_selected": selected,
+                "timestamp": time.time()
+            }
+            with open(pointer_path, "w", encoding="utf-8") as pf:
+                json.dump(pointer_state, pf, indent=2, ensure_ascii=False)
+            logger.info(f"🔄 [SCHEDULER SCRAPER] Anti-duplicate account pool selection (max {max_accounts}): selected={selected}")
+        except Exception as _pe:
+            logger.debug("Notice saving scraper_rotation_pointer.json: %s", _pe)
+
         return selected
     except Exception as e:
         logger.error(f"❌ Error rotating source accounts: {e}")
@@ -365,49 +378,53 @@ def mark_and_sync_scraped_accounts(scraped_accounts: Optional[List[str]] = None)
 
 
 def sync_source_accounts_to_telegram_vault() -> bool:
-    """Uploads source_accounts.json to Telegram Storage Group cloud vault and records auto_input_source_account_file_id in master_vault_index.json."""
+    """Uploads source_accounts.json and scraper_rotation_pointer.json to Telegram Storage Group cloud vault."""
     try:
         from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+        from Publishing_Modules.telegram_user_manager import _upload_file_to_telegram_storage
         indexer = TelegramVaultIndexer()
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        if storage_group_id and bot_token and os.path.exists(ACCOUNTS_JSON):
-            res = None
-            try:
-                from Downloader_Modules.telegram_listener import _send_file_multipart
-                res = _send_file_multipart(
-                    "sendDocument",
-                    storage_group_id,
-                    "document",
-                    ACCOUNTS_JSON,
-                    caption=f"📋 **[AUTO INPUT SOURCE ACCOUNTS VAULT BACKUP]** `source_accounts.json` (Updated {time.strftime('%H:%M:%S')})"
-                )
-            except Exception:
-                res = None
+        if not storage_group_id or not bot_token:
+            return False
 
-            if not res:
-                # Direct requests multipart upload fallback
+        # 1. Upload source_accounts.json
+        if os.path.exists(ACCOUNTS_JSON):
+            caption = f"📋 **[AUTO INPUT SOURCE ACCOUNTS VAULT BACKUP]** `source_accounts.json` (Updated {time.strftime('%H:%M:%S')})"
+            sa_doc_id = _upload_file_to_telegram_storage(ACCOUNTS_JSON, caption=caption)
+            if not sa_doc_id:
                 import requests
                 url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
                 with open(ACCOUNTS_JSON, "rb") as f:
-                    resp = requests.post(
-                        url,
-                        data={"chat_id": storage_group_id, "caption": f"📋 **[AUTO INPUT SOURCE ACCOUNTS VAULT BACKUP]** `source_accounts.json` (Updated {time.strftime('%H:%M:%S')})"},
-                        files={"document": f},
-                        timeout=30
-                    )
+                    resp = requests.post(url, data={"chat_id": storage_group_id, "caption": caption}, files={"document": f}, timeout=30)
                 if resp.status_code == 200:
-                    res = resp.json().get("result")
+                    sa_doc_id = resp.json().get("result", {}).get("document", {}).get("file_id")
+            if sa_doc_id:
+                indexer.vault_index["auto_input_source_account_file_id"] = sa_doc_id
+                indexer.vault_index["source_accounts_file_id"] = sa_doc_id
+                indexer._save_local_index()
+                logger.info("✅ [AUTO INPUT VAULT SYNC] Uploaded source_accounts.json (source_accounts_file_id: %s)", sa_doc_id[:15])
 
-            if res and isinstance(res, dict):
-                doc_id = res.get("document", {}).get("file_id") or (res.get("file_id") if "file_id" in res else None)
-                if doc_id:
-                    indexer.vault_index["auto_input_source_account_file_id"] = doc_id
-                    indexer.vault_index["source_accounts_file_id"] = doc_id
-                    indexer._save_local_index()
-                    indexer.upload_and_pin_vault_index_sync()
-                    logger.info("✅ [AUTO INPUT VAULT SYNC] Uploaded & PINNED source_accounts.json (auto_input_source_account_file_id: %s)", doc_id[:15])
-                    return True
+        # 2. Upload scraper_rotation_pointer.json
+        data_dir = os.path.join(_REPO_ROOT, "data")
+        pointer_path = os.path.join(data_dir, "scraper_rotation_pointer.json")
+        if os.path.exists(pointer_path):
+            caption = f"🔄 **[SCRAPER ROTATION POINTER BACKUP]** `scraper_rotation_pointer.json` (Updated {time.strftime('%H:%M:%S')})"
+            srp_doc_id = _upload_file_to_telegram_storage(pointer_path, caption=caption)
+            if not srp_doc_id:
+                import requests
+                url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+                with open(pointer_path, "rb") as pf:
+                    resp = requests.post(url, data={"chat_id": storage_group_id, "caption": caption}, files={"document": pf}, timeout=30)
+                if resp.status_code == 200:
+                    srp_doc_id = resp.json().get("result", {}).get("document", {}).get("file_id")
+            if srp_doc_id:
+                indexer.vault_index["scraper_rotation_pointer_file_id"] = srp_doc_id
+                indexer._save_local_index()
+                logger.info("✅ [ROTATION POINTER VAULT SYNC] Uploaded scraper_rotation_pointer.json (scraper_rotation_pointer_file_id: %s)", srp_doc_id[:15])
+
+        indexer.upload_and_pin_vault_index_sync()
+        return True
     except Exception as _e:
-        logger.debug("Notice syncing source_accounts.json to vault: %s", _e)
-    return False
+        logger.warning("Notice syncing source_accounts & scraper_rotation_pointer to vault: %s", _e)
+        return False

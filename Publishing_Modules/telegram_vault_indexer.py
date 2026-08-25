@@ -45,7 +45,8 @@ def _empty_vault_index() -> Dict[str, Any]:
         "version": 2.0,
         "updated_at": time.time(),
         "pinned_message_id": None,
-        "metadata_pool_file_id": None,
+        "pool_metadata_file_id": None,
+        "metadata_pool_file_id": None,  # Backward compatibility alias
         "telegram_users_file_id": None,
         "source_accounts_file_id": None,
         "column_1_processed_reels": {
@@ -155,6 +156,13 @@ class TelegramVaultIndexer:
             import requests
             get_file_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
             resp = requests.get(get_file_url, headers=headers, timeout=15)
+            if resp.status_code == 400:
+                # Telegram Bot API getFile returns HTTP 400 Bad Request when file size > 20MB
+                logger.warning(
+                    "⚠️ Telegram Bot API 20MB limit reached for %s (file_id: %s). Falling back to direct platform download.",
+                    os.path.basename(dest_path), file_id[:15]
+                )
+                return False
             if resp.status_code == 200:
                 res_data = resp.json()
                 if res_data.get("ok"):
@@ -174,10 +182,12 @@ class TelegramVaultIndexer:
             logger.debug("requests-based vault download fallback to urllib: %s", req_err)
 
         # urllib fallback with retry loop
+        import urllib.request
+        import urllib.error
+        import json as _json
+
         for attempt in range(1, 4):
             try:
-                import urllib.request
-                import json as _json
                 get_file_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
                 req = urllib.request.Request(get_file_url, headers=headers)
                 with urllib.request.urlopen(req, timeout=15) as resp:
@@ -194,6 +204,15 @@ class TelegramVaultIndexer:
                     os.replace(temp_dest, dest_path)
                     logger.info("✅ [VAULT HYDRATION] Successfully downloaded %s from Telegram Storage Group (file_id: %s)", os.path.basename(dest_path), file_id[:15])
                     return True
+            except urllib.error.HTTPError as http_err:
+                if http_err.code == 400:
+                    logger.warning(
+                        "⚠️ Telegram Bot API 20MB limit reached for %s (file_id: %s, HTTP 400). Falling back to direct platform download.",
+                        os.path.basename(dest_path), file_id[:15]
+                    )
+                    return False
+                if attempt == 3:
+                    logger.warning("⚠️ Vault hydration download failed for %s: %s", os.path.basename(dest_path), http_err)
             except Exception as _dl_err:
                 if attempt == 3:
                     logger.warning("⚠️ Vault hydration download failed for %s: %s", os.path.basename(dest_path), _dl_err)
@@ -276,56 +295,92 @@ class TelegramVaultIndexer:
                             except Exception:
                                 pass
 
-            # Step 3: Download metadata_pool.json
-            pool_file_id = self.vault_index.get("metadata_pool_file_id")
+            # Step 3: Download pool_metadata.json (backward compatible key check)
+            pool_file_id = self.vault_index.get("pool_metadata_file_id") or self.vault_index.get("metadata_pool_file_id")
             if pool_file_id:
                 from Audio_Modules.audio_pool_manager import AudioPoolManager
                 pm = AudioPoolManager()
-                results["metadata_pool"] = self.download_vault_file_by_id(pool_file_id, pm.meta_path)
+                results["pool_metadata"] = self.download_vault_file_by_id(pool_file_id, pm.meta_path)
+                results["metadata_pool"] = results["pool_metadata"]  # Alias for backward compatibility
 
             # Step 4: Download source_accounts.json (Auto Input Source Accounts)
             sa_file_id = self.vault_index.get("auto_input_source_account_file_id") or self.vault_index.get("source_accounts_file_id")
             if sa_file_id:
                 sa_path = os.path.join(_REPO_ROOT, "Content_Scraper_Modules", "source_accounts.json")
                 results["source_accounts"] = self.download_vault_file_by_id(sa_file_id, sa_path)
+
+            # Step 5: Download visual_pool_metadata.json (Master Clip Visual Catalog)
+            vpm_file_id = self.vault_index.get("visual_pool_metadata_file_id")
+            if vpm_file_id:
+                vpm_path = os.path.join(DATA_DIR, "visual_pool_metadata.json")
+                results["visual_pool_metadata"] = self.download_vault_file_by_id(vpm_file_id, vpm_path)
+
+            # Step 6: Download telegram_sessions.json (Master Active Sessions Index)
+            ts_file_id = self.vault_index.get("telegram_sessions_file_id")
+            if ts_file_id:
+                ts_path = os.path.join(DATA_DIR, "telegram_sessions.json")
+                results["telegram_sessions"] = self.download_vault_file_by_id(ts_file_id, ts_path)
+
+            # Step 7: Download scraper_rotation_pointer.json (Master Scraper Rotation Pointer)
+            srp_file_id = self.vault_index.get("scraper_rotation_pointer_file_id")
+            if srp_file_id:
+                srp_path = os.path.join(DATA_DIR, "scraper_rotation_pointer.json")
+                results["scraper_rotation_pointer"] = self.download_vault_file_by_id(srp_file_id, srp_path)
         except Exception as _h_err:
             logger.warning("⚠️ Vault JSON hydration notice: %s", _h_err)
         return results
 
-    def hydrate_bgm_track_from_vault(self, track_name: str, dest_dir: Optional[str] = None) -> Optional[str]:
+    def hydrate_bgm_track_from_vault(self, track_name_or_file_id: str, dest_dir: Optional[str] = None) -> Optional[str]:
         """
         Synchronously hydrates a BGM track from Telegram Storage Group using
-        file_id stored in pool_metadata.json (the single source of truth for audio data).
+        file_id stored in pool_metadata.json (the single source of truth for audio data)
+        or direct telegram_file_id string.
         """
-        if not track_name:
+        if not track_name_or_file_id:
             return None
-        filename = os.path.basename(track_name)
+
+        file_id = None
+        filename = os.path.basename(track_name_or_file_id)
+
+        # Direct file_id check (Telegram file_ids are alphanumeric strings usually > 20 chars without file extensions)
+        if len(track_name_or_file_id) > 20 and not track_name_or_file_id.endswith((".mp3", ".wav", ".m4a")):
+            file_id = track_name_or_file_id
+            filename = f"bgm_{file_id[:10]}.wav"
+
         if not dest_dir:
             dest_dir = os.path.join(_REPO_ROOT, "Original_audio", "active")
         os.makedirs(dest_dir, exist_ok=True)
-        local_path = os.path.join(dest_dir, filename)
 
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
-            return local_path
-
-        file_id = None
         # 1. Primary Lookup: pool_metadata.json
         pm_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
+        meta = {}
         if os.path.exists(pm_path):
             try:
                 with open(pm_path, "r", encoding="utf-8") as f:
                     pm_data = json.load(f)
                 files = pm_data.get("files", pm_data)
                 meta = files.get(filename) or {}
+                if not meta and file_id:
+                    for k, v in files.items():
+                        if isinstance(v, dict) and v.get("file_id") == file_id:
+                            meta = v
+                            filename = k
+                            break
                 if not meta and os.path.splitext(filename)[0]:
                     stem = os.path.splitext(filename.lower())[0]
                     for k, v in files.items():
                         if stem in k.lower() or k.lower() in filename.lower():
                             meta = v
+                            filename = k
                             break
-                file_id = meta.get("file_id")
+                if not file_id:
+                    file_id = meta.get("file_id")
             except Exception as _pe:
                 logger.debug("Notice on pool_metadata BGM lookup: %s", _pe)
+
+        local_path = os.path.join(dest_dir, filename)
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
+            return local_path
 
         # 2. Secondary Fallback: Column 2 in master_vault_index.json
         if not file_id:
@@ -346,32 +401,69 @@ class TelegramVaultIndexer:
 
         return None
 
-    def get_vault_audio_pool(self) -> Dict[str, Any]:
+    def get_vault_audio_pool(self, current_clip_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Returns dictionary of all audio track metadata indexed in Column 2 & Column 1
         of master_vault_index.json plus pool_metadata.json if available.
+
+        Args:
+            current_clip_id: The shortcode/folder-name of the clip currently being edited
+                             (e.g. 'manual_DcaZZkQvRcG'). When provided, ALL Column 2 entries
+                             whose session_id or social_media_id contains this shortcode are
+                             excluded — preventing same-reel session aliases from masquerading
+                             as external BGM tracks.
+
+        IMPORTANT — Column 2 tracks are ALWAYS tagged ``is_source_extract=True``.
+        These are raw audio ripped from downloaded reels, NOT real music.
+        The BGM selector uses this flag to exclude them from the external candidate pool.
         """
         pool = {}
-        # 1. Add tracks from Column 2 downloaded sources
+
+        # Normalise current clip shortcode for comparison
+        clip_stem = current_clip_id.lower().strip() if current_clip_id else ""
+
+        # ── 1. Column 2 downloaded sources (source-extracted audio, NOT real BGM) ──
         c2 = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
         for _url, entry in c2.items():
             file_id = entry.get("extracted_audio_file_id")
-            if file_id:
-                sess_id = entry.get("session_id", "audio_track")
-                fname = f"{sess_id}.wav"
-                audio_math = entry.get("audio_math") or {}
-                pool[fname] = {
-                    "file_id": file_id,
-                    "tempo_bpm": audio_math.get("tempo_bpm", 120.0),
-                    "dominant_emotion": audio_math.get("dominant_emotion", "hype"),
-                    "energy_profile": audio_math.get("energy_profile", "medium"),
-                    "has_vocals": audio_math.get("has_vocals", False),
-                    "language": audio_math.get("language", "unknown"),
-                    "last_used": entry.get("timestamp", 0),
-                    "usage_count": 0
-                }
+            if not file_id:
+                continue
 
-        # 2. Add tracks from local pool_metadata if present
+            sess_id = entry.get("session_id", "audio_track")
+            social_id = str(entry.get("social_media_id", "")).lower()
+
+            # Skip entries that belong to the clip currently being edited
+            if clip_stem and (
+                clip_stem in sess_id.lower()
+                or clip_stem in social_id
+                or sess_id.lower().endswith(f"_{clip_stem}")
+            ):
+                logger.debug(
+                    "[VAULT POOL] Skipping same-reel session alias '%s' (clip_id='%s')",
+                    sess_id, current_clip_id
+                )
+                continue
+
+            fname = f"{sess_id}.wav"
+            audio_math = entry.get("audio_math") or {}
+            pool[fname] = {
+                "file_id": file_id,
+                "tempo_bpm": audio_math.get("tempo_bpm", 120.0),
+                "dominant_emotion": audio_math.get("dominant_emotion", "hype"),
+                "energy_profile": audio_math.get("energy_profile", "medium"),
+                "has_vocals": audio_math.get("has_vocals", False),
+                "language": audio_math.get("language", "unknown"),
+                "last_used": entry.get("timestamp", 0),
+                "usage_count": 0,
+                # ─────────────────────────────────────────────────────────────
+                # CRITICAL FLAG: This track is a raw audio extract from a
+                # downloaded reel — it is NOT an independent music track.
+                # BGM selector must NEVER treat it as an external BGM option.
+                # ─────────────────────────────────────────────────────────────
+                "is_source_extract": True,
+            }
+
+        # ── 2. Local pool_metadata.json (real BGM library + harvested clips) ──
         pm_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
         if os.path.exists(pm_path):
             try:
@@ -381,6 +473,11 @@ class TelegramVaultIndexer:
                     if isinstance(files_dict, dict):
                         for k, v in files_dict.items():
                             if isinstance(v, dict):
+                                # If this pool entry is for the current clip's harvested audio,
+                                # mark it as a source extract so the BGM selector deprioritises it.
+                                if clip_stem and clip_stem in k.lower():
+                                    v = dict(v)  # don't mutate original
+                                    v["is_source_extract"] = True
                                 pool[k] = v
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)
@@ -726,14 +823,15 @@ class TelegramVaultIndexer:
             csm = pm.metadata.setdefault("clip_source_math", {})
             csm[social_url] = clip_entry
             pm._save_metadata()
-            logger.info("📦 [STORAGE MANAGER] Indexed clip_source_math entry for %s in metadata_pool.json", social_url)
+            logger.info("📦 [STORAGE MANAGER] Indexed clip_source_math entry for %s in pool_metadata.json", social_url)
 
             if storage_group_id and upload_fn and os.path.exists(pm.meta_path):
-                pool_upload_res = upload_fn("sendDocument", storage_group_id, "document", pm.meta_path, caption=f"📦 **[VAULT BACKUP]** `metadata_pool.json` (Updated {time.strftime('%H:%M:%S')})")
+                pool_upload_res = upload_fn("sendDocument", storage_group_id, "document", pm.meta_path, caption=f"📦 **[VAULT BACKUP]** `pool_metadata.json` (Updated {time.strftime('%H:%M:%S')})")
                 if pool_upload_res and isinstance(pool_upload_res, dict):
                     pool_doc_id = pool_upload_res.get("document", {}).get("file_id")
+                    self.vault_index["pool_metadata_file_id"] = pool_doc_id
                     self.vault_index["metadata_pool_file_id"] = pool_doc_id
-                    logger.info("✅ [STORAGE MANAGER] Uploaded updated metadata_pool.json to Storage Group (file_id: %s)", pool_doc_id)
+                    logger.info("✅ [STORAGE MANAGER] Uploaded updated pool_metadata.json to Storage Group (file_id: %s)", pool_doc_id)
 
             try:
                 from Publishing_Modules.telegram_user_manager import USERS_JSON_PATH
@@ -765,6 +863,106 @@ class TelegramVaultIndexer:
             "file_param": file_param,
             "clip_entry": clip_entry
         }
+
+    def sync_visual_pool_metadata(self, clip_id: str, clip_data: Dict[str, Any]) -> bool:
+        """
+        [AUTOMATIC] Synchronizes visual clip intelligence, video file_ids, and editing_plan
+        into data/visual_pool_metadata.json and uploads it to Telegram Storage Group.
+        """
+        if not clip_id or not isinstance(clip_data, dict):
+            return False
+
+        vpm_path = os.path.join(DATA_DIR, "visual_pool_metadata.json")
+        vpm_data = {"version": 2, "updated_at": time.time(), "clips": {}}
+        if os.path.exists(vpm_path):
+            try:
+                with open(vpm_path, "r", encoding="utf-8") as f:
+                    vpm_data = json.load(f)
+            except Exception as _re:
+                logger.debug("Notice reading visual_pool_metadata.json: %s", _re)
+
+        clips_dict = vpm_data.setdefault("clips", {})
+        existing_clip = clips_dict.get(clip_id, {})
+
+        vis_ctx = clip_data.get("visual_context") or {}
+        editing_plan = clip_data.get("editing_plan") or {}
+        audio_data = clip_data.get("audio_data") or {}
+
+        # Look up file_ids from Column 1 / Column 2 index if missing
+        master_file_id = clip_data.get("master_video_file_id") or existing_clip.get("master_video_file_id")
+        raw_file_id = clip_data.get("raw_video_file_id") or existing_clip.get("raw_video_file_id")
+        extracted_audio_file_id = clip_data.get("extracted_audio_file_id") or existing_clip.get("extracted_audio_file_id")
+        selected_bgm_file_id = audio_data.get("selected_bgm_file_id") or editing_plan.get("selected_bgm_file_id") or existing_clip.get("selected_bgm_file_id")
+        selected_bgm_track = audio_data.get("selected_bgm_track") or audio_data.get("selected_audio_track") or editing_plan.get("selected_bgm_track") or existing_clip.get("selected_bgm_track")
+
+        c1 = self.vault_index.get("column_1_processed_reels", {}).get("by_session_id", {})
+        for sess_id, entry in c1.items():
+            if clip_id in sess_id or sess_id in clip_id:
+                if not master_file_id:
+                    master_file_id = entry.get("master_video_file_id")
+                break
+
+        c2 = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
+        for sess_id, entry in c2.items():
+            if clip_id in sess_id or sess_id in clip_id:
+                if not raw_file_id:
+                    raw_file_id = entry.get("raw_video_file_id")
+                if not extracted_audio_file_id:
+                    extracted_audio_file_id = entry.get("extracted_audio_file_id")
+                break
+
+        updated_entry = {
+            "clip_id": clip_id,
+            "social_media_id": clip_data.get("social_media_id") or existing_clip.get("social_media_id", "direct_upload"),
+            "master_video_file_id": master_file_id,
+            "raw_video_file_id": raw_file_id,
+            "extracted_audio_file_id": extracted_audio_file_id,
+            "selected_bgm_file_id": selected_bgm_file_id,
+            "selected_bgm_track": selected_bgm_track,
+            "created_at": clip_data.get("created_at") or existing_clip.get("created_at", time.time()),
+            "intent": vis_ctx.get("intent") or existing_clip.get("intent", "viral_reel"),
+            "tone": vis_ctx.get("tone") or existing_clip.get("tone", "aspirational"),
+            "editing_style": vis_ctx.get("editing_style") or existing_clip.get("editing_style", "fast_paced"),
+            "recommended_narrative": vis_ctx.get("recommended_narrative") or existing_clip.get("recommended_narrative", "lifestyle"),
+            "engagement_hook": vis_ctx.get("engagement_hook") or existing_clip.get("engagement_hook", ""),
+            "detected_entities": vis_ctx.get("detected_entities") or existing_clip.get("detected_entities", []),
+            "feature_flags": vis_ctx.get("feature_flags") or existing_clip.get("feature_flags", {}),
+            "speech_intelligence": vis_ctx.get("speech_intelligence") or existing_clip.get("speech_intelligence", {}),
+            "editing_plan": editing_plan or existing_clip.get("editing_plan", {}),
+            "monetization_safe": vis_ctx.get("safety", {}).get("monetization_safe", True)
+        }
+
+        clips_dict[clip_id] = updated_entry
+        vpm_data["clips"] = clips_dict
+        vpm_data["updated_at"] = time.time()
+
+        try:
+            temp_vpm = vpm_path + ".tmp"
+            with open(temp_vpm, "w", encoding="utf-8") as f:
+                json.dump(vpm_data, f, indent=2, ensure_ascii=False)
+            os.replace(temp_vpm, vpm_path)
+            logger.info("✅ [VISUAL POOL METADATA] Automatically updated visual_pool_metadata.json for clip '%s'", clip_id)
+
+            storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+            from Publishing_Modules.telegram_vault_indexer import _send_telegram_file_sync
+            if storage_group_id and os.path.exists(vpm_path):
+                upload_res = _send_telegram_file_sync(
+                    "sendDocument",
+                    storage_group_id,
+                    "document",
+                    vpm_path,
+                    caption=f"🎬 **[VAULT BACKUP]** `visual_pool_metadata.json` (Updated {time.strftime('%H:%M:%S')})"
+                )
+                if upload_res and isinstance(upload_res, dict) and upload_res.get("ok"):
+                    vpm_doc_id = upload_res.get("result", {}).get("document", {}).get("file_id")
+                    if vpm_doc_id:
+                        self.vault_index["visual_pool_metadata_file_id"] = vpm_doc_id
+                        self._save_local_index()
+                        logger.info("✅ [VISUAL POOL METADATA VAULT BACKUP] Uploaded & PINNED visual_pool_metadata.json (file_id: %s)", vpm_doc_id[:15])
+            return True
+        except Exception as _ve:
+            logger.warning("⚠️ Failed to sync visual_pool_metadata.json for clip '%s': %s", clip_id, _ve)
+            return False
 
     async def record_downloaded_source(
         self,
@@ -910,6 +1108,10 @@ class TelegramVaultIndexer:
 
         self._save_local_index()
         await self._upload_and_pin_index(bot, storage_group_id)
+        try:
+            self.sync_visual_pool_metadata(session_id, entry)
+        except Exception as _vp_err:
+            logger.debug("Notice syncing visual_pool_metadata in record_processed_reel: %s", _vp_err)
         logger.info(f"🎬 [VAULT RECORD] Recorded Column 1 master reel for Session: {session_id}" + (f" (User: {user_id})" if user_id else ""))
         return entry
 

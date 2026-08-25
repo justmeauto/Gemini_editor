@@ -135,6 +135,7 @@ class AudioPoolManager:
                     if res and isinstance(res, dict) and res.get("ok"):
                         doc_id = res.get("result", {}).get("document", {}).get("file_id")
                         if doc_id:
+                            indexer.vault_index["pool_metadata_file_id"] = doc_id
                             indexer.vault_index["metadata_pool_file_id"] = doc_id
                             indexer._save_local_index()
                             indexer.upload_and_pin_vault_index_sync(_send_telegram_file_sync)
@@ -166,25 +167,40 @@ class AudioPoolManager:
                 try: os.remove(temp_path)
                 except: pass
 
-    def _get_file_metadata(self, filename: str) -> Optional[Dict]:
-        """Helper to get file metadata accounting for schema version."""
+    def _get_file_metadata(self, key_or_filename: str) -> Optional[Dict]:
+        """Helper to get file metadata accounting for schema version and key/file_id lookups."""
+        if not key_or_filename:
+            return None
         files = self.metadata.get("files", self.metadata)
-        return files.get(filename)
+        if isinstance(files, dict):
+            if key_or_filename in files:
+                return files[key_or_filename]
+            for k, v in files.items():
+                if isinstance(v, dict):
+                    if v.get("file_id") == key_or_filename or v.get("filename") == key_or_filename:
+                        return v
+                    if os.path.splitext(k.lower())[0] == os.path.splitext(key_or_filename.lower())[0]:
+                        return v
+        return None
 
     def get_track_intelligence(self, audio_name: str) -> Optional[Dict[str, Any]]:
         """
         Public API: Returns pre-computed intelligence (BPM, beats, drops, lyrics, sections)
-        from pool_metadata.json for audio_name (e.g. 'Aditi_bhatia.mp3').
+        from pool_metadata.json for audio_name (e.g. 'Aditi_bhatia.mp3' or telegram_file_id).
         Returns None if track is not indexed.
         """
         with self.lock:
-            filename = os.path.basename(audio_name)
-            return self._get_file_metadata(filename)
+            return self._get_file_metadata(audio_name)
 
     def _set_file_metadata(self, filename: str, data: Dict):
         """Helper to set file metadata accounting for schema version."""
         if "files" not in self.metadata:
             self.metadata = {"version": self.CURRENT_VERSION, "files": self.metadata}
+        existing = self.metadata["files"].get(filename, {})
+        if isinstance(existing, dict) and isinstance(data, dict):
+            if "file_id" not in data and "file_id" in existing:
+                data["file_id"] = existing["file_id"]
+        data["filename"] = filename
         self.metadata["files"][filename] = data
 
     def _sync_root_to_active(self):
@@ -930,11 +946,22 @@ class AudioPoolManager:
                 if "language" in lyric_data:
                     meta["language"] = str(lyric_data["language"])
                 if "sections" in lyric_data:
+                    meta["sections"] = lyric_data["sections"]
                     meta["sections_summary"] = [
                         {"start": s.get("start", 0), "end": s.get("end", 0),
                          "type": s.get("type", "unknown"), "energy": s.get("energy", 0.5)}
                         for s in lyric_data["sections"]
                     ]
+                if "lyrics" in lyric_data:
+                    meta["lyrics"] = lyric_data["lyrics"]
+                if "shot_directives" in lyric_data:
+                    meta["shot_directives"] = lyric_data["shot_directives"]
+                if "tension_arc" in lyric_data:
+                    meta["tension_arc"] = lyric_data["tension_arc"]
+                if "emotional_peak_moments" in lyric_data:
+                    meta["emotional_peak_moments"] = lyric_data["emotional_peak_moments"]
+                if "file_id" in lyric_data:
+                    meta["file_id"] = lyric_data["file_id"]
                 meta["lyric_intel_merged"] = True
                 self._set_file_metadata(track_filename, meta)
             self._save_metadata()

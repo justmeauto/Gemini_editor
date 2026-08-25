@@ -623,14 +623,14 @@ def select_best_audio_for_clip(
 
     visual_ctx = clip_data.get("visual_context", {})
     current_audio = clip_data.get("audio_data", {})
-    pooled_audio_list = store.get_all_audio_data(limit=25)
 
     # ── 1. PRIMARY: Query Telegram Storage Group Vault Audio Index ────────────
     vault_audio_pool = {}
     try:
         from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
         vault = TelegramVaultIndexer()
-        vault_audio_pool = vault.get_vault_audio_pool()
+        # Pass clip_id so Vault pre-filters same-reel session aliases at the source
+        vault_audio_pool = vault.get_vault_audio_pool(current_clip_id=clip_id)
         if vault_audio_pool:
             logger.info(f"🏛️ [BGM SELECTOR - PRIMARY] Loaded {len(vault_audio_pool)} candidate audio track(s) from Telegram Storage Vault index.")
     except Exception as _tve:
@@ -645,8 +645,13 @@ def select_best_audio_for_clip(
     pool_files = dict(vault_audio_pool)
     for fname, meta in local_pool_files.items():
         if fname in pool_files:
-            # Preserve existing rich vault fields while updating local usage
+            # Preserve existing rich vault fields while updating local usage stats.
+            # CRITICAL: preserve is_source_extract so a local pool entry can't accidentally
+            # clear the flag and re-admit a reel extract as a real BGM candidate.
+            was_source_extract = pool_files[fname].get("is_source_extract", False)
             pool_files[fname].update(meta)
+            if was_source_extract:
+                pool_files[fname]["is_source_extract"] = True
         else:
             pool_files[fname] = meta
 
@@ -731,11 +736,13 @@ def select_best_audio_for_clip(
         c_vocals = bool(meta.get("has_vocals", False))
         c_lang = str(meta.get("language", "unknown"))
 
-        # Check if candidate is the clip's own harvested audio
+        # Check if candidate is the clip's own harvested audio OR any reel source-extract
+        # (Column 2 session aliases like sess_*.wav are always is_source_extract=True)
         is_self_audio = (
             c_file.lower() == f"bgm_{clip_id.lower()}.wav"
             or c_file.lower().startswith(f"bgm_{clip_id.lower()}")
             or (clip_folder and os.path.basename(clip_folder).lower() in c_file.lower())
+            or bool(meta.get("is_source_extract", False))  # ← catches ALL reel extracts
         )
 
         # LRU Recency Decay Math
@@ -751,14 +758,21 @@ def select_best_audio_for_clip(
 
         self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]" if is_self_audio else ""
 
-        candidate_scores.append((math_score, c_file, is_self_audio))
+        c_fid = str(meta.get("file_id") or "")
+        fid_tag = f", telegram_file_id='{c_fid}'" if c_fid else ""
+
+        candidate_scores.append((math_score, c_file, is_self_audio, c_fid))
         candidate_lines[c_file] = (
-            f"- '{c_file}'{self_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
+            f"- '{c_file}'{self_tag}{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
-    # Sort candidates: external tracks first (sorted by math score descending), self-audio placed at the VERY END
-    external_candidates = [c for c in candidate_scores if not c[2]]
+    # Sort candidates:
+    # - external_candidates: REAL music tracks (not flagged as source extract from any reel)
+    #   → ranked by math score descending, top 9 presented to Gemini
+    # - self_candidates: harvested source audio (current clip OR other reels)
+    #   → only 1 allowed, placed at very end as absolute last resort
+    external_candidates = [c for c in candidate_scores if not c[2]]  # c[2] == is_self_audio
     self_candidates = [c for c in candidate_scores if c[2]]
 
     external_candidates.sort(key=lambda x: x[0], reverse=True)
@@ -766,13 +780,29 @@ def select_best_audio_for_clip(
 
     # Up to 9 external tracks + self audio at the very bottom (last option)
     top_candidates = external_candidates[:9] + self_candidates[:1]
-    best_math_candidate = top_candidates[0][1] if top_candidates else available_candidates[0]
+
+    # Calculate best math candidate strictly from fresh (non-disqualified) candidates
+    fresh_candidate_scores = [c for c in candidate_scores if c[1].lower() not in disqualified_tracks]
+    if fresh_candidate_scores:
+        fresh_external = [c for c in fresh_candidate_scores if not c[2]]
+        fresh_self = [c for c in fresh_candidate_scores if c[2]]
+        fresh_external.sort(key=lambda x: x[0], reverse=True)
+        fresh_self.sort(key=lambda x: x[0], reverse=True)
+        best_math_candidate = fresh_external[0][1] if fresh_external else fresh_self[0][1]
+        best_math_fid = fresh_external[0][3] if fresh_external else fresh_self[0][3]
+        best_math_score = float(fresh_external[0][0] if fresh_external else fresh_self[0][0])
+    else:
+        best_math_candidate = top_candidates[0][1] if top_candidates else available_candidates[0]
+        best_math_fid = top_candidates[0][3] if top_candidates else ""
+        best_math_score = float(top_candidates[0][0]) if top_candidates else 0.85
+
     selected_track = best_math_candidate
-    alignment_score = float(top_candidates[0][0]) if top_candidates else 0.85
+    selected_file_id = best_math_fid
+    alignment_score = best_math_score
     reasoning = f"Smart Mathematical & Semantic Audio Match (score={alignment_score:.2f})."
 
     top_lines = []
-    for rank, (sc, fname, is_self) in enumerate(top_candidates, start=1):
+    for rank, (sc, fname, is_self, fid) in enumerate(top_candidates, start=1):
         line = candidate_lines.get(fname, f"- '{fname}': score={sc:.3f}")
         top_lines.append(f"#{rank} {line}")
     candidates_str = "\n".join(top_lines)
@@ -803,6 +833,7 @@ Rules:
 Return ONLY valid JSON:
 {{
   "selected_audio_track": "chosen_filename.mp3",
+  "telegram_file_id": "file_id_if_available",
   "alignment_score": 0.95,
   "reasoning": "One sentence: why this specific track fits or elevates this clip's intent/tone over alternatives."
 }}
@@ -828,14 +859,23 @@ Return ONLY valid JSON:
             if raw_response:
                 data = json.loads(_clean_json(raw_response))
                 win_track = data.get("selected_audio_track")
+                win_fid = data.get("telegram_file_id")
                 if win_track and any(c.lower() == win_track.lower() for c in available_candidates) and win_track.lower() not in disqualified_tracks:
                     selected_track = win_track
                     reasoning = data.get("reasoning", reasoning)
                     alignment_score = float(data.get("alignment_score", 0.90))
-                    logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (score={alignment_score:.2f})")
+                    if win_fid:
+                        selected_file_id = win_fid
+                    else:
+                        selected_file_id = pool_files.get(selected_track, {}).get("file_id", selected_file_id)
+                    logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (file_id={selected_file_id}, score={alignment_score:.2f})")
                 else:
-                    logger.warning(f"🎶 [BGM Selector] Gemini returned disqualified/invalid track '{win_track}' — forcing math winner '{selected_track}'.")
+                    selected_track = best_math_candidate
+                    selected_file_id = best_math_fid
+                    logger.warning(f"🎶 [BGM Selector] Gemini returned disqualified/invalid track '{win_track}' — forcing fresh math winner '{selected_track}'.")
     except Exception as e:
+        selected_track = best_math_candidate
+        selected_file_id = best_math_fid
         logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to smart math match: {e}")
 
     # Patch selection into clip intelligence store & AudioPoolManager persistent state
@@ -850,6 +890,7 @@ Return ONLY valid JSON:
 
     return {
         "selected_audio_track": selected_track,
+        "telegram_file_id": selected_file_id,
         "alignment_score": alignment_score,
         "reasoning": reasoning,
     }
