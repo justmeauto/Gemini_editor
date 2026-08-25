@@ -524,7 +524,14 @@ async def handle_telegram_callback(update, context):
         clip_name = os.path.basename(sess["video_path"]) if sess else "reel"
         curr_text = query.message.caption or query.message.text or f"📁 `{clip_name}`"
 
-        new_text = f"{curr_text}\n\n✅ **Approved!**\n✏️ **Please reply with your custom title for '{clip_name}':**"
+        new_text = (
+            f"{curr_text}\n\n"
+            f"✅ **Approved!**\n"
+            f"✏️ **Send your custom title / subject clue below:**\n"
+            f"📌 **Format**: `<Title Clue> <Affiliate URL>`\n"
+            f"*(Example: `Akanksha Puri Red Saree Look https://amzn.to/example`)*\n\n"
+            f"💡 Gemini will generate optimized SEO titles and embed commercial CTAs with policy disclosures (#ad)!"
+        )
 
         try:
             if query.message.video or query.message.document or query.message.photo:
@@ -535,14 +542,82 @@ async def handle_telegram_callback(update, context):
             logger.warning(f"⚠️ Callback caption edit warning: {_ce}")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text=f"✅ **Approved!**\n✏️ **Please reply with your custom title for '{clip_name}':**"
+                text=new_text
             )
 
     elif data.startswith("approve_post_"):
         session_id = data.replace("approve_post_", "").strip()
-        sess = session_manager.set_approved_title(session_id, custom_title="Viral Reel")
+        sess = session_manager.get_session(session_id)
+        
+        video_path = sess.get("video_path") if sess else None
+        clip_id = sess.get("clip_id") if sess else (os.path.basename(os.path.dirname(video_path)) if video_path else session_id)
+        creator_niche = sess.get("creator", "General") if sess else "General"
+
+        # Load clip intelligence from store or folder
+        intel_data = {}
+        if video_path and os.path.exists(video_path):
+            try:
+                from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+                store = ClipIntelligenceStore()
+                clip_folder = os.path.dirname(video_path)
+                loaded_intel = store.load(clip_id, clip_folder=clip_folder)
+                if loaded_intel:
+                    intel_data = loaded_intel
+            except Exception as _st_err:
+                logger.warning(f"⚠️ Could not load clip intelligence for {clip_id}: {_st_err}")
+
+        # Extract context payloads
+        v_context = intel_data.get("visual_context", {})
+        if isinstance(v_context, dict):
+            video_context_str = v_context.get("description") or v_context.get("visual_description") or f"Reel for {creator_niche}"
+        else:
+            video_context_str = str(v_context) or f"Reel for {creator_niche}"
+
+        raw_meta = intel_data.get("phase1", {})
+        if not raw_meta and sess:
+            raw_meta = {"creator_handle": creator_niche, "raw_caption": sess.get("title", "")}
+
+        # Generate SEO content via platform_seo_generator
+        seo_res = {}
+        try:
+            from Gemini_Modules.platform_seo_generator import generate_platform_seo
+            seo_res = generate_platform_seo(
+                video_context=video_context_str,
+                user_title=sess.get("title", "") if sess else "",
+                brand_info=creator_niche,
+                cache=intel_data,
+                metadata=raw_meta
+            )
+        except Exception as _seo_err:
+            logger.warning(f"⚠️ [PlatformSEO] Failed to generate SEO for session {session_id}: {_seo_err}")
+
+        # Extract generated platform fields
+        main_subject = seo_res.get("main_subject") or "Viral Reel"
+        yt_info = seo_res.get("platforms", {}).get("youtube", {})
+        approved_title = yt_info.get("title") or f"{main_subject} 🌟"
+        
+        tags_list = yt_info.get("hashtags", [])
+        if not tags_list:
+            ig_tags = seo_res.get("platforms", {}).get("instagram", {}).get("hashtags", [])
+            tags_list = ig_tags or ["#viral", "#shorts", "#trending"]
+        tags_str = " ".join(tags_list)
+
+        ig_info = seo_res.get("platforms", {}).get("instagram", {})
+        ig_desc = ig_info.get("description") or ig_info.get("title") or approved_title
+
+        # Persist approved title and SEO results
+        sess = session_manager.set_approved_title(session_id, custom_title=approved_title)
+        if sess:
+            sess["seo_result"] = seo_res
+
         curr_text = query.message.caption or query.message.text or "Master Reel"
-        new_text = f"{curr_text}\n\n🚀 **APPROVED & DISPATCHED TO PUBLISHING QUEUE!**"
+        new_text = (
+            f"{curr_text}\n\n"
+            f"🚀 **APPROVED & DISPATCHED WITH AI SEO METADATA!**\n"
+            f"⭐ **Main Subject**: `{main_subject}`\n"
+            f"📝 **YouTube Title**: `{approved_title}`\n"
+            f"🏷️ **Hashtags**: `{tags_str[:80]}`"
+        )
 
         try:
             if query.message.video or query.message.document or query.message.photo:
@@ -552,18 +627,19 @@ async def handle_telegram_callback(update, context):
         except Exception:
             await context.bot.send_message(chat_id=query.message.chat_id, text=new_text)
 
-        if sess:
-            v_path = sess["video_path"]
-            PublishQueue.add(v_path, channel_title="Viral Reel", channel_folder=sess.get("creator", "General"))
+        if sess and video_path:
+            PublishQueue.add(video_path, channel_title=approved_title, channel_folder=creator_niche)
             import asyncio
             loop = asyncio.get_running_loop()
             _dispatch_phase4_publishing_in_background(
                 bot_obj=context.bot,
                 chat_id=query.message.chat_id,
                 loop=loop,
-                video_path=v_path,
-                title="Viral Reel",
-                niche=sess.get("creator", "General")
+                video_path=video_path,
+                title=approved_title,
+                niche=creator_niche,
+                tags=tags_str,
+                description=ig_desc
             )
 
     elif data.startswith("reedit_"):
@@ -938,7 +1014,7 @@ def _dispatch_pipeline_in_background(**kwargs):
     t.start()
 
 
-def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video_path: str, title: str, niche: str = "General", tags: str = "#viral #shorts #trending"):
+def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video_path: str, title: str, niche: str = "General", tags: str = "#viral #shorts #trending", description: str = ""):
     """Spawns non-blocking daemon thread for Phase 4 publishing so the Telegram bot asyncio event loop never freezes."""
     def _worker():
         try:
@@ -947,7 +1023,8 @@ def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video
                 video_path=video_path,
                 title=title,
                 tags=tags,
-                niche=niche
+                niche=niche,
+                description=description
             )
             status_lines = []
             for p_name, p_info in pub_res.get("platforms", {}).items():
@@ -1354,21 +1431,87 @@ async def handle_telegram_incoming_msg(update, context):
         await execute_reedit_with_directive(None, context, session_id, custom_directive, chat_id)
         return
 
-    # Check if we are waiting for a custom title from user
+    # Check if we are waiting for a custom title / hint / affiliate URL from user
     pending_sess = session_manager.get_pending_title_session()
     if pending_sess and msg.text and not msg.text.startswith("/"):
-        custom_title = msg.text.strip()
+        user_input_raw = msg.text.strip()
         sess_id = pending_sess["session_id"]
-        updated_sess = session_manager.set_approved_title(sess_id, custom_title)
+        sess = session_manager.get_session(sess_id)
+
+        # 1. Detect and extract optional affiliate URL from user input format <Title> <url>
+        affiliate_url = None
+        url_match = re.search(r'https?://[^\s<>"]+', user_input_raw)
+        if url_match:
+            affiliate_url = url_match.group(0).strip()
+            # Clean title hint by stripping out the URL
+            user_hint_text = user_input_raw.replace(affiliate_url, "").strip()
+        else:
+            user_hint_text = user_input_raw
+
+        video_path = sess.get("video_path") if sess else None
+        clip_id = sess.get("clip_id") if sess else (os.path.basename(os.path.dirname(video_path)) if video_path else sess_id)
+        creator_niche = sess.get("creator", "General") if sess else "General"
+
+        # 2. Load clip intelligence
+        intel_data = {}
+        if video_path and os.path.exists(video_path):
+            try:
+                from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+                store = ClipIntelligenceStore()
+                loaded_intel = store.load(clip_id, clip_folder=os.path.dirname(video_path))
+                if loaded_intel:
+                    intel_data = loaded_intel
+            except Exception as _st_err:
+                logger.warning(f"⚠️ Could not load clip intelligence for {clip_id}: {_st_err}")
+
+        v_context = intel_data.get("visual_context", {})
+        video_context_str = v_context.get("description") if isinstance(v_context, dict) else str(v_context) or f"Reel for {creator_niche}"
+        raw_meta = intel_data.get("phase1", {}) or {"creator_handle": creator_niche, "raw_caption": user_hint_text}
+
+        # 3. Generate SEO content with User Hint & Affiliate Link Integration
+        seo_res = {}
+        try:
+            from Gemini_Modules.platform_seo_generator import generate_platform_seo
+            seo_res = generate_platform_seo(
+                video_context=video_context_str,
+                user_title=user_hint_text,
+                brand_info=creator_niche,
+                cache=intel_data,
+                metadata=raw_meta,
+                affiliate_link=affiliate_url,
+                user_hint=user_hint_text
+            )
+        except Exception as _seo_err:
+            logger.warning(f"⚠️ [PlatformSEO] Failed to generate commercial SEO for session {sess_id}: {_seo_err}")
+
+        main_subject = seo_res.get("main_subject") or user_hint_text or "Viral Reel"
+        yt_info = seo_res.get("platforms", {}).get("youtube", {})
+        approved_title = yt_info.get("title") or f"{main_subject} 🌟"
+        
+        tags_list = yt_info.get("hashtags", []) or seo_res.get("platforms", {}).get("instagram", {}).get("hashtags", []) or ["#viral", "#shorts"]
+        tags_str = " ".join(tags_list)
+
+        ig_info = seo_res.get("platforms", {}).get("instagram", {})
+        ig_desc = ig_info.get("description") or ig_info.get("title") or approved_title
+
+        # Persist approved title and SEO results
+        updated_sess = session_manager.set_approved_title(sess_id, approved_title)
+        if updated_sess:
+            updated_sess["seo_result"] = seo_res
 
         if updated_sess:
             v_path = updated_sess["video_path"]
-            PublishQueue.add(v_path, channel_title=custom_title, channel_folder=updated_sess.get("creator", "General"))
-            logger.info(f"🚀 Title captured for session {sess_id}: '{custom_title}'. Triggering Phase 4 Broadcasting...")
+            PublishQueue.add(v_path, channel_title=approved_title, channel_folder=creator_niche)
+            logger.info(f"🚀 Custom Title & Affiliate SEO saved for session {sess_id}: '{approved_title}'. Triggering Phase 4...")
+
+            aff_status = f"\n🛒 **Affiliate Promotion Link**: `{affiliate_url}`\n⚖️ **Policy Disclosure**: Included (#ad #affiliate)" if affiliate_url else ""
 
             await msg.reply_text(
-                f"🚀 **Title Saved!** Starting 4-Platform Broadcasting...\n\n"
-                f"📌 **Title**: `{custom_title}`\n"
+                f"🚀 **Commercial AI Title Saved!** Starting 4-Platform Broadcasting...\n\n"
+                f"⭐ **Main Subject**: `{main_subject}`\n"
+                f"📌 **YouTube Title**: `{approved_title}`\n"
+                f"🏷️ **Hashtags**: `{tags_str[:80]}`"
+                f"{aff_status}\n"
                 f"📁 **Reel**: `{os.path.basename(v_path)}`"
             )
 
@@ -1379,8 +1522,10 @@ async def handle_telegram_incoming_msg(update, context):
                 chat_id=chat_id,
                 loop=loop,
                 video_path=v_path,
-                title=custom_title,
-                niche=updated_sess.get("creator", "General")
+                title=approved_title,
+                niche=creator_niche,
+                tags=tags_str,
+                description=ig_desc
             )
             return
 

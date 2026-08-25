@@ -94,18 +94,25 @@ def extract_celebrity_human_name(handle: str) -> str:
 def extract_main_subject_and_context(
     video_context: str = "",
     metadata: Optional[Dict[str, Any]] = None,
-    cache: Optional[Dict[str, Any]] = None
+    cache: Optional[Dict[str, Any]] = None,
+    user_hint: Optional[str] = None,
+    affiliate_link: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Analyzes video context, raw metadata (titles, captions, tags), and prior Gemini call caches
-    (Forensic perception, Content Director, Visual Vectors, Audio Context) to discover:
-    1. main_subject: Primary hero entity, human name, pet name, brand name, or core focal topic
+    Analyzes video context, raw metadata (titles, captions, tags), prior Gemini call caches,
+    and user-provided clues/hints/affiliate links to discover:
+    1. main_subject: Primary hero entity, human name, pet name, brand name, or user hint
        (e.g., 'Akanksha Puri', 'Mittu', 'Fingers', 'Elon Musk', '2026').
-    2. applicable_context: Supporting descriptors, secondary context, action details
-       (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire', 'new details').
+    2. applicable_context: Supporting descriptors, secondary context, action details.
     """
     metadata = metadata or {}
     cache = cache or {}
+
+    # 0. Check User Hint first for main subject clue
+    hint_clean = ""
+    if user_hint:
+        hint_clean = re.sub(r'https?://[^\s<>"]+', "", user_hint).strip()
+        hint_clean = re.sub(r"\s+", " ", hint_clean)
 
     # Extract fields from cache
     vc = cache.get("visual_context", {}) if isinstance(cache.get("visual_context"), dict) else {}
@@ -127,11 +134,14 @@ def extract_main_subject_and_context(
     person_name = vc.get("person_name") or cache.get("person_name") or ""
     cached_subject = vc.get("main_subject") or cache.get("main_subject") or ""
 
-    full_text = f"{video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected_entities)}".strip()
+    full_text = f"{hint_clean} {video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected_entities)}".strip()
 
     # 1. Main Subject Discovery
     main_subject = ""
-    if person_name and "celeb" not in person_name.lower():
+    if hint_clean:
+        # User provided explicit hint/title clue
+        main_subject = hint_clean
+    elif person_name and "celeb" not in person_name.lower():
         main_subject = person_name
     elif cached_subject and "celeb" not in cached_subject.lower():
         main_subject = cached_subject
@@ -229,11 +239,14 @@ RAW VIDEO METADATA & SOURCE CAPTION:
 VIDEO CONTEXT & SCENE SUMMARY:
 {video_context}
 
-USER PROVIDED TITLE (if any):
+USER PROVIDED TITLE / CLUE (if any):
 {user_title}
 
 BRAND/CHANNEL INFO:
 {brand_info}
+
+AFFILIATE & PRODUCT PROMOTION LINK:
+{affiliate_info}
 
 PRIOR GEMINI CALL CACHE (Forensic Perception, Audio, Editing Plan):
 {cache_context}
@@ -242,8 +255,13 @@ CRITICAL RULES (STRICTLY ENFORCED):
 1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Akanksha Puri', write 'Akanksha Puri's Effortless Glow ✨ | Daily Look'; if 'Mittu', write 'Mittu the Dog Steals the Show 🐶'; if 'Fingers', write 'Fingers PC Cabinet Unboxing & Review 🖥️').
 2. ZERO REPETITION RULE (STRICT): ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration' or 'Trending Lookbook | Lookbook 2023'). Every title segment MUST be unique and complementary.
 3. WEAVE APPLICABLE DESCRIPTORS: Seamlessly integrate the applicable secondary context (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire') to create compelling hooks.
-4. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
-5. DYNAMIC REAL CONTEXT: Use exact metadata details and avoid generic hardcoded titles or outdated years.
+4. COMMERCIAL AFFILIATE FRAMING & POLICY COMPLIANCE: If an AFFILIATE & PRODUCT PROMOTION LINK is provided, embed it seamlessly into YouTube, Instagram, Facebook, and Telegram descriptions with compelling CTAs (e.g., '🛒 Shop featured item / look: [link]'). ALWAYS include a platform policy disclosure at the end (e.g. 'Disclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate') so earnings/commissions are fully protected and compliant across Amazon, Myntra, Ajio, and ad networks.
+5. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
+6. DYNAMIC REAL CONTEXT: Use exact metadata details and avoid generic hardcoded titles or outdated years.
+7. USER TITLE CLUE & SEMANTIC ALIGNMENT: If a USER PROVIDED TITLE / CLUE is provided, analyze its semantic similarity against the video context and metadata. Treat the clue as the explicit user intent for the main focal subject! Seamlessly incorporate the core keywords from the title clue across ALL platform outputs:
+   - TITLES: Anchor the title using the subject/keywords from the title clue.
+   - DESCRIPTIONS: Naturally integrate the title clue subject in the opening 1-2 lines.
+   - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Akanksha Puri Red Saree', include #AkankshaPuri #RedSaree #SareeLook).
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
@@ -381,13 +399,15 @@ def _heuristic_fallback(
     user_title: str = "",
     brand_info: str = "",
     metadata: Optional[Dict[str, Any]] = None,
-    cache: Optional[Dict[str, Any]] = None
+    cache: Optional[Dict[str, Any]] = None,
+    affiliate_link: Optional[str] = None,
+    user_hint: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Heuristic fallback when Gemini router is unavailable.
-    Generates non-repetitive, subject-focused SEO content.
+    Generates non-repetitive, subject-focused SEO content with optional commercial affiliate links.
     """
-    extracted = extract_main_subject_and_context(video_context, metadata, cache)
+    extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=affiliate_link)
     main_subject = extracted["main_subject"]
     applicable = extracted["applicable_context"]
 
@@ -418,31 +438,36 @@ def _heuristic_fallback(
             desc_tags.append(f"#{tag_word}")
     tags = list(dict.fromkeys([clean_subj_tag] + desc_tags + ["#viral", "#trending", "#reels", "#shorts"]))[:10]
 
+    # Attach commercial affiliate CTA & disclosure if link provided
+    aff_text = ""
+    if affiliate_link:
+        aff_text = f"\n\n🛒 Shop / Details: {affiliate_link}\n\nDisclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate"
+
     platforms = {
         "youtube": {
             "title": clean_title[:100],
-            "description": f"{clean_title}\n\n{applicable}\n\nSubscribe for more!",
+            "description": f"{clean_title}\n\n{applicable}{aff_text}\n\nSubscribe for more!",
             "hashtags": tags[:5],
             "seo_score": 75,
             "keyword_density": "subject_heuristic"
         },
         "instagram": {
             "title": f"{clean_title} ✨",
-            "description": f"{main_subject} in action! {applicable} 🔥",
+            "description": f"{main_subject} in action! {applicable}{aff_text} 🔥",
             "hashtags": tags[:10],
             "seo_score": 75,
             "keyword_density": "subject_heuristic"
         },
         "facebook": {
             "title": clean_title[:255],
-            "description": f"Check out {clean_title}! What do you think? 👇",
+            "description": f"Check out {clean_title}! {applicable}{aff_text} What do you think? 👇",
             "hashtags": tags[:5],
             "seo_score": 75,
             "keyword_density": "subject_heuristic"
         },
         "telegram": {
             "title": clean_title[:255],
-            "description": f"{clean_title}\n\nJoin our channel for more updates! 🔗",
+            "description": f"{clean_title}\n\n{applicable}{aff_text}\n\nJoin our channel for more updates! 🔗",
             "hashtags": tags[:5],
             "seo_score": 75,
             "keyword_density": "subject_heuristic"
@@ -456,6 +481,7 @@ def _heuristic_fallback(
         "content_category": extracted.get("intent", "general"),
         "target_audience": "general",
         "engagement_prediction": "medium (subject_heuristic)",
+        "main_subject": main_subject,
         "_source": "heuristic_fallback"
     }
 
@@ -465,7 +491,9 @@ def generate_platform_seo(
     brand_info: str = "",
     platforms: Optional[List[str]] = None,
     cache: Optional[Dict[str, Any]] = None,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    affiliate_link: Optional[str] = None,
+    user_hint: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Generate platform-specific SEO content using Gemini AI with Subject Extraction & Cache Injection.
@@ -477,6 +505,8 @@ def generate_platform_seo(
         platforms: List of platforms to generate for (default: all)
         cache: Cached data from previous Gemini calls (Forensic, Audio, Editing Plan)
         metadata: Raw video metadata (titles, captions, hashtags, source info)
+        affiliate_link: Commercial affiliate URL to promote (Amazon, Myntra, Ajio, etc.)
+        user_hint: User-provided hint or subject clue
 
     Returns:
         Dict with platform-specific titles, descriptions, hashtags, and SEO scores
@@ -484,13 +514,20 @@ def generate_platform_seo(
     if platforms is None:
         platforms = ["youtube", "instagram", "facebook", "telegram"]
 
-    extracted = extract_main_subject_and_context(video_context, metadata, cache)
+    # Sanitize affiliate link as passive text
+    clean_aff_link = ""
+    if affiliate_link:
+        m = re.search(r'https?://[^\s<>"]+', str(affiliate_link))
+        if m:
+            clean_aff_link = m.group(0).strip()
+
+    extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=clean_aff_link)
     main_subject = extracted["main_subject"]
     applicable_context = extracted["applicable_context"]
 
     if not _HAS_ROUTER or _router is None:
         logger.warning("⚠️ [PlatformSEO] Gemini router unavailable — using heuristic fallback.")
-        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
+        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return result
@@ -498,14 +535,17 @@ def generate_platform_seo(
     # Format cache & metadata context for prompt
     cache_context = json.dumps(cache, indent=2) if cache else "No cached context available"
     raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
+    
+    aff_info_str = f"Target Link: {clean_aff_link}\nInclude commercial CTA and mandatory affiliate disclosure (#ad #affiliate)" if clean_aff_link else "None provided"
 
     prompt = _SEO_GENERATION_PROMPT.format(
         main_subject=main_subject,
         applicable_context=applicable_context,
         raw_metadata=raw_metadata,
         video_context=video_context or "Video content not provided",
-        user_title=user_title or "No user title provided",
+        user_title=user_title or user_hint or "No user title provided",
         brand_info=brand_info or "No brand info provided",
+        affiliate_info=aff_info_str,
         cache_context=cache_context,
         platforms=", ".join(platforms)
     )
