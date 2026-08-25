@@ -82,6 +82,105 @@ PLATFORM_LIMITS = {
     },
 }
 
+def extract_celebrity_human_name(handle: str) -> str:
+    """Extract a human name or clean title from a handle string."""
+    if not handle:
+        return ""
+    clean = handle.strip().lstrip("@")
+    clean = re.sub(r"[._\-\d]+", " ", clean).strip()
+    words = [w.capitalize() for w in clean.split() if w.lower() not in {"official", "real", "daily", "page", "fp", "club", "fan"}]
+    return " ".join(words)
+
+def extract_main_subject_and_context(
+    video_context: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    cache: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Analyzes video context, raw metadata (titles, captions, tags), and prior Gemini call caches
+    (Forensic perception, Content Director, Visual Vectors, Audio Context) to discover:
+    1. main_subject: Primary hero entity, human name, pet name, brand name, or core focal topic
+       (e.g., 'Akanksha Puri', 'Mittu', 'Fingers', 'Elon Musk', '2026').
+    2. applicable_context: Supporting descriptors, secondary context, action details
+       (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire', 'new details').
+    """
+    metadata = metadata or {}
+    cache = cache or {}
+
+    # Extract fields from cache
+    vc = cache.get("visual_context", {}) if isinstance(cache.get("visual_context"), dict) else {}
+    ep = cache.get("editing_plan", {}) if isinstance(cache.get("editing_plan"), dict) else {}
+    audio_ctx = cache.get("audio_data", {}).get("context", {}) if isinstance(cache.get("audio_data"), dict) else {}
+
+    raw_caption = metadata.get("raw_caption") or metadata.get("caption") or ""
+    source_title = metadata.get("title") or metadata.get("source_title") or ""
+    tags = metadata.get("hashtags") or []
+    if isinstance(tags, list):
+        tags_str = " ".join(tags)
+    else:
+        tags_str = str(tags)
+
+    detected_entities = vc.get("detected_entities") or cache.get("detected_entities") or []
+    if isinstance(detected_entities, str):
+        detected_entities = [detected_entities]
+
+    person_name = vc.get("person_name") or cache.get("person_name") or ""
+    cached_subject = vc.get("main_subject") or cache.get("main_subject") or ""
+
+    full_text = f"{video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected_entities)}".strip()
+
+    # 1. Main Subject Discovery
+    main_subject = ""
+    if person_name and "celeb" not in person_name.lower():
+        main_subject = person_name
+    elif cached_subject and "celeb" not in cached_subject.lower():
+        main_subject = cached_subject
+    elif detected_entities and len(detected_entities) > 0:
+        main_subject = detected_entities[0]
+
+    if not main_subject and full_text:
+        # Search for capitalized names/entities (e.g. "Akanksha Puri", "Elon Musk")
+        cap_matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", full_text)
+        if cap_matches:
+            main_subject = cap_matches[0]
+
+    if not main_subject and full_text:
+        # Match single notable keywords
+        words = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", full_text) if len(w) > 3 and w.lower() not in {"video", "short", "reels", "trending", "viral", "post"}]
+        if words:
+            main_subject = words[0].title()
+
+    if not main_subject:
+        main_subject = "Trending Feature"
+
+    # 2. Applicable Context & Supporting Descriptors
+    descriptors = []
+    if vc.get("intent"):
+        descriptors.append(str(vc.get("intent")).replace("_", " "))
+    if vc.get("tone"):
+        descriptors.append(str(vc.get("tone")))
+    if ep.get("vibe_summary"):
+        descriptors.append(str(ep.get("vibe_summary")))
+
+    # Parse snippets from raw caption / source title
+    caption_snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption}") if s.strip() and len(s.strip()) > 3]
+    for snip in caption_snippets[:4]:
+        if main_subject.lower() not in snip.lower() and snip.lower() not in main_subject.lower():
+            descriptors.append(snip)
+
+    applicable_context = ", ".join(dict.fromkeys(descriptors)) if descriptors else "daily inspiration, viral moment"
+
+    return {
+        "main_subject": main_subject,
+        "applicable_context": applicable_context,
+        "raw_caption": raw_caption,
+        "source_title": source_title,
+        "detected_entities": detected_entities,
+        "intent": vc.get("intent", "general"),
+        "tone": vc.get("tone", "engaging"),
+        "audio_vibe": audio_ctx.get("dominant_emotion", "")
+    }
+
 def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_subject: str = "") -> Any:
     """
     Sanitizes titles, descriptions, and hashtags to ensure raw account handles/IDs
@@ -115,9 +214,19 @@ def sanitize_raw_handles_out(text_or_obj: Any, raw_handle: str = "", discovered_
 # ── SEO Generation Prompt ──────────────────────────────────────────────────────
 _SEO_GENERATION_PROMPT = """\
 You are an expert social media SEO content creator. Your task is to generate
-platform-optimized titles, hashtags, and descriptions for a video.
+platform-optimized titles, hashtags, and descriptions for a video based on the
+extracted MAIN SUBJECT, APPLICABLE CONTEXT, and PRIOR GEMINI CALL CACHES.
 
-VIDEO CONTEXT & RAW CAPTION:
+DISCOVERED MAIN SUBJECT (PRIMARY HERO ANCHOR):
+{main_subject}
+
+APPLICABLE SECONDARY CONTEXT & DESCRIPTORS:
+{applicable_context}
+
+RAW VIDEO METADATA & SOURCE CAPTION:
+{raw_metadata}
+
+VIDEO CONTEXT & SCENE SUMMARY:
 {video_context}
 
 USER PROVIDED TITLE (if any):
@@ -126,28 +235,29 @@ USER PROVIDED TITLE (if any):
 BRAND/CHANNEL INFO:
 {brand_info}
 
-CACHED CONTEXT (from previous generations - use this to maintain consistency):
+PRIOR GEMINI CALL CACHE (Forensic Perception, Audio, Editing Plan):
 {cache_context}
 
 CRITICAL RULES (STRICTLY ENFORCED):
-1. DISCOVER THE REAL SHINING STAR / MAIN SUBJECT: Analyze the video context, caption text, and hashtags to identify who or what is the TRUE focal subject of the video (e.g., 'Kiara Advani', 'Disha Patani', 'Shah Rukh Khan', 'Vintage Ferrari', 'Mumbai Street Food').
-2. IGNORE AGGREGATOR HANDLES: Source account handles (e.g., 'channel_id', 'aggregator_handle', 'viralreels') are just aggregator IDs — NEVER use them as the person's name or title!
-3. NO RAW ACCOUNT HANDLES OR IDS: NEVER include raw account handles or IDs (e.g. 'handle123', 'channel_id', '@username') in any title, description, or hashtag.
-4. USE REAL SUBJECT IN TITLES & HASHTAGS: Write high-converting titles, descriptions, and hashtags centered around the REAL discovered subject/star (e.g., 'Kiara Advani Red Saree Look of the Day 🌟' or 'Stunning Look of the Day 🌟').
+1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Akanksha Puri', write 'Akanksha Puri's Effortless Glow ✨ | Daily Look'; if 'Mittu', write 'Mittu the Dog Steals the Show 🐶'; if 'Fingers', write 'Fingers PC Cabinet Unboxing & Review 🖥️').
+2. ZERO REPETITION RULE (STRICT): ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration' or 'Trending Lookbook | Lookbook 2023'). Every title segment MUST be unique and complementary.
+3. WEAVE APPLICABLE DESCRIPTORS: Seamlessly integrate the applicable secondary context (e.g., 'effortlessly glowing', 'the dog', 'PC cabinet', 'trillionaire') to create compelling hooks.
+4. NO RAW ACCOUNT HANDLES OR IDS: Never include raw aggregator account handles, channel IDs, or @username in titles or hashtags.
+5. DYNAMIC REAL CONTEXT: Use exact metadata details and avoid generic hardcoded titles or outdated years.
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
 For EACH platform, output:
-1. **Title**: Optimized for character limits, keyword placement, and click-through rate
-2. **Description**: SEO-optimized with relevant keywords, engaging hooks, and platform-appropriate CTAs
-3. **Hashtags**: Mix of high-volume, medium-volume, and niche hashtags relevant to the content
-4. **SEO Score**: 0-100 rating based on optimization quality
+1. **Title**: Optimized for character limits, keyword placement, click-through rate, and ZERO word repetition.
+2. **Description**: SEO-optimized with relevant keywords, engaging hooks, and platform-appropriate CTAs.
+3. **Hashtags**: Mix of high-volume, medium-volume, and niche hashtags relevant to {main_subject} and {applicable_context}.
+4. **SEO Score**: 0-100 rating based on optimization quality.
 
 PLATFORM-SPECIFIC GUIDELINES:
 
 **YouTube**:
-- Title: 60-100 chars, include main keyword at start, use power words
-- Description: First 150 chars are crucial for SEO, include keywords naturally
+- Title: 60-100 chars, main keyword at start, zero repeating words, power words
+- Description: First 150 chars crucial for SEO, include keywords naturally
 - Hashtags: 3-5 high-volume, 5-10 relevant niche tags
 - CTA: Subscribe-focused with channel link
 - Emojis: Use sparingly (2-3 max)
@@ -160,16 +270,16 @@ PLATFORM-SPECIFIC GUIDELINES:
 - Emojis: High usage for visual appeal
 
 **Facebook**:
-- Title: 60-100 chars, curiosity-inducing but not clickbait
+- Title: 60-100 chars, curiosity-inducing but not clickbait, zero repeating words
 - Description: Conversational tone, ask questions to drive comments
-- Hashtags: 3-5 relevant tags (Facebook doesn't rely heavily on hashtags)
+- Hashtags: 3-5 relevant tags
 - CTA: Share-focused to boost algorithm reach
 - Emojis: Moderate usage
 
 **Telegram**:
-- Title: 50-100 chars, direct and informative
+- Title: 50-100 chars, direct and informative, zero repeating words
 - Description: Concise, value-focused, easy to scan
-- Hashtags: 3-5 relevant tags for discoverability
+- Hashtags: 3-5 relevant tags
 - CTA: Join group/channel focused
 - Emojis: Moderate usage
 
@@ -207,7 +317,7 @@ OUTPUT SCHEMA — return ONLY this JSON, no other text:
     }}
   }},
   "global_keywords": ["<main keyword>", "<secondary keyword>", ...],
-  "content_category": "<category: fashion, fitness, lifestyle, etc>",
+  "content_category": "<category>",
   "target_audience": "<audience description>",
   "engagement_prediction": "<high/medium/low with reasoning>"
 }}
@@ -266,76 +376,86 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
 
     return validated
 
-def _heuristic_fallback(video_context: str, user_title: str = "", brand_info: str = "") -> Dict[str, Any]:
+def _heuristic_fallback(
+    video_context: str,
+    user_title: str = "",
+    brand_info: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    cache: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Heuristic fallback when Gemini router is unavailable.
-    Generates basic SEO content using keyword extraction and templates.
+    Generates non-repetitive, subject-focused SEO content.
     """
-    # Extract keywords from context
-    context_lower = video_context.lower()
-    keywords = []
-    
-    # Common fashion/fitness/lifestyle keywords
-    keyword_bank = [
-        "fashion", "style", "outfit", "trend", "look", "ootd",
-        "fitness", "workout", "gym", "exercise", "health",
-        "lifestyle", "daily", "routine", "vlog", "aesthetic",
-        "beautiful", "amazing", "stunning", "gorgeous", "inspiration"
-    ]
-    
-    for kw in keyword_bank:
-        if kw in context_lower:
-            keywords.append(kw)
-    
-    # Use user title if provided, otherwise generate from keywords
-    base_title = user_title if user_title else f"{' '.join(keywords[:3]).title() if keywords else 'Amazing Video'}"
-    
-    # Generate platform-specific content
-    platforms = {}
-    
-    # YouTube
-    platforms["youtube"] = {
-        "title": base_title[:100],
-        "description": f"Check out this amazing video! {base_title}\n\nSubscribe for more content!",
-        "hashtags": [f"#{kw}" for kw in keywords[:5]] if keywords else ["#viral", "#trending", "#fyp"],
-        "seo_score": 70,
-        "keyword_density": "heuristic"
+    extracted = extract_main_subject_and_context(video_context, metadata, cache)
+    main_subject = extracted["main_subject"]
+    applicable = extracted["applicable_context"]
+
+    # Deduplicate words in base title
+    if user_title:
+        base_title = user_title
+    else:
+        desc_first = applicable.split(",")[0].strip().title() if applicable else "Daily Special"
+        base_title = f"{main_subject} — {desc_first}"
+
+    # Remove any repeated words from base_title
+    words_seen = set()
+    clean_title_words = []
+    for word in base_title.split():
+        w_lower = re.sub(r"\W+", "", word).lower()
+        if w_lower and w_lower not in words_seen:
+            words_seen.add(w_lower)
+            clean_title_words.append(word)
+    clean_title = " ".join(clean_title_words)
+
+    # Build clean hashtags
+    subj_clean_str = re.sub(r"\W+", "", main_subject)
+    clean_subj_tag = f"#{subj_clean_str}" if subj_clean_str else "#viral"
+    desc_tags = []
+    for d in applicable.split(","):
+        tag_word = re.sub(r"\W+", "", d.strip())
+        if tag_word and len(tag_word) > 2:
+            desc_tags.append(f"#{tag_word}")
+    tags = list(dict.fromkeys([clean_subj_tag] + desc_tags + ["#viral", "#trending", "#reels", "#shorts"]))[:10]
+
+    platforms = {
+        "youtube": {
+            "title": clean_title[:100],
+            "description": f"{clean_title}\n\n{applicable}\n\nSubscribe for more!",
+            "hashtags": tags[:5],
+            "seo_score": 75,
+            "keyword_density": "subject_heuristic"
+        },
+        "instagram": {
+            "title": f"{clean_title} ✨",
+            "description": f"{main_subject} in action! {applicable} 🔥",
+            "hashtags": tags[:10],
+            "seo_score": 75,
+            "keyword_density": "subject_heuristic"
+        },
+        "facebook": {
+            "title": clean_title[:255],
+            "description": f"Check out {clean_title}! What do you think? 👇",
+            "hashtags": tags[:5],
+            "seo_score": 75,
+            "keyword_density": "subject_heuristic"
+        },
+        "telegram": {
+            "title": clean_title[:255],
+            "description": f"{clean_title}\n\nJoin our channel for more updates! 🔗",
+            "hashtags": tags[:5],
+            "seo_score": 75,
+            "keyword_density": "subject_heuristic"
+        }
     }
-    
-    # Instagram
-    platforms["instagram"] = {
-        "title": f"{base_title} ✨\n\nDouble tap if you love this! ❤️",
-        "description": f"{' '.join(keywords[:2]).title() if keywords else 'Lifestyle'} content you don't want to miss! 🔥",
-        "hashtags": [f"#{kw}" for kw in keywords[:10]] if keywords else ["#reels", "#viral", "#explore", "#fyp", "#trending"],
-        "seo_score": 70,
-        "keyword_density": "heuristic"
-    }
-    
-    # Facebook
-    platforms["facebook"] = {
-        "title": base_title[:255],
-        "description": f"What do you think about this? {base_title}\n\nShare your thoughts in the comments! 👇",
-        "hashtags": [f"#{kw}" for kw in keywords[:5]] if keywords else ["#viral", "#trending"],
-        "seo_score": 70,
-        "keyword_density": "heuristic"
-    }
-    
-    # Telegram
-    platforms["telegram"] = {
-        "title": base_title[:255],
-        "description": f"{base_title}\n\nJoin our channel for more! 🔗",
-        "hashtags": [f"#{kw}" for kw in keywords[:5]] if keywords else ["#video", "#content"],
-        "seo_score": 70,
-        "keyword_density": "heuristic"
-    }
-    
+
     return {
         "generated_at": datetime.utcnow().isoformat(),
         "platforms": platforms,
-        "global_keywords": keywords[:5] if keywords else ["viral", "content"],
-        "content_category": "general",
+        "global_keywords": [main_subject] + desc_tags[:4],
+        "content_category": extracted.get("intent", "general"),
         "target_audience": "general",
-        "engagement_prediction": "medium (heuristic)",
+        "engagement_prediction": "medium (subject_heuristic)",
         "_source": "heuristic_fallback"
     }
 
@@ -344,64 +464,71 @@ def generate_platform_seo(
     user_title: str = "",
     brand_info: str = "",
     platforms: Optional[List[str]] = None,
-    cache: Optional[Dict[str, Any]] = None
+    cache: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Generate platform-specific SEO content using Gemini AI.
-    
+    Generate platform-specific SEO content using Gemini AI with Subject Extraction & Cache Injection.
+
     Args:
         video_context: Description of video content, scene analysis, or transcript
         user_title: User-provided title (optional, will be optimized)
         brand_info: Brand/channel information for personalization
         platforms: List of platforms to generate for (default: all)
-        cache: Cached data from previous generations for context
-    
+        cache: Cached data from previous Gemini calls (Forensic, Audio, Editing Plan)
+        metadata: Raw video metadata (titles, captions, hashtags, source info)
+
     Returns:
         Dict with platform-specific titles, descriptions, hashtags, and SEO scores
     """
     if platforms is None:
         platforms = ["youtube", "instagram", "facebook", "telegram"]
-    
+
+    extracted = extract_main_subject_and_context(video_context, metadata, cache)
+    main_subject = extracted["main_subject"]
+    applicable_context = extracted["applicable_context"]
+
     if not _HAS_ROUTER or _router is None:
         logger.warning("⚠️ [PlatformSEO] Gemini router unavailable — using heuristic fallback.")
-        result = _heuristic_fallback(video_context, user_title, brand_info)
-        # Filter to requested platforms
+        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return result
-    
-    # Format cache context for prompt
-    cache_context = ""
-    if cache:
-        cache_context = json.dumps(cache, indent=2)
-    
+
+    # Format cache & metadata context for prompt
+    cache_context = json.dumps(cache, indent=2) if cache else "No cached context available"
+    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
+
     prompt = _SEO_GENERATION_PROMPT.format(
+        main_subject=main_subject,
+        applicable_context=applicable_context,
+        raw_metadata=raw_metadata,
         video_context=video_context or "Video content not provided",
         user_title=user_title or "No user title provided",
         brand_info=brand_info or "No brand info provided",
-        cache_context=cache_context or "No cached context available",
+        cache_context=cache_context,
         platforms=", ".join(platforms)
     )
-    
+
     try:
-        logger.info(f"🎯 [PlatformSEO] Generating SEO content for: {', '.join(platforms)}")
+        logger.info(f"🎯 [PlatformSEO] Generating SEO content for subject='{main_subject}' platforms: {', '.join(platforms)}")
         raw_resp = _router.generate(
             task_type="seo_generation",
             prompt=prompt,
             module_name="platform_seo_generator",
-            gen_config={"temperature": 0.3},  # Low temp for consistent SEO
+            gen_config={"temperature": 0.3},
         )
-        
+
         if not raw_resp:
             logger.warning("[PlatformSEO] Empty Gemini response — using heuristic fallback.")
-            result = _heuristic_fallback(video_context, user_title, brand_info)
+            result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
             if platforms:
                 result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
             return result
-        
+
         clean = _clean_json(raw_resp)
         seo_data = json.loads(clean)
-        
+
         # Validate and adjust each platform's content
         for platform in platforms:
             if platform in seo_data.get("platforms", {}):
@@ -409,35 +536,39 @@ def generate_platform_seo(
                     platform,
                     seo_data["platforms"][platform]
                 )
-        
+
         # Filter to requested platforms
         if platforms:
             seo_data["platforms"] = {
                 k: v for k, v in seo_data.get("platforms", {}).items() if k in platforms
             }
-        
+
         # Add metadata
         seo_data.setdefault("generated_at", datetime.utcnow().isoformat())
-        seo_data.setdefault("global_keywords", [])
-        seo_data.setdefault("content_category", "general")
+        seo_data.setdefault("global_keywords", [main_subject])
+        seo_data.setdefault("content_category", extracted.get("intent", "general"))
         seo_data.setdefault("target_audience", "general")
-        seo_data.setdefault("engagement_prediction", "medium")
+        seo_data.setdefault("engagement_prediction", "high")
+        seo_data["main_subject"] = main_subject
+        seo_data["applicable_context"] = applicable_context
         seo_data["_source"] = "gemini_semantic"
-        
-        # Sanitize output to strip any raw handle / ID text
-        if "creator_handle" in video_context or "raw_handle" in video_context:
+
+        # Sanitize output to strip raw handle / ID text if present
+        raw_h = (metadata or {}).get("creator_handle") or ""
+        if not raw_h:
             m_h = re.search(r"(?:creator_handle|raw_handle|Handle):\s*([A-Za-z0-9._]+)", video_context)
             if m_h:
                 raw_h = m_h.group(1)
-                clean_name = extract_celebrity_human_name(raw_h)
-                seo_data = sanitize_raw_handles_out(seo_data, raw_h, clean_name)
+        if raw_h:
+            clean_name = extract_celebrity_human_name(raw_h)
+            seo_data = sanitize_raw_handles_out(seo_data, raw_h, clean_name or main_subject)
 
-        logger.info(f"✅ [PlatformSEO] Generated SEO content for {len(seo_data['platforms'])} platforms")
+        logger.info(f"✅ [PlatformSEO] Generated SEO content for subject='{main_subject}' across {len(seo_data['platforms'])} platforms")
         return seo_data
-        
+
     except Exception as e:
         logger.warning(f"[PlatformSEO] Gemini call failed ({e}) — using heuristic fallback.")
-        result = _heuristic_fallback(video_context, user_title, brand_info)
+        result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return result
