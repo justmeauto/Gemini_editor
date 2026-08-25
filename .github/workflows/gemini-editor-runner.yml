@@ -197,6 +197,12 @@ jobs:
             json.dump(lock, f)
         print('🔐 Bot lock written (expires in ~355 min)')
         "
+        # ── Clean up bot lock on script exit ────────────────────────────────
+        cleanup() {
+          rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json"
+          echo "🔓 Bot lock released."
+        }
+        trap cleanup EXIT
         # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode..."
         python main.py
@@ -214,13 +220,13 @@ jobs:
         find downloads/ -name "*.mp4" -type f -delete 2>/dev/null || true
         find downloads/ -empty -type d -delete 2>/dev/null || true
 
-        # Stage state files if present
-        git add -f Phase_1/The\ jsons/Github_Actions_json/bot_lock.json 2>/dev/null || true
+        # Stage state files (including lock deletion) if present
+        git add -A Phase_1/The\ jsons/Github_Actions_json/ 2>/dev/null || true
 
         if git diff --cached --quiet; then
           echo "No state changes to commit."
         else
-          git commit -m "ci: update bot lock [skip ci]"
+          git commit -m "ci: release bot lock and update state [skip ci]"
           git fetch origin main
           git rebase origin/main --strategy-option=theirs || git rebase --abort
           git push origin HEAD:main || echo "Push skipped (concurrent run or auth failure)"
