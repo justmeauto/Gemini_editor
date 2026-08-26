@@ -43,15 +43,32 @@ def select_clip_bgm(
     preserve_music = _intent.get("preserve_music", False)
 
     # ── STATEFUL CACHE LOCK (Stage 2 Cache-First BGM) ────────────────────────
-    if preserve_music and not exclude_filenames:
+    if preserve_music:
         cached_bgm = _try_load_cached_bgm(clip_id, clip_folder, audio_dir)
-        if cached_bgm:
+        cached_track = cached_bgm.get("selected_audio_track") if cached_bgm else None
+
+        is_excluded = False
+        if cached_track and exclude_filenames:
+            ct_lower = cached_track.lower()
+            ct_base = os.path.basename(cached_track).lower()
+            for ef in exclude_filenames:
+                ef_lower = str(ef).lower()
+                if ct_lower == ef_lower or ct_base == os.path.basename(ef_lower):
+                    is_excluded = True
+                    break
+
+        if cached_bgm and not is_excluded:
             logger.info(
                 f"🔒 [STEP 04] BGM CACHE LOCK — Skipping Gemini Call 2. "
-                f"Reusing: '{cached_bgm.get('selected_audio_track')}' "
+                f"Reusing: '{cached_track}' "
                 f"(intent: preserve_music=True)"
             )
             return cached_bgm
+        elif is_excluded:
+            logger.info(
+                f"🚫 [STEP 04] Cached BGM '{cached_track}' is in exclude_filenames. "
+                "Running Gemini Call 2 fresh for alternative BGM."
+            )
         else:
             logger.info(
                 "[STEP 04] preserve_music=True but no cached BGM found. "

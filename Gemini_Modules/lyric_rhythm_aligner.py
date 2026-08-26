@@ -707,8 +707,11 @@ def select_best_audio_for_clip(
         logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts excluded).")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid BGM tracks in pool."}
 
-    # Filter out previous BGM track if alternatives exist
-    fresh_candidates = [c for c in all_candidates if c.lower() not in disqualified_tracks]
+    # Filter out previous BGM track & batch excluded tracks if alternatives exist
+    fresh_candidates = [
+        c for c in all_candidates
+        if c.lower() not in disqualified_tracks and os.path.basename(c).lower() not in disqualified_tracks
+    ]
     available_candidates = fresh_candidates if fresh_candidates else all_candidates
 
     # Format candidate BGM tracks — ALL data comes from pool_files entries

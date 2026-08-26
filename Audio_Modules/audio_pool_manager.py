@@ -629,10 +629,14 @@ class AudioPoolManager:
         if recent_history is None:
             recent_history = []
         
-        _excluded_basenames: set = set(exclude_filenames or [])
+        _excluded_basenames: set = {os.path.basename(ef).lower() for ef in (exclude_filenames or [])}
+        if exclude_filenames:
+            for ef in exclude_filenames:
+                _excluded_basenames.add(str(ef).lower())
         if exclude_path:
-            _excluded_basenames.add(os.path.basename(exclude_path))
-        
+            _excluded_basenames.add(os.path.basename(exclude_path).lower())
+            _excluded_basenames.add(str(exclude_path).lower())
+
         best_audio = None
         best_score = -1.0
 
@@ -667,7 +671,9 @@ class AudioPoolManager:
 
         for filename in candidate_pool_files:
             # 1. Exclusion Logic
-            if filename in _excluded_basenames:
+            fn_lower = filename.lower()
+            fn_base = os.path.basename(filename).lower()
+            if fn_lower in _excluded_basenames or fn_base in _excluded_basenames:
                 logger.debug(f"[POOL] Skipping self-selected audio: {filename}")
                 continue
                 

@@ -78,6 +78,7 @@ def run_phase2_pipeline(
     rendered_files = []
     skipped_count = 0
     failed_count = 0
+    batch_used_bgms = set()
 
     for idx, target in enumerate(targets, start=1):
         folder_name = target["folder_name"]
@@ -211,7 +212,7 @@ def run_phase2_pipeline(
             # Step 4: Gemini Call 2 BGM Selector
             _emit("step_04", "running", {"message": f"Selecting optimal BGM track for clip '{folder_name}'..."})
 
-            exclude_bgm = set()
+            exclude_bgm = set(batch_used_bgms)
             force_new_music = False
             if user_edit_directive:
                 d_lower = user_edit_directive.lower()
@@ -236,7 +237,13 @@ def run_phase2_pipeline(
                 exclude_filenames=exclude_bgm if exclude_bgm else None,
             )
             selected_bgm_path = bgm_res.get("physical_path")
-            _emit("step_04", "success", {"message": f"BGM selected: '{bgm_res.get('selected_audio_track')}'."})
+            selected_track_name = bgm_res.get("selected_audio_track")
+            if selected_track_name:
+                batch_used_bgms.add(selected_track_name)
+                batch_used_bgms.add(os.path.basename(selected_track_name))
+            if selected_bgm_path:
+                batch_used_bgms.add(os.path.basename(selected_bgm_path))
+            _emit("step_04", "success", {"message": f"BGM selected: '{selected_track_name}'."})
 
             # Step 5: Rhythm & Micro-Shot Timeline Builder
             _emit("step_05", "running", {"message": "Building rhythm & micro-shot timeline..."})
