@@ -514,13 +514,18 @@ def apify_get_video_url(instagram_url: str) -> Optional[str]:
     """
     Last-resort fallback for a single Instagram URL.
     Returns a direct CDN .mp4 URL string, or None on failure.
-
-    Cost: 1 Apify result unit per call. Use sparingly.
-
-    GUARD: Only accepts real instagram.com URLs.
-    CDN URLs (scontent-*.cdninstagram.com) are rejected immediately
-    without making any API call — no quota consumed, no error.
     """
+    # ── URL Cleaning Guard ───────────────────────────────────────────────────
+    if instagram_url:
+        instagram_url = str(instagram_url).strip()
+        while True:
+            prev = instagram_url
+            instagram_url = instagram_url.strip("`'\" \t\r\n")
+            if instagram_url.endswith("%60"):
+                instagram_url = instagram_url[:-3]
+            if instagram_url == prev:
+                break
+
     # ── URL Guard — reject non-instagram.com URLs immediately ────────────────
     if not _INSTAGRAM_URL_RE.match(instagram_url):
         logger.warning(

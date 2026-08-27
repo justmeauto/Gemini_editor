@@ -589,14 +589,18 @@ def download_video(
     """
     Download *url* and return ``(local_path, is_cached)``.
     Always returns a 2-tuple; ``(None, False)`` signals total failure.
-
-    Phases
-    ------
-    1. ID extraction  → O(1) index duplicate check
-    2. Multi-strategy yt-dlp download with auto-update on extractor failure
-    3. Partial-file rescue (post-loop, Windows file-lock workaround)
-    4. Atomic commit: fingerprint → hash dedup → rename → index
     """
+    # ── URL Sanitization Guard ───────────────────────────────────────────
+    if url:
+        url = str(url).strip()
+        while True:
+            prev = url
+            url = url.strip("`'\" \t\r\n")
+            if url.endswith("%60"):
+                url = url[:-3]
+            if url == prev:
+                break
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     platform  = _detect_platform(url)
     url_id    = _extract_url_id(url)
