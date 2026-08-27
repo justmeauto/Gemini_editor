@@ -394,10 +394,10 @@ class FFmpegCommandGenerator:
                     pass
 
         if self.hwaccel in ("cuda", "nvenc") or video_codec == "h264_nvenc":
-            return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(crf)]
+            return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
         elif self.hwaccel == "qsv" or video_codec == "h264_qsv":
-            return ["-c:v", "h264_qsv", "-preset", str(preset), "-global_quality", str(crf)]
-        return ["-c:v", str(video_codec), "-preset", str(preset), "-crf", str(crf), "-pix_fmt", "yuv420p"]
+            return ["-c:v", "h264_qsv", "-preset", str(preset), "-global_quality", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+        return ["-c:v", str(video_codec), "-preset", str(preset), "-crf", str(crf), "-pix_fmt", "yuv420p", "-profile:v", "main", "-movflags", "+faststart"]
 
     @staticmethod
     def cmd_list_to_string(cmd_list: List[str]) -> str:
@@ -1053,7 +1053,7 @@ class FFmpegCommandGenerator:
         # ── Encoder flags ─────────────────────────────────────────────────────────
         cmd.extend(self._get_encoder_flags(encoding_cfg=encoding_cfg))
         if has_audio:
-            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+            cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"])
         cmd.append(output_path)
 
         terminal_command = self.cmd_list_to_string(cmd)

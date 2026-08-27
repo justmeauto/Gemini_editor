@@ -81,11 +81,13 @@ def _run_music_driven_fallback(
         cmd.extend(["-i", selected_bgm_path])
         bgm_idx = len(shots)
         filter_graph += f";[{bgm_idx}:a]volume=0.5[aout]"
-        cmd.extend(["-filter_complex", filter_graph, "-map", "[vout]", "-map", "[aout]", "-shortest"])
     else:
         cmd.extend(["-filter_complex", filter_graph, "-map", "[vout]"])
 
-    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", output_path])
+    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "main", "-movflags", "+faststart"])
+    if selected_bgm_path and os.path.exists(selected_bgm_path):
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"])
+    cmd.append(output_path)
 
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode == 0 and os.path.exists(output_path):

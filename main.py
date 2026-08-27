@@ -1794,7 +1794,8 @@ def run_master_pipeline(
                                 chat_id=int(target_chat),
                                 video=vf,
                                 caption=f"🎉 **AI Master Edit Complete!**\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
-                                reply_markup=keyboard
+                                reply_markup=keyboard,
+                                supports_streaming=True
                             )
                             if sent_msg:
                                 session_manager.update_message_id(sess_id, sent_msg.message_id)
@@ -1808,7 +1809,8 @@ def run_master_pipeline(
                                         sg_msg = await bot.send_video(
                                             chat_id=int(storage_group),
                                             video=svf,
-                                            caption=f"📦 **[VAULT BACKUP]** Master Reel Backup\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`"
+                                            caption=f"📦 **[VAULT BACKUP]** Master Reel Backup\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
+                                            supports_streaming=True
                                         )
                                         if sg_msg and sg_msg.video:
                                             master_file_id = sg_msg.video.file_id

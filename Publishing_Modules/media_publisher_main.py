@@ -238,14 +238,16 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
                         return await bot.send_video(
                             chat_id=target_cid,
                             video=file_or_id,
-                            caption=text_caption
+                            caption=text_caption,
+                            supports_streaming=True
                         )
                     else:
                         with open(video_path, "rb") as vf:
                             return await bot.send_video(
                                 chat_id=target_cid,
                                 video=vf,
-                                caption=text_caption
+                                caption=text_caption,
+                                supports_streaming=True
                             )
                 except RetryAfter as ra:
                     logger.warning(f"⏳ Rate-limited by Telegram. Sleeping {ra.retry_after}s (attempt {attempt}/{max_retries})")
