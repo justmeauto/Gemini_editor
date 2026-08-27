@@ -45,11 +45,11 @@ on:
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
 # All runs share a single concurrency group.
-# cancel-in-progress: false — A running 6-hour session will NEVER be killed
-# by a new scheduled cron or manual dispatch. GitHub queues them safely.
+# cancel-in-progress: true — Ensures old hanging runs are automatically terminated
+# when a new scheduled window arrives so scheduled runs start promptly.
 concurrency:
   group: rawgrab-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run-rawgrab:
@@ -58,7 +58,7 @@ jobs:
       TZ: "Asia/Kolkata"
       GITHUB_CRON: ${{ github.event.schedule }}
       DISPATCH_MODE: ${{ github.event.inputs.mode || 'both' }}
-    timeout-minutes: 360   # 6-hour hard ceiling — GitHub kills gracefully after this
+    timeout-minutes: 180   # 3-hour ceiling — prevents any single run from blocking subsequent scheduled triggers
     permissions:
       contents: write
       actions: write
@@ -192,10 +192,10 @@ jobs:
         mkdir -p "Phase_1/The jsons/Github_Actions_json"
         python3 -c "
         import json, time, os
-        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 21300}
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 9000}
         with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
             json.dump(lock, f)
-        print('🔐 Bot lock written (expires in ~355 min)')
+        print('🔐 Bot lock written (expires in ~150 min)')
         "
         # ── Clean up bot lock on script exit ────────────────────────────────
         cleanup() {
@@ -216,11 +216,12 @@ jobs:
         git config user.name  "RawGrab Bot"
         git config user.email "rawgrab-bot@users.noreply.github.com"
 
-        # Wipe leftover clip files that weren't cleaned up during the session
+        # Wipe leftover clip files and lock file before committing state
+        rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json" 2>/dev/null || true
         find downloads/ -name "*.mp4" -type f -delete 2>/dev/null || true
         find downloads/ -empty -type d -delete 2>/dev/null || true
 
-        # Stage state files (including lock deletion) if present
+        # Stage state files if present
         git add -A Phase_1/The\ jsons/Github_Actions_json/ 2>/dev/null || true
 
         if git diff --cached --quiet; then
