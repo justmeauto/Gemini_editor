@@ -32,10 +32,9 @@ on:
         default: ''
         type: string
 
-  # REMOVED: push: branches: main
-  # ⚠️ That trigger shared the same concurrency group as schedule.
-  # Any git push (including main.py's own commits) would fire a new run
-  # which cancel-in-progress:true would use to KILL the running scheduled job.
+  push:
+    branches:
+      - main
 
   schedule:
     # 4 clean 6-hour windows (Indian Standard Time — IST):
@@ -45,12 +44,12 @@ on:
     - cron: '50 16 * * *'  # 10:20 PM IST
 
 # ── Concurrency Control ──────────────────────────────────────────────────────
-# Scheduled runs get their OWN fixed group (rawgrab-scheduled) and are NEVER
-# cancelled — each 6-hour window must be allowed to complete its full work.
-# Manual dispatches get a per-run group so they don't affect the schedule.
+# All runs share a single concurrency group.
+# cancel-in-progress: true — Ensures old hanging runs are automatically terminated
+# when a new scheduled 6-hour window arrives so scheduled runs start promptly.
 concurrency:
-  group: ${{ github.event_name == 'schedule' && 'rawgrab-scheduled' || format('rawgrab-dispatch-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+  group: rawgrab-bot
+  cancel-in-progress: true
 
 jobs:
   run-rawgrab:
@@ -60,7 +59,7 @@ jobs:
       GITHUB_CRON: ${{ github.event.schedule }}
       # FIX: Was 'both' (invalid choice) — corrected to 'auto'
       DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
-    timeout-minutes: 180   # 3-hour window — allows runner to boot at 4:20 AM/PM, wait for 06:00/19:00 harvest slot, and complete batch
+    timeout-minutes: 360   # 6-hour daemon ceiling — runs continuously for full 6-hour window until next schedule replaces it
     permissions:
       contents: write
       actions: write
@@ -212,7 +211,7 @@ jobs:
         trap cleanup EXIT
         # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
-        python main.py --mode "$DISPATCH_MODE"
+        python main.py
 
     # ── 7. Commit State Back to Repo ─────────────────────────────────────────
     - name: Commit Dedup State to Git

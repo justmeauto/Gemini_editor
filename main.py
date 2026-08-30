@@ -2363,18 +2363,19 @@ if __name__ == "__main__":
 
         args = parser.parse_args()
 
-        # Resolve mode from argument or environment variable (e.g. GITHUB ACTIONS DISPATCH_MODE)
+        # Resolve mode from argument or environment variable
         env_mode = os.getenv("DISPATCH_MODE")
         mode_val = args.mode or (env_mode if env_mode in ["auto", "manual"] else None)
 
         env_target_accs = os.getenv("DISPATCH_TARGET_ACCOUNTS")
         env_target_url = os.getenv("DISPATCH_TARGET_URL")
 
-        # Launch bot listener ONLY if --bot is explicitly passed OR if in local interactive mode with no inputs/mode/CI env
-        is_ci_or_scheduled = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI") or env_mode)
-        should_run_bot = args.bot or (not is_ci_or_scheduled and not args.input and not args.url and not args.target_accounts and not mode_val)
+        # AUTO mode = 6h continuous daemon scheduler (Telegram bot polling + async static scheduler task)
+        # MANUAL mode = targeted single run for specific URL or accounts
+        is_manual_targeted = (mode_val == "manual") or bool(args.input or args.url or args.target_accounts or env_target_url or env_target_accs)
 
-        if should_run_bot:
+        if not is_manual_targeted:
+            # Launch 6-hour continuous daemon scheduler (Telegram Bot + background scraper scheduler)
             start_telegram_bot_service()
         else:
             target_input = args.input or args.url or env_target_url
