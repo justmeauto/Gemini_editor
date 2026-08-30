@@ -60,7 +60,7 @@ jobs:
       GITHUB_CRON: ${{ github.event.schedule }}
       # FIX: Was 'both' (invalid choice) — corrected to 'auto'
       DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
-    timeout-minutes: 180   # 3-hour ceiling — prevents any single run from blocking subsequent scheduled triggers
+    timeout-minutes: 60    # 60-minute ceiling — batch runs complete in ~5-15 mins
     permissions:
       contents: write
       actions: write
@@ -211,8 +211,8 @@ jobs:
         }
         trap cleanup EXIT
         # ─────────────────────────────────────────────────────────────────────
-        echo "🤖 Executing RawGrab daemon scheduler mode..."
-        python main.py
+        echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
+        python main.py --mode "$DISPATCH_MODE"
 
     # ── 7. Commit State Back to Repo ─────────────────────────────────────────
     - name: Commit Dedup State to Git

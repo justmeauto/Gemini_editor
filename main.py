@@ -2363,17 +2363,28 @@ if __name__ == "__main__":
 
         args = parser.parse_args()
 
-        # Launch bot if --bot is explicitly passed OR if no input/url/target/mode is specified
-        if args.bot or (not args.input and not args.url and not args.target_accounts and not args.mode):
+        # Resolve mode from argument or environment variable (e.g. GITHUB ACTIONS DISPATCH_MODE)
+        env_mode = os.getenv("DISPATCH_MODE")
+        mode_val = args.mode or (env_mode if env_mode in ["auto", "manual"] else None)
+
+        env_target_accs = os.getenv("DISPATCH_TARGET_ACCOUNTS")
+        env_target_url = os.getenv("DISPATCH_TARGET_URL")
+
+        # Launch bot listener ONLY if --bot is explicitly passed OR if in local interactive mode with no inputs/mode/CI env
+        is_ci_or_scheduled = bool(os.getenv("GITHUB_ACTIONS") or os.getenv("CI") or env_mode)
+        should_run_bot = args.bot or (not is_ci_or_scheduled and not args.input and not args.url and not args.target_accounts and not mode_val)
+
+        if should_run_bot:
             start_telegram_bot_service()
         else:
-            target_input = args.input or args.url
+            target_input = args.input or args.url or env_target_url
             target_url = None
             target_file = None
             target_accs = None
 
-            if args.target_accounts:
-                target_accs = [a.strip().lstrip("@") for a in args.target_accounts.split(",") if a.strip()][:2]
+            raw_target_accs = args.target_accounts or env_target_accs
+            if raw_target_accs:
+                target_accs = [a.strip().lstrip("@") for a in raw_target_accs.split(",") if a.strip()][:2]
             elif target_input:
                 clean_in = target_input.strip().strip("'").strip('"')
                 if clean_in.startswith("http://") or clean_in.startswith("https://") or "instagram.com" in clean_in:
@@ -2389,7 +2400,7 @@ if __name__ == "__main__":
                     else:
                         logger.warning(f"⚠️ Invalid target input or handle format provided: '{clean_in}'. Defaulting to target account pool.")
 
-            mode_to_use = args.mode or ("manual" if (target_url or target_file) else "auto")
+            mode_to_use = mode_val or ("manual" if (target_url or target_file) else "auto")
             try:
                 from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
                 logger.info("📡 [STARTUP] Syncing master vault index & pool_metadata.json from Telegram Storage Group...")
