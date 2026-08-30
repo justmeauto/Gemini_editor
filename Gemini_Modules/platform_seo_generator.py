@@ -161,7 +161,12 @@ def extract_main_subject_and_context(
             main_subject = words[0].title()
 
     if not main_subject:
-        main_subject = "Trending Feature"
+        # Check shortcode/session_id/clip_id in metadata
+        shortcode = metadata.get("shortcode") or metadata.get("clip_id") or metadata.get("session_id") or ""
+        if shortcode:
+            main_subject = str(shortcode).replace("manual_", "").replace("sess_", "")
+        else:
+            main_subject = "Featured Reel"
 
     # 2. Applicable Context & Supporting Descriptors
     descriptors = []
@@ -172,13 +177,18 @@ def extract_main_subject_and_context(
     if ep.get("vibe_summary"):
         descriptors.append(str(ep.get("vibe_summary")))
 
-    # Parse snippets from raw caption / source title
-    caption_snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption}") if s.strip() and len(s.strip()) > 3]
+    # Parse real snippets from source title, caption, and video_context
+    caption_snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption} {video_context}") if s.strip() and len(s.strip()) > 3]
     for snip in caption_snippets[:4]:
         if main_subject.lower() not in snip.lower() and snip.lower() not in main_subject.lower():
-            descriptors.append(snip)
+            if snip.lower() not in {"video", "reels", "shorts", "trending", "viral", "daily inspiration", "viral moment", "daily special"}:
+                descriptors.append(snip)
 
-    applicable_context = ", ".join(dict.fromkeys(descriptors)) if descriptors else "daily inspiration, viral moment"
+    # Filter out generic fluff
+    fluff_set = {"daily inspiration", "viral moment", "daily special", "trending feature", "viral reel", "daily"}
+    clean_descriptors = [d for d in descriptors if d.lower().strip() not in fluff_set]
+
+    applicable_context = ", ".join(dict.fromkeys(clean_descriptors)) if clean_descriptors else (video_context[:100].strip() if video_context else "video highlights")
 
     return {
         "main_subject": main_subject,
@@ -415,8 +425,8 @@ def _heuristic_fallback(
     if user_title:
         base_title = user_title
     else:
-        desc_first = applicable.split(",")[0].strip().title() if applicable else "Daily Special"
-        base_title = f"{main_subject} — {desc_first}"
+        desc_first = applicable.split(",")[0].strip().title() if (applicable and applicable != "video highlights") else "Highlights"
+        base_title = f"{main_subject} — {desc_first}" if desc_first.lower() not in main_subject.lower() else main_subject
 
     # Remove any repeated words from base_title
     words_seen = set()

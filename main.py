@@ -528,10 +528,10 @@ async def handle_telegram_callback(update, context):
         new_text = (
             f"{curr_text}\n\n"
             f"✅ **Approved!**\n"
-            f"✏️ **Send your custom title / subject clue below:**\n"
-            f"📌 **Format**: `<Title Clue> <Affiliate URL>`\n"
-            f"*(Example: `Trending Feature Reel https://amzn.to/example`)*\n\n"
-            f"💡 Gemini will generate optimized SEO titles and embed commercial CTAs with policy disclosures (#ad)!"
+            f"✏️ **Send your custom title below:**\n"
+            f"📌 **Compulsory Format**: `<User Title> <Affiliate URL>` (or just `<User Title>`)\n"
+            f"*(Example: `My Product Review https://amzn.to/example`)*\n\n"
+            f"⚠️ *Note: Direct links alone are strictly rejected! A user title is compulsory.*"
         )
 
         try:
@@ -1439,7 +1439,7 @@ async def handle_telegram_incoming_msg(update, context):
         sess_id = pending_sess["session_id"]
         sess = session_manager.get_session(sess_id)
 
-        # 1. Detect and extract optional affiliate URL from user input format <Title> <url>
+        # 1. Detect and extract optional affiliate URL from user input format <User Title> <url>
         affiliate_url = None
         url_match = re.search(r'https?://[^\s<>"]+', user_input_raw)
         if url_match:
@@ -1448,6 +1448,17 @@ async def handle_telegram_incoming_msg(update, context):
             user_hint_text = user_input_raw.replace(affiliate_url, "").strip()
         else:
             user_hint_text = user_input_raw
+
+        # 🛑 COMPULSORY RULE: Direct links alone are strictly forbidden! User title is compulsory.
+        if not user_hint_text or len(user_hint_text) < 2:
+            await msg.reply_text(
+                "❌ **Bare link alone is NOT allowed!**\n\n"
+                "You MUST provide a **User Title** before the link.\n\n"
+                "📌 **Compulsory Format**: `<User Title> <Link>` (or just `<User Title>`)\n"
+                "💡 *Example*: `My Product Review https://amzn.to/example`\n\n"
+                "Please send your title and link again in the correct format 👇"
+            )
+            return
 
         video_path = sess.get("video_path") if sess else None
         clip_id = sess.get("clip_id") if sess else (os.path.basename(os.path.dirname(video_path)) if video_path else sess_id)

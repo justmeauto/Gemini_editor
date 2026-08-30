@@ -26,6 +26,7 @@ import sys
 import json
 import time
 import uuid
+import threading
 import urllib.request
 import logging
 from typing import Dict, Any, Optional
@@ -46,9 +47,11 @@ def _empty_vault_index() -> Dict[str, Any]:
         "updated_at": time.time(),
         "pinned_message_id": None,
         "pool_metadata_file_id": None,
-        "metadata_pool_file_id": None,  # Backward compatibility alias
         "telegram_users_file_id": None,
         "source_accounts_file_id": None,
+        # Advisory lock stored inside the shared pinned index so all runners see it.
+        # See acquire_lock() / release_lock() / vault_session below.
+        "lock": None,
         "column_1_processed_reels": {
             "by_session_id": {},
             "by_social_media_id": {},
@@ -103,6 +106,27 @@ def _send_telegram_file_sync(method: str, chat_id: str, file_key: str, file_path
         return None
 
 
+_SAVE_LOCK = threading.Lock()
+
+
+def _safe_replace(src: str, dst: str, max_retries: int = 5, delay: float = 0.1) -> None:
+    """Safely replaces dst with src, with retries to handle Windows [WinError 5] Access is denied locks."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except (PermissionError, OSError) as e:
+            if attempt == max_retries:
+                try:
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    os.replace(src, dst)
+                    return
+                except Exception:
+                    raise e
+            time.sleep(delay * attempt)
+
+
 class TelegramVaultIndexer:
     """
     Manages reading, writing, uploading, and pinning the master_vault_index.json
@@ -126,14 +150,15 @@ class TelegramVaultIndexer:
         return _empty_vault_index()
 
     def _save_local_index(self):
-        try:
-            self.vault_index["updated_at"] = time.time()
-            temp_path = self.index_file + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(self.vault_index, f, indent=2, ensure_ascii=False)
-            os.replace(temp_path, self.index_file)
-        except Exception as e:
-            logger.error(f"❌ Failed to save local vault index: {e}")
+        with _SAVE_LOCK:
+            try:
+                self.vault_index["updated_at"] = time.time()
+                temp_path = self.index_file + ".tmp"
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(self.vault_index, f, indent=2, ensure_ascii=False)
+                _safe_replace(temp_path, self.index_file)
+            except Exception as e:
+                logger.error(f"❌ Failed to save local vault index: {e}")
 
     # ── VAULT JSON HYDRATION & CLOUD SYNC APIs ───────────────────────────────
 
@@ -142,6 +167,9 @@ class TelegramVaultIndexer:
         Downloads a document file (e.g. telegram_users.json or metadata_pool.json)
         from Telegram Storage Group into dest_path via Telegram Bot API getFile.
         Uses retry loop with custom headers to prevent connection reset drops.
+
+        Note: Telegram Bot API getFile has a hard 20MB limit on downloads.
+        Files > 20MB will trigger HTTP 400 Bad Request and return False.
         """
         if not file_id:
             return False
@@ -940,7 +968,7 @@ class TelegramVaultIndexer:
             temp_vpm = vpm_path + ".tmp"
             with open(temp_vpm, "w", encoding="utf-8") as f:
                 json.dump(vpm_data, f, indent=2, ensure_ascii=False)
-            os.replace(temp_vpm, vpm_path)
+            _safe_replace(temp_vpm, vpm_path)
             logger.info("✅ [VISUAL POOL METADATA] Automatically updated visual_pool_metadata.json for clip '%s'", clip_id)
 
             storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
@@ -990,7 +1018,9 @@ class TelegramVaultIndexer:
                         rmsg = await bot.send_video(
                             chat_id=int(storage_group_id),
                             video=rf,
-                            caption=f"📥 **[VAULT RAW SOURCE]** `{os.path.basename(raw_video_path)}`\n🔗 `{social_url}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else "")
+                            caption=f"📥 **[VAULT RAW SOURCE]** `{os.path.basename(raw_video_path)}`\n🔗 `{social_url}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
+                            read_timeout=300,
+                            write_timeout=300
                         )
                         if rmsg and rmsg.video:
                             raw_file_id = rmsg.video.file_id
@@ -1003,7 +1033,9 @@ class TelegramVaultIndexer:
                                 chat_id=int(storage_group_id),
                                 document=af,
                                 filename=os.path.basename(audio_path),
-                                caption=f"🎵 **[VAULT AUDIO EXTRACT]** `{os.path.basename(audio_path)}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else "")
+                                caption=f"🎵 **[VAULT AUDIO EXTRACT]** `{os.path.basename(audio_path)}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
+                                read_timeout=300,
+                                write_timeout=300
                             )
                             if amsg:
                                 audio_file_id = amsg.document.file_id if amsg.document else (amsg.audio.file_id if amsg.audio else None)
@@ -1061,7 +1093,9 @@ class TelegramVaultIndexer:
                     vmsg = await bot.send_video(
                         chat_id=int(storage_group_id),
                         video=vf,
-                        caption=f"🎬 **[VAULT MASTER REEL]** `{filename}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else "")
+                        caption=f"🎬 **[VAULT MASTER REEL]** `{filename}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
+                        read_timeout=300,
+                        write_timeout=300
                     )
                     if vmsg and vmsg.video:
                         master_file_id = vmsg.video.file_id
@@ -1136,7 +1170,7 @@ class TelegramVaultIndexer:
             "stage_0_intent_classification": {},
             "stage_1_visual_forensics": {},
             "stage_2_audio_intelligence": {},
-            "stage_3_attempts_and_re-edits": [],
+            "stage_3_attempts_and_re_edits": [],
             "stage_4_final_verdict": {},
         })
 
@@ -1144,14 +1178,14 @@ class TelegramVaultIndexer:
             "stage_0_intent": "stage_0_intent_classification",
             "stage_1_visual": "stage_1_visual_forensics",
             "stage_2_audio": "stage_2_audio_intelligence",
-            "stage_3_attempts": "stage_3_attempts_and_re-edits",
+            "stage_3_attempts": "stage_3_attempts_and_re_edits",
             "stage_4_verdict": "stage_4_final_verdict",
         }.get(stage_name, stage_name)
 
-        if stage_key == "stage_3_attempts_and_re-edits":
-            if not isinstance(trajectory.get("stage_3_attempts_and_re-edits"), list):
-                trajectory["stage_3_attempts_and_re-edits"] = []
-            trajectory["stage_3_attempts_and_re-edits"].append(stage_data)
+        if stage_key == "stage_3_attempts_and_re_edits":
+            if not isinstance(trajectory.get("stage_3_attempts_and_re_edits"), list):
+                trajectory["stage_3_attempts_and_re_edits"] = []
+            trajectory["stage_3_attempts_and_re_edits"].append(stage_data)
         else:
             trajectory[stage_key] = stage_data
 
@@ -1221,3 +1255,217 @@ class TelegramVaultIndexer:
                     logger.info(f"📌 [VAULT PIN] Pinned updated master_vault_index.json (Message ID: {doc_msg.message_id})")
         except Exception as e:
             logger.warning(f"⚠️ Vault index upload/pin notice: {e}")
+
+
+# ── ADVISORY LOCK ─────────────────────────────────────────────────────────────
+# Stored as a `lock` key inside the shared pinned master_vault_index.json so
+# concurrent ephemeral runners (GitHub Actions / Docker / local) all see the
+# same lock state without any external infrastructure.
+#
+# Advisory lock — not a perfect distributed lock. The TOCTOU window:
+#   runner A sees lock free → runner B sees lock free → A pushes → B pushes
+#   Both then re-pull and one will see the other's holder_id, correctly
+#   backing off. The window is the Telegram upload round-trip (~1s), not
+#   the 2s poll interval.
+# Good enough for O(10) concurrent runners; not suitable for O(1000).
+
+_LOCK_TTL_SEC = float(os.getenv("VAULT_LOCK_TTL_SEC", "45"))
+_LOCK_MAX_WAIT_SEC = float(os.getenv("VAULT_LOCK_MAX_WAIT_SEC", "60"))
+_LOCK_POLL_SEC = 2.0
+
+# Cache the holder id for the lifetime of this process
+_LOCK_HOLDER_ID: Optional[str] = None
+_LOCK_HOLDER_LOCK = threading.Lock()
+
+
+def _get_holder_id() -> str:
+    global _LOCK_HOLDER_ID
+    with _LOCK_HOLDER_LOCK:
+        if _LOCK_HOLDER_ID is None:
+            node = os.getenv("COMPUTERNAME") or os.getenv("HOSTNAME") or "host"
+            _LOCK_HOLDER_ID = f"{node}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+        return _LOCK_HOLDER_ID
+
+
+def _peek_pinned_lock_state(last_known_msg_id: Optional[int]) -> Dict[str, Any]:
+    """
+    Cheap lock poll — only 1 Telegram API call (getChat) when the pinned
+    message hasn't changed. Only downloads the full index (2 extra API calls)
+    when the pinned message_id is different from what we last saw.
+
+    Returns dict:
+        {"lock": <lock_dict_or_None>, "msg_id": <int_or_None>}
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID", "").strip()
+    if not bot_token or not storage_group_id:
+        return {"lock": None, "msg_id": None}
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/getChat?chat_id={storage_group_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": "AMTCE-VaultLock/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        if not data.get("ok"):
+            return {"lock": None, "msg_id": last_known_msg_id}
+
+        pinned = data.get("result", {}).get("pinned_message") or {}
+        current_msg_id = pinned.get("message_id")
+
+        # ── Fast path: pinned message unchanged → use cached local lock value ──
+        if current_msg_id and current_msg_id == last_known_msg_id:
+            indexer = TelegramVaultIndexer()
+            return {"lock": indexer.vault_index.get("lock"), "msg_id": current_msg_id}
+
+        # ── Slow path: pinned message changed → download the new index ──
+        doc = pinned.get("document", {})
+        file_id = doc.get("file_id") if doc.get("file_name") in (
+            "master_vault_index.json", "telegram_media_index.json") else None
+
+        if file_id:
+            indexer = TelegramVaultIndexer()
+            if indexer.download_vault_file_by_id(file_id, indexer.index_file):
+                indexer.vault_index = indexer._load_local_index()
+                return {"lock": indexer.vault_index.get("lock"), "msg_id": current_msg_id}
+
+        return {"lock": None, "msg_id": current_msg_id}
+
+    except Exception as e:
+        logger.debug("[vault_lock] _peek_pinned_lock_state error: %s", e)
+        return {"lock": None, "msg_id": last_known_msg_id}
+
+
+def acquire_lock(purpose: str = "", ttl_sec: float = _LOCK_TTL_SEC,
+                 max_wait_sec: float = _LOCK_MAX_WAIT_SEC) -> Optional[str]:
+    """
+    Advisory distributed lock via the shared pinned vault index.
+
+    Polling cost: 1 Telegram API call per 2s when waiting (getChat only).
+    Only pulls the full index (3 API calls) when the pinned message changed
+    — i.e. when a write actually happened since the last poll.
+
+    Returns the holder_id string on success (pass to release_lock),
+    or None on timeout.
+
+    Usage:
+        holder = acquire_lock("uploading pool_metadata")
+        if holder is None:
+            raise RuntimeError("Could not acquire vault lock")
+        try:
+            ... do read-modify-write on vault ...
+        finally:
+            release_lock(holder)
+    """
+    holder = _get_holder_id()
+    deadline = time.time() + max_wait_sec
+
+    # Seed from whatever local index already has for fast-path on first poll
+    indexer = TelegramVaultIndexer()
+    last_msg_id = indexer.vault_index.get("pinned_message_id")
+
+    while time.time() < deadline:
+        peek = _peek_pinned_lock_state(last_msg_id)
+        last_msg_id = peek.get("msg_id") or last_msg_id
+        lock = peek.get("lock")
+        now = time.time()
+
+        lock_free = (
+            lock is None
+            or not lock.get("held_by")
+            or float(lock.get("expires_at", 0)) < now
+        )
+
+        if lock_free:
+            # Write our claim into the index
+            indexer2 = TelegramVaultIndexer()
+            indexer2.sync_pinned_index_from_telegram_sync()  # fresh pull before write
+            indexer2.vault_index["lock"] = {
+                "held_by": holder,
+                "purpose": purpose,
+                "acquired_at": now,
+                "expires_at": now + ttl_sec,
+            }
+            indexer2._save_local_index()
+            try:
+                indexer2.upload_and_pin_vault_index_sync(
+                    upload_fn=lambda method, chat_id, file_key, file_path, caption=None:
+                        _send_telegram_file_sync(method, chat_id, file_key, file_path, caption)
+                )
+            except Exception as _push_err:
+                logger.debug("[vault_lock] push during acquire: %s", _push_err)
+
+            # Confirm we won — re-peek (forces full download since msg_id changed)
+            confirm = _peek_pinned_lock_state(None)
+            confirm_lock = confirm.get("lock") or {}
+            if confirm_lock.get("held_by") == holder:
+                logger.info("[vault_lock] acquired by %s (purpose=%s)", holder, purpose)
+                return holder
+            # Lost the race — another runner's write landed after ours; back off and retry
+            logger.debug("[vault_lock] lost race to %s, retrying...", confirm_lock.get("held_by"))
+
+        time.sleep(_LOCK_POLL_SEC)
+
+    logger.warning("[vault_lock] timed out waiting for lock (purpose=%s)", purpose)
+    return None
+
+
+def release_lock(holder: str) -> bool:
+    """
+    Releases the advisory lock only if it is still held by `holder`.
+    Never clears another process's lock.
+    Returns True if the lock was released, False if it was already gone or
+    held by someone else.
+    """
+    indexer = TelegramVaultIndexer()
+    indexer.sync_pinned_index_from_telegram_sync()
+    lock = indexer.vault_index.get("lock") or {}
+
+    if lock.get("held_by") != holder:
+        logger.debug("[vault_lock] release skipped — not held by %s (current: %s)",
+                     holder, lock.get("held_by"))
+        return False
+
+    indexer.vault_index["lock"] = None
+    indexer._save_local_index()
+    try:
+        indexer.upload_and_pin_vault_index_sync(
+            upload_fn=lambda method, chat_id, file_key, file_path, caption=None:
+                _send_telegram_file_sync(method, chat_id, file_key, file_path, caption)
+        )
+    except Exception as _rel_err:
+        logger.debug("[vault_lock] push during release: %s", _rel_err)
+
+    logger.info("[vault_lock] released by %s", holder)
+    return True
+
+
+class vault_session:
+    """
+    Context manager that acquires the vault advisory lock on enter and
+    releases it on exit, even if an exception is raised. Use this for any
+    read-modify-write sequence on the vault to prevent concurrent runner
+    overwrites.
+
+    Example:
+        with vault_session("update pool_metadata") as acquired:
+            if not acquired:
+                raise RuntimeError("Could not get vault lock in time")
+            # safe to read-modify-write here
+    """
+
+    def __init__(self, purpose: str = "", ttl_sec: float = _LOCK_TTL_SEC,
+                 max_wait_sec: float = _LOCK_MAX_WAIT_SEC):
+        self.purpose = purpose
+        self.ttl_sec = ttl_sec
+        self.max_wait_sec = max_wait_sec
+        self._holder: Optional[str] = None
+
+    def __enter__(self) -> bool:
+        self._holder = acquire_lock(self.purpose, self.ttl_sec, self.max_wait_sec)
+        return self._holder is not None
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._holder:
+            release_lock(self._holder)
+        return False  # never swallow exceptions

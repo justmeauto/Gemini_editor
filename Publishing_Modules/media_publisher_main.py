@@ -239,7 +239,9 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
                             chat_id=target_cid,
                             video=file_or_id,
                             caption=text_caption,
-                            supports_streaming=True
+                            supports_streaming=True,
+                            read_timeout=300,
+                            write_timeout=300
                         )
                     else:
                         with open(video_path, "rb") as vf:
@@ -247,7 +249,9 @@ async def publish_to_telegram(video_path: str, title: str, caption: str = "") ->
                                 chat_id=target_cid,
                                 video=vf,
                                 caption=text_caption,
-                                supports_streaming=True
+                                supports_streaming=True,
+                                read_timeout=300,
+                                write_timeout=300
                             )
                 except RetryAfter as ra:
                     logger.warning(f"⏳ Rate-limited by Telegram. Sleeping {ra.retry_after}s (attempt {attempt}/{max_retries})")
