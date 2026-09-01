@@ -408,6 +408,7 @@ class TelegramVaultIndexer:
 
         local_path = os.path.join(dest_dir, filename)
         if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
+            logger.info("⚡ [LOCAL DISK CACHE HIT] BGM track '%s' already on local disk — skipping Telegram download.", filename)
             return local_path
 
         # 2. Secondary Fallback: Column 2 in master_vault_index.json
@@ -425,6 +426,7 @@ class TelegramVaultIndexer:
         if file_id:
             logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, file_id[:15])
             if self.download_vault_file_by_id(file_id, local_path):
+                logger.info("✅ [VAULT BGM HYDRATION SUCCESS] Downloaded BGM '%s' from Telegram Storage Group!", filename)
                 return local_path
 
         return None

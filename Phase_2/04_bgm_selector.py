@@ -101,7 +101,7 @@ def select_clip_bgm(
             vault_hydrated = vault.hydrate_bgm_track_from_vault(selected_track_name, active_dir)
             if vault_hydrated and os.path.isfile(vault_hydrated):
                 resolved_path = vault_hydrated
-                logger.info(f"📥 [STEP 04 - PRIMARY] Hydrated selected BGM track directly from Telegram Storage Vault: {selected_track_name}")
+                logger.info(f"✓ [STEP 04] BGM track resolved: '{selected_track_name}' -> {resolved_path}")
         except Exception as _vh_err:
             logger.debug(f"[STEP 04] Vault BGM track hydration notice: {_vh_err}")
 

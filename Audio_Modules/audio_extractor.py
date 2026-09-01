@@ -309,7 +309,7 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
-            track_name = f"{stem}.wav"
+            track_name = f"{clean_stem}.wav"
             meta = pm.get_track_intelligence(track_name) or {}
             meta.update({
                 "tempo_bpm": analysis.get("tempo_bpm", 0.0),
@@ -336,20 +336,28 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
             logger.info("📦 [POOL METADATA UPDATED] Audio intelligence for '%s' saved to pool_metadata.json", track_name)
 
             # ── TELEGRAM VAULT UPLOAD (capture file_id per track) ────────────────
-            # This is the critical step: upload THIS track to Telegram Storage Group
-            # and write the returned file_id back into pool_metadata.json so that
-            # hydrate_bgm_track_from_vault() can re-download it on any CI runner.
-            # sync_all_active_audios_to_telegram_vault() already does this correctly
-            # but was never called — calling it here after every ingest fixes that.
             if not meta.get("file_id") and os.path.exists(target_wav):
                 try:
                     synced = pm.sync_all_active_audios_to_telegram_vault(force=False)
-                    captured_fid = synced.get(track_name)
+                    captured_fid = synced.get(track_name) or pm.get_track_intelligence(track_name).get("file_id")
                     if captured_fid:
                         logger.info(
                             "✅ [VAULT AUDIO UPLOAD] Uploaded '%s' to Telegram Storage Group — file_id: %s",
                             track_name, captured_fid[:20]
                         )
+                        meta["file_id"] = captured_fid
+                        pm._set_file_metadata(track_name, meta)
+                        pm._save_metadata()
+                        # Sync file_id into Column 2 of master_vault_index.json
+                        try:
+                            from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                            v_indexer = TelegramVaultIndexer()
+                            c2_sess = v_indexer.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
+                            if clip_folder in c2_sess:
+                                c2_sess[clip_folder]["extracted_audio_file_id"] = captured_fid
+                                v_indexer._save_local_index()
+                        except Exception:
+                            pass
                     else:
                         logger.warning(
                             "⚠️ [VAULT AUDIO UPLOAD] '%s' upload returned no file_id — "
