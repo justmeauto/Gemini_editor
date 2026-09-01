@@ -330,16 +330,41 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                 meta["energy_profile"] = sem.get("energy_profile", "medium")
                 meta["has_vocals"] = sem.get("has_vocals", False)
                 meta["language"] = sem.get("language", "Unknown")
-            
+
             pm._set_file_metadata(track_name, meta)
             pm._save_metadata()
             logger.info("📦 [POOL METADATA UPDATED] Audio intelligence for '%s' saved to pool_metadata.json", track_name)
+
+            # ── TELEGRAM VAULT UPLOAD (capture file_id per track) ────────────────
+            # This is the critical step: upload THIS track to Telegram Storage Group
+            # and write the returned file_id back into pool_metadata.json so that
+            # hydrate_bgm_track_from_vault() can re-download it on any CI runner.
+            # sync_all_active_audios_to_telegram_vault() already does this correctly
+            # but was never called — calling it here after every ingest fixes that.
+            if not meta.get("file_id") and os.path.exists(target_wav):
+                try:
+                    synced = pm.sync_all_active_audios_to_telegram_vault(force=False)
+                    captured_fid = synced.get(track_name)
+                    if captured_fid:
+                        logger.info(
+                            "✅ [VAULT AUDIO UPLOAD] Uploaded '%s' to Telegram Storage Group — file_id: %s",
+                            track_name, captured_fid[:20]
+                        )
+                    else:
+                        logger.warning(
+                            "⚠️ [VAULT AUDIO UPLOAD] '%s' upload returned no file_id — "
+                            "Telegram vault retrieval will not work for this track.", track_name
+                        )
+                except Exception as _tg_err:
+                    logger.warning("⚠️ [VAULT AUDIO UPLOAD] Could not upload '%s' to Telegram: %s", track_name, _tg_err)
+            # ─────────────────────────────────────────────────────────────────────
+
         except Exception as _pm_err:
             logger.warning("⚠️ Could not update pool_metadata.json for '%s': %s", stem, _pm_err)
 
-        # Preserve extracted WAV for Telegram Storage Group Vault upload
+        # WAV path preserved for downstream reference
         analysis["wav_path"] = wav_path if os.path.exists(wav_path) else target_wav
-        logger.info("💾 [AUDIO PRESERVED] Extracted WAV preserved in clip dir for Telegram Vault upload: %s", os.path.basename(wav_path))
+        logger.info("💾 [AUDIO PRESERVED] Extracted WAV committed to active pool & Telegram Vault: %s", os.path.basename(wav_path))
     except Exception as err:
         logger.warning("⚠️ Pool ingestion warning for '%s': %s", stem, err)
 

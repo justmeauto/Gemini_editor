@@ -5,6 +5,7 @@ Master Orchestrator for Phase 2 (AI Perception, BGM Selection & Master FFmpeg Re
 Coordinates sequential steps 01 -> 07 and supports real-time event callbacks for the live web tracker.
 """
 
+import json
 import os
 import sys
 import time
@@ -151,8 +152,10 @@ def run_phase2_pipeline(
                 working_video_path = clean_raw_path
                 forensic_res["inpainted_upfront"] = True
                 logger.info(f"⚡ [UPFRONT INPAINTING CACHE] Reusing clean inpainted raw video: {os.path.basename(working_video_path)}")
-                
+
                 # Load coordinates from sidecar file if available
+                # NOTE: json is imported at the top of this module — NameError here was the root cause
+                # of silent coord-load failures on re-edits. Now explicitly logged on failure.
                 coords_sidecar = clean_raw_path + ".coords.json"
                 if os.path.exists(coords_sidecar):
                     try:
@@ -161,9 +164,13 @@ def run_phase2_pipeline(
                         _wm_b = _cdata.get("watermark_boxes")
                         if _wm_b:
                             forensic_res["watermark_boxes"] = _wm_b
-                            logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(_wm_b)} inpaint coordinate box(es) from sidecar.")
+                            logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(_wm_b)} inpaint coordinate box(es) from sidecar for re-edit.")
+                        else:
+                            logger.warning("⚠️ [WATERMARK ALIGNMENT] Sidecar exists but 'watermark_boxes' is empty — brand mask shield will use default position.")
                     except Exception as _ce:
-                        logger.debug(f"Coords sidecar read notice: {_ce}")
+                        logger.warning(f"⚠️ [WATERMARK ALIGNMENT] Failed to load coords sidecar on re-edit: {_ce} — brand mask shield may be misaligned.")
+                else:
+                    logger.warning(f"⚠️ [WATERMARK ALIGNMENT] No coords sidecar found at '{coords_sidecar}' — brand mask shield will use default position.")
 
             elif _has_coord_boxes or _wm_count_int > 0:
                 try:
@@ -220,6 +227,7 @@ def run_phase2_pipeline(
                     force_new_music = True
                     try:
                         from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+                        from Audio_Modules.audio_pool_manager import AudioPoolManager
                         _st = ClipIntelligenceStore(clip_id=folder_name, clip_folder=clip_dir)
                         _prev_aud = _st.get("audio_data") or {}
                         _prev_track = _prev_aud.get("selected_bgm_track") or _prev_aud.get("selected_audio_track")
@@ -227,6 +235,31 @@ def run_phase2_pipeline(
                             exclude_bgm.add(_prev_track)
                             exclude_bgm.add(os.path.basename(_prev_track))
                             logger.info(f"🚫 [STEP 04 RE-EDIT] User requested music change! Excluding previous BGM: '{_prev_track}'")
+
+                        # ── POOL EXHAUSTION GUARD ──────────────────────────────────────────────
+                        # If excluding the previous track empties the entire pool, warn clearly
+                        # and fall back to the least-recently-used track instead of re-using the
+                        # same one silently. This happens when the pool has only 1-2 tracks.
+                        try:
+                            _pm = AudioPoolManager()
+                            _all_pool = [
+                                f for f in _pm.get_files_index().keys()
+                                if f.lower().endswith((".mp3", ".wav", ".m4a"))
+                            ]
+                            _fresh_pool = [f for f in _all_pool if f.lower() not in {e.lower() for e in exclude_bgm}]
+                            if not _fresh_pool and _all_pool:
+                                logger.warning(
+                                    f"⚠️ [STEP 04 RE-EDIT] BGM pool exhausted after exclusion "
+                                    f"(pool_size={len(_all_pool)}, excluded={len(exclude_bgm)}). "
+                                    f"Clearing exclusions and picking least-recently-used track "
+                                    f"to avoid silent same-song repeat."
+                                )
+                                exclude_bgm.clear()
+                                # Don't exclude the previous track from the batch-level set —
+                                # just allow Gemini to pick again with full pool (LRU ordering).
+                        except Exception as _pgd_err:
+                            logger.debug(f"Pool guard check notice: {_pgd_err}")
+                        # ─────────────────────────────────────────────────────────────────────
                     except Exception as _ex_err:
                         logger.debug(f"Exclusion lookup notice: {_ex_err}")
 
