@@ -921,13 +921,24 @@ class FFmpegCommandGenerator:
             # Position over detected watermark box if coordinates available
             if watermark_boxes:
                 box0 = watermark_boxes[0]
-                op_vecs = box0.get("opencv_vectors", {})
+                coords0 = box0.get("coordinates") if isinstance(box0.get("coordinates"), dict) else box0
+                op_vecs = box0.get("opencv_vectors") or coords0.get("opencv_vectors") or {}
 
-                # Use OpenCV's effective expanded mask bounding box if available
-                x_raw = int(op_vecs.get("effective_x") if op_vecs.get("effective_x") is not None else box0.get("x", 0))
-                y_raw = int(op_vecs.get("effective_y") if op_vecs.get("effective_y") is not None else box0.get("y", 0))
-                w_raw = int(op_vecs.get("effective_w") if op_vecs.get("effective_w") is not None else box0.get("w", 300))
-                h_raw = int(op_vecs.get("effective_h") if op_vecs.get("effective_h") is not None else box0.get("h", 50))
+                # Use OpenCV's effective expanded mask bounding box if available and non-zero
+                eff_x = op_vecs.get("effective_x")
+                eff_y = op_vecs.get("effective_y")
+                eff_w = op_vecs.get("effective_w")
+                eff_h = op_vecs.get("effective_h")
+
+                bx_val = coords0.get("x") if coords0.get("x") is not None else box0.get("x", 0)
+                by_val = coords0.get("y") if coords0.get("y") is not None else box0.get("y", 0)
+                bw_val = coords0.get("w") if coords0.get("w") is not None else box0.get("w", 300)
+                bh_val = coords0.get("h") if coords0.get("h") is not None else box0.get("h", 50)
+
+                x_raw = int(eff_x if eff_x is not None and (int(eff_x) > 0 or int(bx_val) == 0) else bx_val)
+                y_raw = int(eff_y if eff_y is not None and (int(eff_y) > 0 or int(by_val) == 0) else by_val)
+                w_raw = int(eff_w if eff_w is not None and int(eff_w) > 0 else bw_val)
+                h_raw = int(eff_h if eff_h is not None and int(eff_h) > 0 else bh_val)
 
                 # Transform raw video coordinates to 9:16 vertical frame (1080x1920)
                 orig_w = int(box0.get("video_width") or box0.get("orig_w") or 0)

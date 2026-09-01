@@ -194,8 +194,20 @@ def run_phase2_pipeline(
                                     _cdata = json.load(_csf)
                                 _wm_b = _cdata.get("watermark_boxes")
                                 if _wm_b:
-                                    forensic_res["watermark_boxes"] = _wm_b
-                                    logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(_wm_b)} inpaint coordinate box(es) for brand overlay masking.")
+                                    _existing_wm = forensic_res.get("watermark_boxes") or []
+                                    _existing_has_pos = bool(
+                                        _existing_wm and isinstance(_existing_wm[0], dict)
+                                        and (int(_existing_wm[0].get("x", 0)) > 0 or int(_existing_wm[0].get("y", 0)) > 0)
+                                    )
+                                    _new_has_pos = bool(
+                                        isinstance(_wm_b[0], dict)
+                                        and (int(_wm_b[0].get("x", 0)) > 0 or int(_wm_b[0].get("y", 0)) > 0)
+                                    )
+                                    if _new_has_pos or not _existing_has_pos:
+                                        forensic_res["watermark_boxes"] = _wm_b
+                                        logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(_wm_b)} inpaint coordinate box(es) for brand overlay masking.")
+                                    else:
+                                        logger.info("📍 [WATERMARK ALIGNMENT] Preserved existing non-zero watermark box coordinates over sidecar defaults.")
                             except Exception as _ce:
                                 logger.debug(f"Coords sidecar read notice: {_ce}")
 

@@ -102,22 +102,42 @@ def run_watermark_removal(input_path: str, output_path: str = None, keywords: st
         b_copy = dict(box)
         b_copy["video_width"] = v_w
         b_copy["video_height"] = v_h
-        bx = int(b_copy.get("x", 0))
-        by = int(b_copy.get("y", 0))
-        bw = int(b_copy.get("w", 100))
-        bh = int(b_copy.get("h", 50))
+
+        # Extract coordinates from nested 'coordinates' dict (HybridWatermarkDetector format) or top-level
+        coords = box.get("coordinates") if isinstance(box.get("coordinates"), dict) else box
+        bx = int(coords.get("x") if coords.get("x") is not None else box.get("x", 0))
+        by = int(coords.get("y") if coords.get("y") is not None else box.get("y", 0))
+        bw = int(coords.get("w") if coords.get("w") is not None else box.get("w", 100))
+        bh = int(coords.get("h") if coords.get("h") is not None else box.get("h", 50))
+
+        # Flatten x, y, w, h at top-level of b_copy for all downstream consumers
+        b_copy["x"] = bx
+        b_copy["y"] = by
+        b_copy["w"] = bw
+        b_copy["h"] = bh
+
         pad_x = 12
         pad_y = 8
+        eff_x = max(0, bx - pad_x)
+        eff_y = max(0, by - pad_y)
+        eff_w = bw + 2 * pad_x
+        eff_h = bh + 2 * pad_y
+
+        bg_texture = (
+            str(coords.get("background_texture", ""))
+            or str(b_copy.get("semantic_vectors", {}).get("background_texture", "complex"))
+        ).lower()
+
         b_copy["opencv_vectors"] = {
             "inpaint_radius": 13,
             "mask_padding_x": pad_x,
             "mask_padding_y": pad_y,
-            "effective_x": max(0, bx - pad_x),
-            "effective_y": max(0, by - pad_y),
-            "effective_w": bw + 2 * pad_x,
-            "effective_h": bh + 2 * pad_y,
+            "effective_x": eff_x,
+            "effective_y": eff_y,
+            "effective_w": eff_w,
+            "effective_h": eff_h,
             "inpaint_method": "Navier_Stokes_EdgeIntegrator",
-            "background_texture": str(b_copy.get("semantic_vectors", {}).get("background_texture", "complex")).lower()
+            "background_texture": bg_texture
         }
         enriched_watermarks.append(b_copy)
 
