@@ -865,7 +865,7 @@ class FFmpegCommandGenerator:
         # ── Step C: Optional delogo (only if video was NOT inpainted upfront) ─────
         # If OpenCV upfront inpainting already erased the watermark (Step 2.5),
         # running FFmpeg's delogo on top is redundant and triggers 'delogo outside frame' errors.
-        _inpainted_upfront = bool((forensic_context or {}).get("inpainted_upfront", False))
+        _inpainted_upfront = "inpainted_clean" in str(input_path) or bool((extra_inputs or {}).get("inpainted_upfront", False))
         if watermark_boxes and not _inpainted_upfront:
             for box in watermark_boxes:
                 bx = int(box.get("x", 0))
@@ -1647,7 +1647,8 @@ class GeminiFFmpegEngine:
                     logger.warning(f"⚠️ Watermark overlay requested by plan but watermark image file missing ('{wm_file}'). Skipping watermark step.")
                     continue
             elif op_type == "delogo_blur":
-                if not (forensic_context or {}).get("inpainted_upfront"):
+                _clean_upfront = "inpainted_clean" in str(current_input) or bool((extra_inputs or {}).get("inpainted_upfront", False))
+                if not _clean_upfront:
                     res = self.cmd_generator.build_delogo_blur_command(current_input, step_output,
                         x=op.get("x", 0), y=op.get("y", 0), w=op.get("w", 100), h=op.get("h", 50), band=op.get("band", 4),
                         encoding_cfg=encoding_cfg)

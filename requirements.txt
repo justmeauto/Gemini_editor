@@ -48,6 +48,7 @@ protobuf>=4.25.0,<6.0.0
 
 # --- GRPC ---
 grpcio>=1.60.0
+grpcio-status>=1.60.0,<1.72.0
 
 # --- AI & TRANSCRIBE ---
 faster-whisper>=1.0.0

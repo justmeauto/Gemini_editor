@@ -82,15 +82,11 @@ jobs:
         cache: 'pip'
         cache-dependency-path: 'requirements.txt'
 
-    # ── 3. System Dependencies (Fast Pre-installed FFmpeg Check) ──────────────
-    - name: Verify FFmpeg
-      run: |
-        if command -v ffmpeg >/dev/null 2>&1; then
-          echo "✅ FFmpeg pre-installed: $(ffmpeg -version | head -n 1)"
-        else
-          echo "⚠️ FFmpeg missing, installing..."
-          sudo apt-get update -qq && sudo apt-get install -y ffmpeg
-        fi
+    # ── 3. Set up FFmpeg (Instant 2-Second Binary) ────────────────────────────
+    - name: Set up FFmpeg
+      uses: federicocarboni/setup-ffmpeg@v3
+      with:
+        ffmpeg-version: release
 
     # ── 4. Cache AI Models (HuggingFace / Faster-Whisper) ─────────────────────
     - name: Cache AI Models & Weights
@@ -107,8 +103,6 @@ jobs:
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        # FIX: Pre-install heavy binary-only wheels to avoid source-build failures on ubuntu-latest
-        pip install --prefer-binary --only-binary=av,onnxruntime av onnxruntime || true
         pip install --prefer-binary -r requirements.txt
 
     # ── 5. Credential Injection ───────────────────────────────────────────────
