@@ -52,28 +52,46 @@ TOKEN_URL        = "https://oauth2.googleapis.com/token"
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
 
-def _send_telegram(message: str, token: str, admin_id: str, button_url: str = None):
+def _send_telegram(message: str, token: str, admin_id, button_url: str = None):
+    if not token or not admin_id:
+        return False
+
+    if isinstance(admin_id, (list, tuple, set)):
+        sent_any = False
+        for cid in admin_id:
+            if _send_telegram(message, token, str(cid), button_url=button_url):
+                sent_any = True
+        return sent_any
+
+    chat_id = str(admin_id).strip()
     try:
         api_url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": admin_id, "text": message, "parse_mode": "HTML"}
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         if button_url:
             payload["reply_markup"] = json.dumps({
                 "inline_keyboard": [[{"text": "🔗 Tap to Authorize", "url": button_url}]]
             })
         data = urllib.parse.urlencode(payload).encode("utf-8")
         urllib.request.urlopen(api_url, data=data, timeout=10)
-        print("📡 Telegram notification sent.")
+        print(f"📡 Telegram notification sent to chat_id={chat_id}.")
         return True
     except Exception as e:
-        print(f"⚠️ Telegram send failed: {e}")
-        return False
+        print(f"⚠️ Telegram send with inline button failed for chat_id={chat_id} ({e}) — retrying without inline button...")
+        try:
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            urllib.request.urlopen(api_url, data=data, timeout=10)
+            print(f"📡 Telegram notification sent to chat_id={chat_id} (fallback text mode).")
+            return True
+        except Exception as e2:
+            print(f"⚠️ Telegram fallback send to chat_id={chat_id} failed: {e2}")
+            return False
 
 
 def _get_telegram_creds(override_admin_id=None):
     """
-    Returns (bot_token, admin_private_chat_id).
-    ALWAYS sends to the ADMIN's private chat — NEVER to a group.
-    Priority: override_admin_id > TELEGRAM_ADMIN_ID > TELEGRAM_OWNER_CHAT_ID > first entry of ADMIN_IDS
+    Returns (bot_token, admin_chat_id).
+    Strictly reads TELEGRAM_ADMIN_ID set manually by the admin in GitHub Secrets/environment.
     """
     try:
         from dotenv import load_dotenv
@@ -86,38 +104,14 @@ def _get_telegram_creds(override_admin_id=None):
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-    # Strictly private-chat admin ID — group IDs are negative, we want a positive user ID
-    # Check all sources and pick the first valid personal chat ID
-    admin_sources = []
-    if override_admin_id:
-        admin_sources.append(override_admin_id)
-    if os.getenv("TELEGRAM_OWNER_CHAT_ID"):
-        admin_sources.append(os.getenv("TELEGRAM_OWNER_CHAT_ID"))
-    if os.getenv("TELEGRAM_ADMIN_ID"):
-        admin_sources.append(os.getenv("TELEGRAM_ADMIN_ID"))
-    
-    admin_ids_str = os.getenv("ADMIN_IDS", "")
-    for aid in admin_ids_str.split(","):
-        if aid.strip():
-            admin_sources.append(aid.strip())
-
-    admin_id = None
-    for src in admin_sources:
-        if not src:
-            continue
-        src_str = str(src).strip()
-        if not src_str:
-            continue
-        if src_str.startswith("@") or src_str.startswith("-"):
-            print(f"⚠️ Candidate ID '{src_str}' looks like a public GROUP/CHANNEL. Checking next fallback...")
-            continue
-        admin_id = src_str
-        break
+    admin_id = override_admin_id or os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_OWNER_CHAT_ID")
+    if not admin_id:
+        admin_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
 
     if not admin_id:
-        print("⚠️ No valid private TELEGRAM_ADMIN_ID or ADMIN_IDS found. Auth messages will NOT be sent.")
+        print("⚠️ No TELEGRAM_ADMIN_ID found in environment secrets. Auth messages cannot be sent.")
 
-    print(f"📡 Auth will notify: chat_id={admin_id}")
+    print(f"📡 Auth will notify admin chat_id: {admin_id}")
     return token, admin_id
 
 

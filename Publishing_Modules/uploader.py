@@ -219,7 +219,7 @@ def get_valid_credentials(niche: str = None):
                     auth_cmd.extend(["--token", token_file])
                 if client_secret_file:
                     auth_cmd.extend(["--secret", client_secret_file])
-                admin_id = os.getenv("TELEGRAM_ADMIN_ID")
+                admin_id = os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_OWNER_CHAT_ID") or os.getenv("TELEGRAM_STORAGE_GROUP_ID")
                 if admin_id:
                     auth_cmd.extend(["--admin-id", str(admin_id)])
                 
