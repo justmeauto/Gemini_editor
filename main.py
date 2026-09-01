@@ -1032,7 +1032,10 @@ def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video
                 st = p_info.get("status")
                 icon = "✅" if st == "success" else ("⏸️" if st == "skipped" else "❌")
                 detail = p_info.get("url") or p_info.get("link") or p_info.get("message") or st
-                status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
+                if detail and (str(detail).startswith("http://") or str(detail).startswith("https://")):
+                    status_lines.append(f"• {icon} **{p_name.upper()}**:\n{detail}")
+                else:
+                    status_lines.append(f"• {icon} **{p_name.upper()}**: `{detail}`")
 
             if bot_obj and chat_id and loop:
                 import asyncio
