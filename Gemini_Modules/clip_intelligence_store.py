@@ -69,16 +69,28 @@ class ClipIntelligenceStore:
     # ── Load / Save per-clip ─────────────────────────────────────────────────
 
     def load(self, clip_id: str, clip_folder: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Load clip intelligence JSON from disk. Returns None if not found."""
+        """Load clip intelligence JSON from disk or pool. Returns None if not found."""
         path = self._intel_path(clip_id, clip_folder)
-        if not path or not os.path.isfile(path):
-            return None
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"[ClipStore] Failed to load {path}: {e}")
+
+        # Secondary fallback: Look up in master pool_metadata.json
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"[ClipStore] Failed to load {path}: {e}")
-            return None
+            pool = self._pool_read()
+            clips = pool.get("clips", {})
+            if clip_id in clips:
+                return clips[clip_id]
+            for cid, cdata in clips.items():
+                if clip_id in cid or cid in clip_id:
+                    return cdata
+        except Exception:
+            pass
+
+        return None
 
     def save(self, clip_id: str, data: Dict[str, Any], clip_folder: Optional[str] = None) -> bool:
         """Save clip intelligence JSON to disk and update pool."""
@@ -286,10 +298,22 @@ class ClipIntelligenceStore:
                     logger.warning(f"⚠️ Failed to delete local intelligence file: {_e}")
 
     def _intel_path(self, clip_id: str, clip_folder: Optional[str]) -> Optional[str]:
+        # If clip_folder contains an existing intelligence file, return it
         if clip_folder:
-            os.makedirs(clip_folder, exist_ok=True)
-            return os.path.join(clip_folder, _INTEL_FILENAME)
+            candidate = os.path.join(clip_folder, _INTEL_FILENAME)
+            if os.path.isfile(candidate):
+                return candidate
+
+        # Standard canonical location: downloads/{clip_id}/.clip_intelligence.json
         downloads = os.path.join(_REPO_ROOT, "downloads")
         candidate = os.path.join(downloads, clip_id, _INTEL_FILENAME)
+        if os.path.isfile(candidate):
+            return candidate
+
+        # Fallback for new saves: avoid writing into Processed Shorts
+        if clip_folder and "processed shorts" not in str(clip_folder).lower():
+            os.makedirs(clip_folder, exist_ok=True)
+            return os.path.join(clip_folder, _INTEL_FILENAME)
+
         os.makedirs(os.path.dirname(candidate), exist_ok=True)
         return candidate

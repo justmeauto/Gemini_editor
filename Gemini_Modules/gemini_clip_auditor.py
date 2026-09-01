@@ -239,12 +239,17 @@ Perform a BRUTAL AUDIT for human brain retention and viral algorithm feed inject
 4. BRUTAL CRITIQUE:
    Provide 2 unvarnished sentences calling out any weak frames, visual flaws, lighting issues, or pacing dull spots.
 
+5. MAIN SUBJECT & CELEBRITY IDENTITY:
+   Explicitly identify the primary hero person, celebrity, public figure, or influencer if recognizable (e.g. "Kareena Kapoor", "Kiara Advani", "Disha Patani", etc.). If unknown, describe their look and outfit specifically (e.g. "Model in olive military-style pantsuit").
+
 Return ONLY this JSON schema, no other text:
 {{
   "hook_score": <integer 0-100>,
   "dopamine_pacing_score": <integer 0-100>,
   "retention_rating": "VIRAL_HOOK" | "HIGHLY_ENGAGING" | "AVERAGE" | "BORING_SCROLL",
   "brutal_critique": "<2 sentence critique>",
+  "main_subject": "<celebrity name or hero subject description>",
+  "visual_summary": "<1-sentence summary of who is in the video and what they are doing>",
   "feed_inject_readiness": true/false
 }}"""
 
@@ -285,7 +290,10 @@ def generate_viral_feed_seo(
     video_context: str,
     creator_name: str = "General",
     niche: str = "fashion_lifestyle",
-    title_hint: str = ""
+    title_hint: str = "",
+    cache: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    discovered_subject: str = ""
 ) -> Dict[str, Any]:
     """
     Generates algorithm-optimized titles, descriptions, and hashtags designed
@@ -293,10 +301,15 @@ def generate_viral_feed_seo(
     """
     try:
         from Gemini_Modules.platform_seo_generator import generate_platform_seo
+        effective_brand = f"Brand: {creator_name}" if (creator_name and creator_name != "Source Content") else "Niche: " + niche
+        clean_user_title = title_hint if (title_hint and "lookbook" not in title_hint.lower()) else ""
+
         seo_res = generate_platform_seo(
-            video_context=f"Creator: {creator_name}, Niche: {niche}. Context: {video_context}",
-            user_title=title_hint,
-            brand_info=f"Brand: {creator_name}",
+            video_context=f"Subject: {discovered_subject}. Creator: {creator_name}, Niche: {niche}. Context: {video_context}",
+            user_title=clean_user_title,
+            brand_info=effective_brand,
+            cache=cache,
+            metadata=metadata,
             platforms=["youtube", "instagram", "tiktok"]
         )
         if seo_res and isinstance(seo_res, dict) and "platforms" in seo_res:
@@ -304,15 +317,18 @@ def generate_viral_feed_seo(
             ig = seo_res["platforms"].get("instagram", {})
             tt = seo_res["platforms"].get("tiktok", {})
 
-            viral_title = yt.get("title") or ig.get("title") or title_hint or f"Viral {niche.title()} Reel"
-            description = ig.get("description") or yt.get("description") or "Check out this amazing short!"
-            hashtags = ig.get("hashtags") or yt.get("hashtags") or ["#viral", "#shorts", "#reels", "#fyp"]
+            subject_hero = discovered_subject or seo_res.get("main_subject") or ""
+            fallback_title = f"{subject_hero} | {niche.replace('_', ' ').title()} Reel ✨" if subject_hero else f"Trending {niche.replace('_', ' ').title()} Reel 🔥"
+            viral_title = yt.get("title") or ig.get("title") or fallback_title
+            description = ig.get("description") or yt.get("description") or f"Featured: {subject_hero or 'Must watch!'} 🔥"
+            hashtags = ig.get("hashtags") or yt.get("hashtags") or ["#viral", "#shorts", "#reels", "#trending"]
 
             return {
                 "viral_seo_title": viral_title,
                 "description": description,
                 "hashtags": hashtags,
                 "target_niche": niche,
+                "main_subject": subject_hero,
                 "platform_payloads": seo_res.get("platforms", {}),
                 "_source": "platform_seo_generator"
             }
@@ -320,13 +336,14 @@ def generate_viral_feed_seo(
         logger.debug(f"Platform SEO module notice: {se}")
 
     # Fallback viral SEO payload
-    clean_hint = title_hint or f"Viral {niche.replace('_', ' ').title()}"
+    clean_subj = discovered_subject or (title_hint if "lookbook" not in title_hint.lower() else "") or f"Trending {niche.replace('_', ' ').title()}"
     fallback_tags = ["#viral", "#shorts", "#reels", "#fyp", "#trending", f"#{niche.replace('_', '')}"]
     return {
-        "viral_seo_title": f"{clean_hint} 🔥",
-        "description": f"Must watch {niche.replace('_', ' ')} clip! Watch until the end! 🔥\n\n{' '.join(fallback_tags)}",
+        "viral_seo_title": f"{clean_subj} 🔥",
+        "description": f"Must watch: {clean_subj}! Watch until the end! 🔥\n\n{' '.join(fallback_tags)}",
         "hashtags": fallback_tags,
         "target_niche": niche,
+        "main_subject": discovered_subject,
         "_source": "fallback_viral_seo"
     }
 
@@ -341,7 +358,9 @@ def run_clip_audit_and_seo(
     brand_boxes: Optional[List[Any]] = None,
     creator_name: str = "General",
     niche: str = "fashion_lifestyle",
-    title_hint: str = ""
+    title_hint: str = "",
+    cache: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Executes full clip audit & SEO pipeline:
@@ -370,12 +389,22 @@ def run_clip_audit_and_seo(
         niche=niche
     )
 
+    # Discovered hero subject / celebrity
+    discovered_subject = engagement_res.get("main_subject") or ""
+    if not discovered_subject and cache:
+        discovered_subject = cache.get("visual_context", {}).get("main_subject") or cache.get("visual_context", {}).get("person_name") or ""
+    if engagement_res.get("visual_summary"):
+        video_context_str += f". Visual event: {engagement_res.get('visual_summary')}"
+
     # 4. Viral Feed-Injection SEO Metadata
     seo_res = generate_viral_feed_seo(
         video_context=video_context_str,
         creator_name=creator_name,
         niche=niche,
-        title_hint=title_hint
+        title_hint=title_hint,
+        cache=cache,
+        metadata=metadata,
+        discovered_subject=discovered_subject
     )
 
     elapsed = round(time.time() - start_t, 2)

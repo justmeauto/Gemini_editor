@@ -242,24 +242,68 @@ def run_scheduled_scraper_batch(max_accounts: int = 2) -> List[str]:
                         time.sleep(stagger_sec)
 
                     base_name = os.path.basename(r_file)
-                    parts = base_name.replace("_master.mp4", "").replace(".mp4", "").split("_")
+                    clip_id = base_name.replace("_master.mp4", "").replace(".mp4", "")
+                    parts = clip_id.split("_")
                     raw_handle = parts[0] if parts else ""
 
                     from Gemini_Modules.platform_seo_generator import sanitize_raw_handles_out
+                    from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
 
-                    # Run Gemini Vision Audit & Feed-Injection SEO Generation
-                    # Gemini Vision & raw post metadata analyze the video to discover the real subject/star
+                    # 1. Load deep clip intelligence from store
+                    store = ClipIntelligenceStore()
+                    intel_data = store.load(clip_id) or {}
+
+                    # 2. Extract scraped metadata from downloads folder if available
+                    scraped_meta = {}
+                    downloads_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "downloads")
+                    clip_folder_candidate = os.path.join(downloads_root, clip_id)
+                    for mf_name in ["metadata.json", "video.json", "video.niche.json"]:
+                        mf_path = os.path.join(clip_folder_candidate, mf_name)
+                        if os.path.exists(mf_path):
+                            try:
+                                with open(mf_path, "r", encoding="utf-8") as mf:
+                                    scraped_meta.update(json.load(mf))
+                            except Exception:
+                                pass
+
+                    if intel_data.get("phase1"):
+                        scraped_meta.update(intel_data["phase1"])
+
+                    # 3. Resolve dynamic creator / hero subject
+                    vc = intel_data.get("visual_context", {})
+                    discovered_hero = (
+                        vc.get("main_subject")
+                        or vc.get("person_name")
+                        or scraped_meta.get("ownerFullName")
+                        or scraped_meta.get("uploader")
+                        or ""
+                    )
+                    effective_creator = discovered_hero if (discovered_hero and raw_handle.lower() not in discovered_hero.lower()) else "Trending"
+                    scraped_caption = (
+                        scraped_meta.get("caption")
+                        or scraped_meta.get("raw_caption")
+                        or scraped_meta.get("title")
+                        or ""
+                    )
+                    # Filter out boilerplate YouTube-DL generic title
+                    if str(scraped_caption).startswith("Video by"):
+                        scraped_caption = ""
+
+                    # Run Gemini Vision Audit & Feed-Injection SEO Generation with dynamic metadata
                     audit_res = run_clip_audit_and_seo(
                         video_path=r_file,
-                        creator_name="Source Content",
-                        niche="fashion_lifestyle",
-                        title_hint="Trending Style & Lifestyle Lookbook 🌟"
+                        creator_name=effective_creator,
+                        niche=scraped_meta.get("niche") or vc.get("intent") or "fashion_lifestyle",
+                        title_hint=scraped_caption,
+                        cache=intel_data,
+                        metadata=scraped_meta
                     )
                     seo_info = audit_res.get("seo_metadata", {})
                     
-                    raw_title = seo_info.get("viral_seo_title") or "Trending Fashion & Lifestyle Lookbook 🌟"
-                    raw_desc = seo_info.get("description") or "Must watch viral short! 🔥\n\n#shorts #viral #trending"
-                    raw_tags = " ".join(seo_info.get("hashtags", ["#viral", "#shorts", "#trending", "#fashion"]))
+                    fallback_subject = discovered_hero or "Featured Reel"
+                    raw_title = seo_info.get("viral_seo_title") or f"{fallback_subject} ✨ | Trending Lookbook"
+                    raw_desc = seo_info.get("description") or f"Featured: {fallback_subject} 🔥\n\n#shorts #viral #trending"
+                    raw_tags = " ".join(seo_info.get("hashtags", ["#viral", "#shorts", "#trending", "#reels"]))
 
                     # Strictly sanitize to guarantee NO raw handle IDs appear in titles, descriptions, or hashtags
                     viral_title = sanitize_raw_handles_out(raw_title, raw_handle)

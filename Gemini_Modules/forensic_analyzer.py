@@ -161,25 +161,23 @@ TASK 3 — CONTENT DIRECTOR (Human Editor Intelligence)
 This block is the richest signal Call 3 receives — write it like you're briefing a human editor who
 has never seen the footage, not like you're filling out a form.
 
-1. detected_entities: only entities directly visible. Format: ["person:female", "environment:indoor",
-   "code:editor", "animation:cartoon"]. Don't list entities you're inferring rather than seeing.
-2. visual_event: 1-2 concrete sentences describing what's actually happening across sampled frames.
-   If content is mixed or ambiguous, say so here explicitly.
-3. viewer_attention: the single object/subject most likely to grab attention in the first frame.
-4. internet_context: recognizable cultural/tech/social references visible (neutral wording, no
-   speculation about the identity of real people).
-5. possible_narratives: pick from ["educational_guide", "playful_story", "tech_breakdown",
+1. main_subject: identify the primary human subject, celebrity, influencer, public figure, artist, actor, or core hero entity by full name (e.g. "Kareena Kapoor", "Kiara Advani", "Disha Patani", "Virat Kohli", "Porsche 911"). If an unknown individual, describe their visual identity and role accurately (e.g. "Fitness Model in Olive Activewear", "Street Style Model").
+2. detected_entities: specific entities, celebrities, fashion garments, and key elements visible. Format: ["celebrity:Kareena_Kapoor", "outfit:olive_suit", "accessory:sunglasses", "environment:red_carpet"].
+3. visual_event: 1-2 concrete, vivid sentences describing what's actually happening across sampled frames (e.g. "Kareena Kapoor arriving in a tailored olive-green pantsuit and dark sunglasses, turning to acknowledge cameras").
+4. viewer_attention: the single object/subject most likely to grab attention in the first frame.
+5. internet_context: recognizable cultural/celebrity/fashion references, viral trends, or event context (e.g. Bollywood paparazzi arrival, celebrity airport look, fashion week, viral street style).
+6. possible_narratives: pick from ["educational_guide", "playful_story", "tech_breakdown",
    "fitness_motivation", "scenic_journey", "fashion_moment", "celebrity_highlight", "humor_reaction",
    "recipe_walkthrough", "commentary_talk", "music_showcase"].
-6. recommended_narrative: the single best fit from the list above.
-7. tone: "educational", "playful", "aspirational", "dramatic", "humorous", "calm_ambient", "hype",
+7. recommended_narrative: the single best fit from the list above.
+8. tone: "educational", "playful", "aspirational", "dramatic", "humorous", "calm_ambient", "hype",
    "informative", or "neutral" if none clearly fit.
-8. editing_style: one of "educational_tutorial", "playful_animation", "fast_social", "cinematic",
+9. editing_style: one of "educational_tutorial", "playful_animation", "fast_social", "cinematic",
    "documentary", "product_review", "fashion_showcase", "vlog", "news", "podcast_clip".
-9. engagement_hook: one concrete sentence for what should appear/be said in the first 3 seconds —
-   grounded in what's actually in the frames, not a generic hook template. Call 3 will likely act on
+10. engagement_hook: one concrete sentence for what should appear/be said in the first 3 seconds —
+   grounded in what's actually in the frames, naming the subject and visual action. Call 3 will act on
    this directly, so specificity here has outsized value.
-10. feature_commands: echo the recommended feature flags for consistency with Task 1.
+11. feature_commands: echo the recommended feature flags for consistency with Task 1.
 
 ---
 
@@ -207,6 +205,7 @@ Required JSON format:
     "monetization_safe": <bool>
   }},
   "content_director": {{
+    "main_subject": "<celebrity full name or hero subject>",
     "detected_entities": [],
     "visual_event": "",
     "viewer_attention": "",
@@ -403,20 +402,26 @@ class ForensicVideoAnalyzer:
                     })
 
                 # 2. Fill visual_context SECOND (Gemini visual semantic context)
+                cd_block = result.get("content_director", {})
+                discovered_subject = cd_block.get("main_subject") or result.get("main_subject") or ""
+
                 visual_ctx = {
+                    "main_subject": discovered_subject,
+                    "person_name": discovered_subject,
+                    "visual_event": cd_block.get("visual_event", ""),
                     "intent": result.get("intent", "viral_reel"),
-                    "tone": result.get("content_director", {}).get("tone", "aspirational"),
+                    "tone": cd_block.get("tone", "aspirational"),
                     "editing_style": result.get("editing_style", "cinematic"),
-                    "engagement_hook": result.get("content_director", {}).get("engagement_hook", ""),
-                    "detected_entities": result.get("content_director", {}).get("detected_entities", []),
-                    "possible_narratives": result.get("content_director", {}).get("possible_narratives", []),
-                    "recommended_narrative": result.get("content_director", {}).get("recommended_narrative", ""),
+                    "engagement_hook": cd_block.get("engagement_hook", ""),
+                    "detected_entities": cd_block.get("detected_entities", []),
+                    "possible_narratives": cd_block.get("possible_narratives", []),
+                    "recommended_narrative": cd_block.get("recommended_narrative", ""),
                     "feature_flags": result.get("feature_flags", {}),
                     "safety": result.get("safety", {}),
                     "creative_possibilities": result.get("creative_possibilities", []),
+                    "content_director": cd_block,
                 }
                 # Calculate 3-Signal speech_intelligence (Vision Talking + Audio Vocals + Speech Formants)
-                cd_block = result.get("content_director", {})
                 is_talking = bool(result.get("is_talking_on_camera") or cd_block.get("is_talking_on_camera", False) or result.get("intent") == "talking_head")
                 has_audio = bool(p1_audio.get("has_audio", True)) if p1_audio else True
                 has_vocals = bool(p1_audio.get("has_vocals", True)) if p1_audio else is_talking

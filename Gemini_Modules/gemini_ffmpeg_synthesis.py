@@ -919,6 +919,25 @@ class FFmpegCommandGenerator:
             safe_text = brand_text.replace("'", "\\'")
 
             # Position over detected watermark box if coordinates available
+            if not watermark_boxes and input_path:
+                possible_sidecars = [
+                    str(input_path) + ".coords.json",
+                    os.path.join(os.path.dirname(input_path), "video_inpainted_clean.mp4.coords.json"),
+                    os.path.join(os.path.dirname(input_path), "video.mp4.coords.json"),
+                ]
+                for sc_path in possible_sidecars:
+                    if os.path.isfile(sc_path):
+                        try:
+                            with open(sc_path, "r", encoding="utf-8") as sc_f:
+                                sc_cdata = json.load(sc_f)
+                            _wm_sc = sc_cdata.get("watermark_boxes")
+                            if _wm_sc:
+                                watermark_boxes = _wm_sc
+                                logger.info(f"📍 [SYNTHESIS WATERMARK RECOVERY] Recovered {len(watermark_boxes)} coordinate box(es) from sidecar: {os.path.basename(sc_path)}")
+                                break
+                        except Exception:
+                            pass
+
             if watermark_boxes:
                 box0 = watermark_boxes[0]
                 coords0 = box0.get("coordinates") if isinstance(box0.get("coordinates"), dict) else box0
