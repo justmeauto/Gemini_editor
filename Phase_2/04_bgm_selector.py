@@ -141,17 +141,18 @@ def select_clip_bgm(
             audio_data["selected_bgm_track"] = selected_track_name
             audio_data["selected_audio_track"] = selected_track_name
             audio_data["alignment_score"] = res.get("alignment_score", 0.85)
-            try:
-                import time
-                from Audio_Modules.audio_pool_manager import AudioPoolManager
-                pm = AudioPoolManager()
-                t_meta = pm.get_track_intelligence(selected_track_name) or {}
-                t_meta["usage_count"] = t_meta.get("usage_count", 0) + 1
-                t_meta["last_used"] = time.time()
-                pm._set_file_metadata(selected_track_name, t_meta)
-                pm._save_metadata()
-            except Exception as _pm_u_err:
-                logger.debug(f"[STEP 04] Pool metadata usage count update notice: {_pm_u_err}")
+            store.set("audio_data", audio_data)
+
+            import time
+            from Audio_Modules.audio_pool_manager import AudioPoolManager
+            pm = AudioPoolManager()
+            t_meta = pm.get_track_intelligence(selected_track_name) or {}
+            t_meta["usage_count"] = t_meta.get("usage_count", 0) + 1
+            t_meta["last_used"] = time.time()
+            pm._set_file_metadata(selected_track_name, t_meta)
+            pm._save_metadata()
+        except Exception as _st_err:
+            logger.debug(f"[STEP 04] Store update notice: {_st_err}")
 
     logger.info(
         f"✓ [STEP 04 SUCCESS] BGM Selected: '{selected_track_name}' "
