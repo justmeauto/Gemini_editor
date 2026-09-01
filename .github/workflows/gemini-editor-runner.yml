@@ -82,13 +82,28 @@ jobs:
         cache: 'pip'
         cache-dependency-path: 'requirements.txt'
 
-    # ── 3. System Dependencies (Official FFmpeg Setup) ─────────────────────────
-    - name: Set up FFmpeg
+    # ── 3. System Dependencies (Fast Pre-installed FFmpeg Check) ──────────────
+    - name: Verify FFmpeg
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y ffmpeg
+        if command -v ffmpeg >/dev/null 2>&1; then
+          echo "✅ FFmpeg pre-installed: $(ffmpeg -version | head -n 1)"
+        else
+          echo "⚠️ FFmpeg missing, installing..."
+          sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+        fi
 
-    # ── 4. Python Dependencies ────────────────────────────────────────────────
+    # ── 4. Cache AI Models (HuggingFace / Faster-Whisper) ─────────────────────
+    - name: Cache AI Models & Weights
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/huggingface
+          ~/.cache/whisper
+        key: ai-models-v1-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ai-models-v1-
+
+    # ── 5. Python Dependencies ────────────────────────────────────────────────
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
