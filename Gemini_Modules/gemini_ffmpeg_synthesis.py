@@ -862,14 +862,17 @@ class FFmpegCommandGenerator:
             except (ValueError, TypeError):
                 pass
 
-        # ── Step C: Optional delogo (erase original watermark bounding box) ──────
-        if watermark_boxes:
+        # ── Step C: Optional delogo (only if video was NOT inpainted upfront) ─────
+        # If OpenCV upfront inpainting already erased the watermark (Step 2.5),
+        # running FFmpeg's delogo on top is redundant and triggers 'delogo outside frame' errors.
+        _inpainted_upfront = bool((forensic_context or {}).get("inpainted_upfront", False))
+        if watermark_boxes and not _inpainted_upfront:
             for box in watermark_boxes:
                 bx = int(box.get("x", 0))
                 by = int(box.get("y", 0))
                 bw = int(box.get("w", 100))
                 bh = int(box.get("h", 50))
-                if bw > 0 and bh > 0:
+                if bw > 0 and bh > 0 and (bx > 5 or by > 5):
                     next_label = "[vd]"
                     filter_parts.append(f"{current_label}delogo=x={bx}:y={by}:w={bw}:h={bh}{next_label}")
                     current_label = next_label
@@ -1644,10 +1647,14 @@ class GeminiFFmpegEngine:
                     logger.warning(f"⚠️ Watermark overlay requested by plan but watermark image file missing ('{wm_file}'). Skipping watermark step.")
                     continue
             elif op_type == "delogo_blur":
-                res = self.cmd_generator.build_delogo_blur_command(current_input, step_output,
-                    x=op.get("x", 0), y=op.get("y", 0), w=op.get("w", 100), h=op.get("h", 50), band=op.get("band", 4),
-                    encoding_cfg=encoding_cfg)
-                command_steps.append(res)
+                if not (forensic_context or {}).get("inpainted_upfront"):
+                    res = self.cmd_generator.build_delogo_blur_command(current_input, step_output,
+                        x=op.get("x", 0), y=op.get("y", 0), w=op.get("w", 100), h=op.get("h", 50), band=op.get("band", 4),
+                        encoding_cfg=encoding_cfg)
+                    command_steps.append(res)
+                else:
+                    logger.info("⚡ [MULTI-STEP] Skipping redundant delogo_blur step — video was already inpainted upfront.")
+                    continue
             elif op_type in ("drawtext", "brand_watermark", "text_watermark"):
                 wm_boxes = extra_inputs.get("watermark_boxes") or []
                 target_x = op.get("x")
