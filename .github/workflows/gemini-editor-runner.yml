@@ -82,11 +82,16 @@ jobs:
         cache: 'pip'
         cache-dependency-path: 'requirements.txt'
 
-    # ── 3. Set up FFmpeg (Instant 2-Second Binary) ────────────────────────────
-    - name: Set up FFmpeg
-      uses: federicocarboni/setup-ffmpeg@v3
-      with:
-        ffmpeg-version: release
+    # ── 3. Set up High-Performance FFmpeg (with full drawtext & libharfbuzz) ──
+    - name: Set up FFmpeg with drawtext
+      run: |
+        echo "🚀 Installing BtbN FFmpeg static build with full drawtext & libharfbuzz..."
+        curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ -C /tmp
+        sudo mv /tmp/ffmpeg-*-linux64-gpl/bin/ffmpeg /usr/local/bin/
+        sudo mv /tmp/ffmpeg-*-linux64-gpl/bin/ffprobe /usr/local/bin/
+        rm -rf /tmp/ffmpeg-*-linux64-gpl
+        echo "✅ FFmpeg ready: $(ffmpeg -version | head -n 1)"
+        ffmpeg -filters | grep -w drawtext || (echo "❌ drawtext missing" && exit 1)
 
     # ── 4. Cache AI Models (HuggingFace / Faster-Whisper) ─────────────────────
     - name: Cache AI Models & Weights
