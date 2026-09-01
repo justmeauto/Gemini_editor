@@ -892,6 +892,71 @@ class TelegramVaultIndexer:
             "clip_entry": clip_entry
         }
 
+    def update_inpainted_clean_source_in_vault(self, clean_video_path: str, clip_folder_name: str) -> Optional[str]:
+        """
+        [APPROACH 1 - CLEAN SOURCE REPLACEMENT]
+        When Step 2.5 upfront inpainting cleans the raw video, this method uploads
+        video_inpainted_clean.mp4 to Telegram Storage Group, captures the returned file_id,
+        and updates Column 2 of master_vault_index.json so that raw_video_file_id points
+        to the CLEAN inpainted video file.
+
+        This guarantees that any future hydration or retry (even on a fresh runner)
+        downloads the clean video directly from Telegram, making re-edits 100% immune
+        to Gemini watermark detection flakes.
+        """
+        if not clean_video_path or not os.path.exists(clean_video_path):
+            return None
+
+        storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        if not storage_group_id or not bot_token:
+            return None
+
+        try:
+            filename = os.path.basename(clean_video_path)
+            caption = f"🎬 [CLEAN INPAINTED SOURCE] `{filename}`\n🆔 `{clip_folder_name}`"
+            logger.info("🧼 [VAULT CLEAN UPLOAD] Uploading inpainted clean video '%s' to Telegram Storage Group...", filename)
+
+            upload_res = _send_telegram_file_sync("sendVideo", storage_group_id, "video", clean_video_path, caption=caption)
+            if not upload_res or not isinstance(upload_res, dict) or not upload_res.get("ok"):
+                upload_res = _send_telegram_file_sync("sendDocument", storage_group_id, "document", clean_video_path, caption=caption)
+
+            clean_file_id = None
+            if upload_res and isinstance(upload_res, dict) and upload_res.get("ok"):
+                res_doc = upload_res.get("result", {})
+                clean_file_id = res_doc.get("video", {}).get("file_id") or res_doc.get("document", {}).get("file_id")
+
+            if clean_file_id:
+                logger.info("✅ [VAULT CLEAN UPLOAD] Uploaded clean video to Telegram Storage Group — file_id: %s", clean_file_id[:20])
+
+                # Update Column 2 in master_vault_index.json
+                c2 = self.vault_index.setdefault("column_2_downloaded_sources", {})
+                c2_url = c2.setdefault("by_social_media_id", {})
+                c2_sess = c2.setdefault("by_session_id", {})
+
+                updated = False
+                for entry_dict in (c2_url, c2_sess):
+                    for k, entry in list(entry_dict.items()):
+                        if isinstance(entry, dict):
+                            s_id = str(entry.get("session_id", ""))
+                            u_str = str(entry.get("social_media_id", ""))
+                            if clip_folder_name.lower() in s_id.lower() or clip_folder_name.lower() in u_str.lower() or clip_folder_name.lower() in k.lower():
+                                entry["raw_video_file_id"] = clean_file_id
+                                entry["inpainted_clean_file_id"] = clean_file_id
+                                entry["is_inpainted"] = True
+                                updated = True
+
+                if updated:
+                    self._save_local_index()
+                    self.upload_and_pin_vault_index_sync()
+                    logger.info("📌 [VAULT CLEAN UPDATE] Updated Column 2 raw_video_file_id to point to clean inpainted video for '%s'", clip_folder_name)
+
+                return clean_file_id
+        except Exception as _e:
+            logger.warning("⚠️ Could not upload/update clean video in Telegram vault: %s", _e)
+
+        return None
+
     def sync_visual_pool_metadata(self, clip_id: str, clip_data: Dict[str, Any]) -> bool:
         """
         [AUTOMATIC] Synchronizes visual clip intelligence, video file_ids, and editing_plan

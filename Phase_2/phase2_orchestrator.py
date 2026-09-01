@@ -198,6 +198,22 @@ def run_phase2_pipeline(
                                     logger.info(f"📍 [WATERMARK ALIGNMENT] Loaded {len(_wm_b)} inpaint coordinate box(es) for brand overlay masking.")
                             except Exception as _ce:
                                 logger.debug(f"Coords sidecar read notice: {_ce}")
+
+                        # ── APPROACH 1: UPLOAD CLEAN INPAINTED SOURCE TO VAULT ─────────
+                        # Upload clean inpainted raw video to Telegram Storage Group so Column 2
+                        # points to the clean video for all future hydrations/retries on any machine.
+                        try:
+                            from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                            vault_idx = TelegramVaultIndexer()
+                            clean_fid = vault_idx.update_inpainted_clean_source_in_vault(
+                                clean_video_path=clean_raw_path,
+                                clip_folder_name=folder_name
+                            )
+                            if clean_fid:
+                                forensic_res["inpainted_clean_file_id"] = clean_fid
+                        except Exception as _clean_up_err:
+                            logger.warning(f"⚠️ [UPFRONT INPAINTING] Clean vault upload notice: {_clean_up_err}")
+                        # ───────────────────────────────────────────────────────────────
                 except Exception as _inp_err:
                     logger.warning(f"⚠️ [UPFRONT INPAINTING] Notice: {_inp_err}")
 
