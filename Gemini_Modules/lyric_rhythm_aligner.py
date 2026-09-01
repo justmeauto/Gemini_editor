@@ -940,18 +940,29 @@ def select_best_audio_for_clip(
             fl = f.lower()
             return fl.startswith("sess_") or "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
 
+    def _is_noisy_or_unusable(fname, meta):
+        if not isinstance(meta, dict):
+            return False
+        if meta.get("is_unusable", False) or meta.get("is_speech_only", False):
+            return True
+        reason = str(meta.get("unusable_reason", "")).lower()
+        vibe = str(meta.get("vibe_tags", [])).lower()
+        noise_kws = ("paparazzi", "crowd", "babble", "car_sound", "traffic", "pollution", "horn", "shouting", "chatter", "mic_static")
+        if any(kw in reason for kw in noise_kws) or any(kw in vibe for kw in noise_kws):
+            return True
+        return False
+
     all_candidates = [
         fname for fname, meta in pool_files.items()
         if isinstance(meta, dict)
-        and not meta.get("is_unusable", False)
-        and not meta.get("is_speech_only", False)
+        and not _is_noisy_or_unusable(fname, meta)
         and not _is_pipeline_artifact(fname)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
     if not all_candidates:
-        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts excluded).")
-        return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid BGM tracks in pool."}
+        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts and noisy audio excluded).")
+        return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid clean BGM tracks in pool."}
 
     fresh_candidates = [
         c for c in all_candidates
@@ -986,6 +997,8 @@ def select_best_audio_for_clip(
             or c_file.lower().startswith(f"bgm_{clip_id.lower()}")
             or (clip_folder and os.path.basename(clip_folder).lower() in c_file.lower())
             or bool(meta.get("is_source_extract", False))
+            or c_file.lower().startswith("bgm_manual_")
+            or c_file.lower().startswith("sess_")
         )
 
         hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
@@ -1046,6 +1059,7 @@ def select_best_audio_for_clip(
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
+- STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, paparazzi shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
 - FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(external_candidates[:9])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
 - LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
 - Prioritize musical style, emotional vibe, and BPM alignment with the video.

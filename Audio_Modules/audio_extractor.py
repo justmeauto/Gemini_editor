@@ -322,6 +322,7 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                 "beat_score": analysis.get("beat_score", 0.0),
                 "audio_hash": pm._calculate_hash(target_wav),
                 "version": pm.CURRENT_VERSION,
+                "is_source_extract": True,
             })
             if "semantic_context" in analysis:
                 sem = analysis["semantic_context"]
