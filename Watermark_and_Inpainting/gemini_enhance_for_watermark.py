@@ -442,6 +442,25 @@ If no human visible in the video, set coverage = 100 and is_nsfw = false.
             # hallucinations but now actively corrupts the accurate detections by
             # jumping to unrelated gradient clusters. Trust Gemini's coordinates directly.
 
+            pad_x = 12
+            pad_y = 8
+            eff_x = max(0, x_start - pad_x)
+            eff_y = max(0, y_start - pad_y)
+            eff_w = w_pixel + 2 * pad_x
+            eff_h = h_pixel + 2 * pad_y
+
+            op_vectors = {
+                "inpaint_radius": 13,
+                "mask_padding_x": pad_x,
+                "mask_padding_y": pad_y,
+                "effective_x": eff_x,
+                "effective_y": eff_y,
+                "effective_w": eff_w,
+                "effective_h": eff_h,
+                "inpaint_method": "Navier_Stokes_EdgeIntegrator",
+                "background_texture": str(item.get("background_texture", "complex")).lower(),
+            }
+
             vectors = {
                 "opacity_level": float(item.get("opacity_level", 0.5)),
                 "color_polarity": str(item.get("color_polarity", "white_text_dark_glow")),
@@ -452,13 +471,19 @@ If no human visible in the video, set coverage = 100 and is_nsfw = false.
             results.append({
                 'x': max(0, x_start), 'y': max(0, y_start),
                 'w': min(use_w-x_start, w_pixel), 'h': min(use_h-y_start, h_pixel),
+                'video_width': use_w,
+                'video_height': use_h,
                 'type': 'HYBRID_CLAMPED',
                 'semantic_type': item.get("type", "unknown"),
                 'semantic_anchor': item.get("anchoring", "unknown"),
                 'semantic_hint': item.get("text_content", ""),
                 'semantic_vectors': vectors,
+                'opencv_vectors': op_vectors,
             })
-            logger.info(f"💎 Sub-Pixel Sweep: {item.get('type')} -> x={x_start}, y={y_start}, w={w_pixel}, h={h_pixel}")
+            logger.info(
+                f"💎 Sub-Pixel Sweep: {item.get('type')} -> x={x_start}, y={y_start}, w={w_pixel}, h={h_pixel} | "
+                f"OpenCV Vectors: eff_x={eff_x}, eff_y={eff_y}, eff_w={eff_w}, eff_h={eff_h}"
+            )
 
         return results, frame_and_niche_info
     except Exception as e:
@@ -568,7 +593,7 @@ def evaluate(video_path, frames):
     return {"score": 0.4, "status": "CLEAN", "watermarks": []}
 
 def detect_watermark_from_video(video_path: str, keywords: str = "") -> tuple:
-    """Convenience entry point: extracts keyframes from a video_path and executes detect_watermark."""
+    """Convenience entry point: extracts 12 strategic keyframes from a video_path and executes detect_watermark."""
     if not os.path.exists(video_path):
         return None, None
     try:
@@ -577,17 +602,34 @@ def detect_watermark_from_video(video_path: str, keywords: str = "") -> tuple:
         if not cap.isOpened():
             return None, None
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 30
-        indices = [int(i * total / 7) for i in range(7)]
+        vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1080
+        vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1920
+
+        # Sample 12 strategic frames across the video to guarantee high-acuity watermark coverage
+        sample_count = 12
+        indices = [int(i * (total - 1) / max(1, sample_count - 1)) for i in range(sample_count)]
         frames = []
+        timestamps = []
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+
         for idx in indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if ret and frame is not None:
                 frames.append(frame)
+                timestamps.append(round(idx / fps, 3))
         cap.release()
+
         if not frames:
             return None, None
-        return detect_watermark(frames=frames, keywords=keywords)
+
+        return detect_watermark(
+            frames=frames,
+            keywords=keywords,
+            force_width=vw,
+            force_height=vh,
+            frame_timestamps=timestamps
+        )
     except Exception as exc:
         logger.warning(f"detect_watermark_from_video error for {video_path}: {exc}")
         return None, None
