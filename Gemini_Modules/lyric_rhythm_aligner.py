@@ -1065,7 +1065,7 @@ def select_best_audio_for_clip(
 Rules:
 - NEVER pick a track from FORBIDDEN list
 - STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, paparazzi shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
-- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(external_candidates[:9])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
+- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(tier1[:7]) if tier1 else len(tier2[:8])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
 - LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
 - Prioritize musical style, emotional vibe, and BPM alignment with the video.
 - Do NOT reference past clips — judge purely on the clip context and track metadata below.

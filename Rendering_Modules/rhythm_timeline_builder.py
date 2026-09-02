@@ -38,7 +38,7 @@ SECTION_DURATION_MULTIPLIERS = {
     "outro":       2.0,   # 2 bars  — slow close
     "instrumental":1.0,   # 1 bar  — default for pure music sections
 }
-MIN_SHOT_DURATION = 2.0  # Human-scale minimum shot duration for legible, continuous takes
+MIN_SHOT_DURATION = 0.8  # Dynamic dopamine cut minimum duration for fast-paced viral reels
 
 
 def _to_float(v, default=0.0) -> float:
@@ -79,8 +79,8 @@ class RhythmTimelineBuilder:
     """
     
     def __init__(self):
-        self.min_duration = 3.0     # minimum cut — quality over quantity; no micro-clips
-        self.max_duration = 8.0     # max before micro-split — allows emotional holds
+        self.min_duration = 1.0     # Dynamic dopamine minimum cut duration for viral reels
+        self.max_duration = 5.0     # Max cut duration before micro-split
         self.target_duration_min = 8.0
         self.target_duration_max = 60.0   # actual cap set per-call from VO hint
         # Human transitions: mix of hard cuts (clean, musical) and creative moves
