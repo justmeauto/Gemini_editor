@@ -992,52 +992,57 @@ def select_best_audio_for_clip(
         c_vocals = bool(meta.get("has_vocals", False))
         c_lang = str(meta.get("language", "unknown"))
 
-        is_self_audio = (
+        is_own_clip_audio = (
             c_file.lower() == f"bgm_{clip_id.lower()}.wav"
             or c_file.lower().startswith(f"bgm_{clip_id.lower()}")
             or (clip_folder and os.path.basename(clip_folder).lower() in c_file.lower())
-            or bool(meta.get("is_source_extract", False))
+        )
+        is_harvested_audio = (
+            bool(meta.get("is_source_extract", False))
             or c_file.lower().startswith("bgm_manual_")
             or c_file.lower().startswith("sess_")
         )
+        # Tier 1 = Real BGM Music Library (.mp3)
+        # Tier 2 = Harvested Audio from OTHER clips
+        # Tier 3 = Harvested Audio from THIS CURRENT clip (last resort)
+        tier = 1 if not is_harvested_audio else (2 if not is_own_clip_audio else 3)
+        is_self_audio = (tier == 3)
 
         hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
         recency_penalty = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
         usage_penalty = 1.0 / (1.0 + u_count * 0.25)
-        self_discount = 0.05 if is_self_audio else 1.0
+        self_discount = 0.05 if tier == 3 else (0.40 if tier == 2 else 1.0)
 
         bpm_match = max(0.0, 1.0 - (abs(clip_bpm - c_bpm) / 100.0))
         emotion_match = 1.0 if c_emotion in clip_tone or clip_tone in c_emotion else 0.5
         math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * self_discount
 
-        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]" if is_self_audio else ""
+        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]" if tier == 3 else (" [HARVESTED AUDIO FROM OTHER CLIP]" if tier == 2 else "")
 
         c_fid = str(meta.get("file_id") or "")
         fid_tag = f", telegram_file_id='{c_fid}'" if c_fid else ""
 
-        candidate_scores.append((math_score, c_file, is_self_audio, c_fid))
+        candidate_scores.append((math_score, c_file, tier, c_fid))
         candidate_lines[c_file] = (
             f"- '{c_file}'{self_tag}{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
-    external_candidates = [c for c in candidate_scores if not c[2]]
-    self_candidates = [c for c in candidate_scores if c[2]]
+    tier1 = [c for c in candidate_scores if c[2] == 1]
+    tier2 = [c for c in candidate_scores if c[2] == 2]
+    tier3 = [c for c in candidate_scores if c[2] == 3]
 
-    external_candidates.sort(key=lambda x: x[0], reverse=True)
-    self_candidates.sort(key=lambda x: x[0], reverse=True)
+    tier1.sort(key=lambda x: x[0], reverse=True)
+    tier2.sort(key=lambda x: x[0], reverse=True)
+    tier3.sort(key=lambda x: x[0], reverse=True)
 
-    top_candidates = external_candidates[:9] + self_candidates[:1]
+    top_candidates = (tier1[:7] + tier2[:2] + tier3[:1]) if tier1 else (tier2[:8] + tier3[:1])
 
-    fresh_candidate_scores = [c for c in candidate_scores if c[1].lower() not in disqualified_tracks]
-    if fresh_candidate_scores:
-        fresh_external = [c for c in fresh_candidate_scores if not c[2]]
-        fresh_self = [c for c in fresh_candidate_scores if c[2]]
-        fresh_external.sort(key=lambda x: x[0], reverse=True)
-        fresh_self.sort(key=lambda x: x[0], reverse=True)
-        best_math_candidate = fresh_external[0][1] if fresh_external else fresh_self[0][1]
-        best_math_fid = fresh_external[0][3] if fresh_external else fresh_self[0][3]
-        best_math_score = float(fresh_external[0][0] if fresh_external else fresh_self[0][0])
+    fresh_candidates = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
+    if fresh_candidates:
+        best_math_candidate = fresh_candidates[0][1]
+        best_math_fid = fresh_candidates[0][3]
+        best_math_score = float(fresh_candidates[0][0])
     else:
         best_math_candidate = top_candidates[0][1] if top_candidates else available_candidates[0]
         best_math_fid = top_candidates[0][3] if top_candidates else ""

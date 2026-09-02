@@ -878,12 +878,29 @@ class RhythmTimelineBuilder:
             logger.warning("⚠️ RhythmTimelineBuilder: timeline empty; applying fallback grid reshaping.")
             base_for_final = _fallback_grid_segments()
         elif _vo_min_needed > 0 and _selected_total < _vo_min_needed:
-            logger.warning(
-                f"⚠️ [COVERAGE_FAILSAFE] Selected {_selected_total:.1f}s < "
-                f"50% of VO target ({target_max:.1f}s). "
-                f"Overriding with full-clip coverage grid."
+            logger.info(
+                f"🎬 [COVERAGE_EXPANSION] Preserving visual intelligence: timeline {_selected_total:.1f}s < target ({target_max:.1f}s). "
+                f"Expanding timeline from peak moments and high-score visual segments."
             )
-            base_for_final = _fallback_grid_segments()
+            # Smart expansion: Keep visual intelligence shots and append top scored visual candidates
+            expanded = list(timeline)
+            curr_dur = _selected_total
+            used_starts = {s.get("start", 0.0) for s in expanded}
+            cand_pool = sorted(all_candidates, key=lambda x: x.get("score", 0.0), reverse=True)
+            for cand in cand_pool:
+                if curr_dur >= target_max:
+                    break
+                c_st = cand.get("start", 0.0)
+                c_en = cand.get("end", 0.0)
+                c_dur = max(0.0, c_en - c_st)
+                if c_dur < self.min_duration:
+                    continue
+                if any(abs(c_st - u_st) < 0.5 for u_st in used_starts):
+                    continue
+                expanded.append(cand)
+                used_starts.add(c_st)
+                curr_dur += c_dur
+            base_for_final = sorted(expanded, key=lambda x: x.get("start", 0.0))
         else:
             base_for_final = timeline
 
