@@ -12,7 +12,7 @@ BEAT_ANTICIPATION_DEFAULT_MS = 80
 
 # Maximum fractional overlap allowed before a micro-shot is flagged as duplicate
 # (0.30 = a shot sharing >30% of its time-range with an already-used shot is rejected)
-DUPLICATE_OVERLAP_THRESHOLD = 0.30
+DUPLICATE_OVERLAP_THRESHOLD = 0.50
 
 # Vibe → preferred shot-duration range (min_s, max_s) — FALLBACK when no music_intelligence
 # Matched to MusicDrivenEditor vibe profiles so both layers agree
@@ -716,6 +716,12 @@ class RhythmTimelineBuilder:
                         break
                     shot = max(all_remaining, key=lambda x: x["score"])
                     band_name = None  # We've already chosen the shot
+                    # FIX: Remove immediately so this shot can't be re-selected
+                    # on the next peak-phase loop iteration (was the primary cause
+                    # of same-clip-repeating-in-a-row).
+                    if shot in early_band: early_band.remove(shot)
+                    if shot in mid_band:   mid_band.remove(shot)
+                    if shot in late_band:  late_band.remove(shot)
                 else:
                     # Release: alternate mid / late for variety
                     band_name = "mid" if band_idx % 2 == 0 else "late"
@@ -771,13 +777,21 @@ class RhythmTimelineBuilder:
                     if shot in late_band: late_band.remove(shot)
                     continue
 
-            # Variety guardrail: avoid bouncing on the same parent_scene when we have alternatives
+            # Variety guardrail: avoid bouncing on the same parent_scene when we have alternatives.
+            # Uses a 3-shot cooldown window instead of only the last shot:
+            #   - 3 consecutive same-scene  → 85% rejection (near-certain skip)
+            #   - 2 of last 3 same-scene    → 60% rejection (strong deterrent)
+            #   - only 1 of last 3          → pass through freely
             if recent_parent_scenes and (early_band or mid_band or late_band):
-                last_parent = recent_parent_scenes[-1]
-                if shot.get("parent_scene") == last_parent and random.random() < 0.4:
+                _cooldown = recent_parent_scenes[-3:]
+                _shot_parent = shot.get("parent_scene", -1)
+                _consecutive = all(p == _shot_parent for p in _cooldown)
+                _recent_same = _cooldown.count(_shot_parent) >= 2
+                _reject_prob = 0.85 if _consecutive else (0.60 if _recent_same else 0.0)
+                if _reject_prob > 0 and random.random() < _reject_prob:
                     if shot in early_band: early_band.remove(shot)
-                    if shot in mid_band: mid_band.remove(shot)
-                    if shot in late_band: late_band.remove(shot)
+                    if shot in mid_band:   mid_band.remove(shot)
+                    if shot in late_band:  late_band.remove(shot)
                     continue
 
             # Stop only when we would clearly exceed the target_max duration
