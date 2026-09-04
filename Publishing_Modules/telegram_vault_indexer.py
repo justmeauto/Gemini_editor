@@ -1104,8 +1104,8 @@ class TelegramVaultIndexer:
                             chat_id=int(storage_group_id),
                             video=rf,
                             caption=f"📥 **[VAULT RAW SOURCE]** `{os.path.basename(raw_video_path)}`\n🔗 `{social_url}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
-                            read_timeout=300,
-                            write_timeout=300
+                            read_timeout=600,
+                            write_timeout=600
                         )
                         if rmsg and rmsg.video:
                             raw_file_id = rmsg.video.file_id
@@ -1119,8 +1119,8 @@ class TelegramVaultIndexer:
                                 document=af,
                                 filename=os.path.basename(audio_path),
                                 caption=f"🎵 **[VAULT AUDIO EXTRACT]** `{os.path.basename(audio_path)}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
-                                read_timeout=300,
-                                write_timeout=300
+                                read_timeout=600,
+                                write_timeout=600
                             )
                             if amsg:
                                 audio_file_id = amsg.document.file_id if amsg.document else (amsg.audio.file_id if amsg.audio else None)
@@ -1179,8 +1179,8 @@ class TelegramVaultIndexer:
                         chat_id=int(storage_group_id),
                         video=vf,
                         caption=f"🎬 **[VAULT MASTER REEL]** `{filename}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
-                        read_timeout=300,
-                        write_timeout=300
+                        read_timeout=600,
+                        write_timeout=600
                     )
                     if vmsg and vmsg.video:
                         master_file_id = vmsg.video.file_id
@@ -1328,7 +1328,9 @@ class TelegramVaultIndexer:
                     chat_id=int(storage_group_id),
                     document=idf,
                     filename="master_vault_index.json",
-                    caption=f"📌 **[VAULT MASTER INDEX]** Auto-Synced\n🕒 `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n📊 Reels: `{len(self.vault_index.get('column_1_processed_reels', {}).get('by_session_id', {}))}` | Sources: `{len(self.vault_index.get('column_2_downloaded_sources', {}).get('by_social_media_id', {}))}`"
+                    caption=f"📌 **[VAULT MASTER INDEX]** Auto-Synced\n🕒 `{time.strftime('%Y-%m-%d %H:%M:%S')}`\n📊 Reels: `{len(self.vault_index.get('column_1_processed_reels', {}).get('by_session_id', {}))}` | Sources: `{len(self.vault_index.get('column_2_downloaded_sources', {}).get('by_social_media_id', {}))}`",
+                    read_timeout=600,
+                    write_timeout=600
                 )
                 if doc_msg and doc_msg.message_id:
                     await bot.pin_chat_message(

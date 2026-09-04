@@ -210,6 +210,75 @@ def build_active_accounts_keyboard_and_text():
 _global_bot_instance = None
 
 
+async def _send_video_safe_main(
+    bot_obj,
+    chat_id,
+    video_path_or_file,
+    caption="",
+    reply_markup=None,
+    supports_streaming=True,
+    max_retries=3,
+):
+    """
+    Robust video uploader wrapper with exponential backoff retries and high write/read timeouts (600s).
+    Prevents httpx.WriteTimeout / telegram.error.TimedOut crashes on large media or slow networks.
+    """
+    from telegram.error import TimedOut, NetworkError
+    import asyncio
+
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if isinstance(video_path_or_file, str) and os.path.isfile(video_path_or_file):
+                with open(video_path_or_file, "rb") as vf:
+                    return await bot_obj.send_video(
+                        chat_id=int(chat_id),
+                        video=vf,
+                        caption=caption,
+                        reply_markup=reply_markup,
+                        supports_streaming=supports_streaming,
+                        read_timeout=600,
+                        write_timeout=600,
+                        connect_timeout=120
+                    )
+            elif hasattr(video_path_or_file, "read"):
+                video_path_or_file.seek(0)
+                return await bot_obj.send_video(
+                    chat_id=int(chat_id),
+                    video=video_path_or_file,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    supports_streaming=supports_streaming,
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=120
+                )
+            else:
+                return await bot_obj.send_video(
+                    chat_id=int(chat_id),
+                    video=video_path_or_file,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    supports_streaming=supports_streaming,
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=120
+                )
+        except (TimedOut, NetworkError, Exception) as err:
+            last_exc = err
+            if attempt < max_retries:
+                logger.warning(
+                    f"⚠️ [TELEGRAM UPLOAD TIMEOUT] Attempt {attempt}/{max_retries} failed for chat {chat_id}: {err}. "
+                    f"Retrying in {attempt * 3.0:.1f}s with 600s timeout..."
+                )
+                await asyncio.sleep(attempt * 3.0)
+            else:
+                logger.error(
+                    f"❌ [TELEGRAM UPLOAD FAILED] All {max_retries} attempts failed for chat {chat_id}: {err}"
+                )
+                raise err
+
+
 async def _async_trigger_immediate_batch(bot, chat_id: int):
     """Triggers an immediate background scraper batch and notifies Telegram chat."""
     import asyncio
@@ -239,15 +308,15 @@ async def _async_trigger_immediate_batch(bot, chat_id: int):
                 try:
                     sess_id = session_manager.create_session(video_path=r_file)
                     keyboard = build_telegram_session_keyboard(session_id=sess_id)
-                    with open(r_file, "rb") as vf:
-                        sent_msg = await effective_bot.send_video(
-                            chat_id=chat_id,
-                            video=vf,
-                            caption=f"🎬 **Master Edit Complete!**\n📁 `{os.path.basename(r_file)}`\n🆔 `Session: {sess_id}`",
-                            reply_markup=keyboard
-                        )
-                        if sent_msg:
-                            session_manager.update_message_id(sess_id, sent_msg.message_id)
+                    sent_msg = await _send_video_safe_main(
+                        effective_bot,
+                        chat_id,
+                        r_file,
+                        caption=f"🎬 **Master Edit Complete!**\n📁 `{os.path.basename(r_file)}`\n🆔 `Session: {sess_id}`",
+                        reply_markup=keyboard
+                    )
+                    if sent_msg:
+                        session_manager.update_message_id(sess_id, sent_msg.message_id)
                 except Exception as _e:
                     logger.warning(f"Error sending batch video: {_e}")
         else:
@@ -1817,32 +1886,31 @@ def run_master_pipeline(
                             raw_video_path=possible_raw if os.path.exists(possible_raw) else None,
                             requestor_chat_id=requestor_chat_id
                         )
-                        keyboard = build_telegram_session_keyboard(session_id=sess_id)
-                        with open(active_reel_path, "rb") as vf:
-                            sent_msg = await bot.send_video(
-                                chat_id=int(target_chat),
-                                video=vf,
-                                caption=f"🎉 **AI Master Edit Complete!**\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
-                                reply_markup=keyboard,
-                                supports_streaming=True
-                            )
-                            if sent_msg:
-                                session_manager.update_message_id(sess_id, sent_msg.message_id)
+                        sent_msg = await _send_video_safe_main(
+                            bot,
+                            target_chat,
+                            active_reel_path,
+                            caption=f"🎉 **AI Master Edit Complete!**\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
+                            reply_markup=keyboard,
+                            supports_streaming=True
+                        )
+                        if sent_msg:
+                            session_manager.update_message_id(sess_id, sent_msg.message_id)
 
                         # Storage Group Backup & Master Vault Index Sync
                         if storage_group:
                             try:
                                 master_file_id = sent_msg.video.file_id if sent_msg and sent_msg.video else None
                                 if str(target_chat) != str(storage_group):
-                                    with open(active_reel_path, "rb") as svf:
-                                        sg_msg = await bot.send_video(
-                                            chat_id=int(storage_group),
-                                            video=svf,
-                                            caption=f"📦 **[VAULT BACKUP]** Master Reel Backup\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
-                                            supports_streaming=True
-                                        )
-                                        if sg_msg and sg_msg.video:
-                                            master_file_id = sg_msg.video.file_id
+                                    sg_msg = await _send_video_safe_main(
+                                        bot,
+                                        storage_group,
+                                        active_reel_path,
+                                        caption=f"📦 **[VAULT BACKUP]** Master Reel Backup\n📁 `{os.path.basename(active_reel_path)}`\n🆔 `Session: {sess_id}`",
+                                        supports_streaming=True
+                                    )
+                                    if sg_msg and sg_msg.video:
+                                        master_file_id = sg_msg.video.file_id
 
                                 # Load clip intelligence and lyric intelligence from disk
                                 clip_intel = {}
@@ -2051,25 +2119,23 @@ async def _async_static_scheduler_task(bot_app=None):
                     for r_file in rendered:
                         try:
                             sess_id = session_manager.create_session(video_path=r_file)
-                            keyboard = build_telegram_session_keyboard(session_id=sess_id)
-                            with open(r_file, "rb") as vf:
-                                for aid in admin_ids:
-                                    try:
-                                        vf.seek(0)
-                                        sent_msg = await bot_app.bot.send_video(
-                                            chat_id=int(aid),
-                                            video=vf,
-                                            caption=(
-                                                f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
-                                                f"📁 `{os.path.basename(r_file)}`\n"
-                                                f"🆔 `Session: {sess_id}`"
-                                            ),
-                                            reply_markup=keyboard
-                                        )
-                                        if sent_msg:
-                                            session_manager.update_message_id(sess_id, sent_msg.message_id)
-                                    except Exception as _push_e:
-                                        logger.warning(f"Failed to send scheduled video to admin {aid}: {_push_e}")
+                            for aid in admin_ids:
+                                try:
+                                    sent_msg = await _send_video_safe_main(
+                                        bot_app.bot,
+                                        aid,
+                                        r_file,
+                                        caption=(
+                                            f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
+                                            f"📁 `{os.path.basename(r_file)}`\n"
+                                            f"🆔 `Session: {sess_id}`"
+                                        ),
+                                        reply_markup=keyboard
+                                    )
+                                    if sent_msg:
+                                        session_manager.update_message_id(sess_id, sent_msg.message_id)
+                                except Exception as _push_e:
+                                    logger.warning(f"Failed to send scheduled video to admin {aid}: {_push_e}")
                         except Exception as _e:
                             logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
         except Exception as e:
