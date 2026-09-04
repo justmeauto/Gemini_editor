@@ -1886,6 +1886,7 @@ def run_master_pipeline(
                             raw_video_path=possible_raw if os.path.exists(possible_raw) else None,
                             requestor_chat_id=requestor_chat_id
                         )
+                        keyboard = build_telegram_session_keyboard(session_id=sess_id)
                         sent_msg = await _send_video_safe_main(
                             bot,
                             target_chat,
@@ -2119,6 +2120,7 @@ async def _async_static_scheduler_task(bot_app=None):
                     for r_file in rendered:
                         try:
                             sess_id = session_manager.create_session(video_path=r_file)
+                            keyboard = build_telegram_session_keyboard(session_id=sess_id)
                             for aid in admin_ids:
                                 try:
                                     sent_msg = await _send_video_safe_main(
