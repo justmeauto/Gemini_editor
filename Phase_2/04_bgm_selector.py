@@ -148,7 +148,6 @@ def select_clip_bgm(
             store.set("audio_data", audio_data)
 
             import time
-            from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
             t_meta = pm.get_track_intelligence(selected_track_name) or {}
             t_meta["usage_count"] = t_meta.get("usage_count", 0) + 1

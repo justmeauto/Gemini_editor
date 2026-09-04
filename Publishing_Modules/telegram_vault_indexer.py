@@ -418,15 +418,27 @@ class TelegramVaultIndexer:
 
         # 2. Secondary Fallback: Column 2 in master_vault_index.json
         if not resolved_file_id:
-            track_stem = os.path.splitext(filename.lower())[0]
+            track_stem = os.path.splitext(filename.lower())[0].replace("vault_bgm_", "").replace("bgm_", "")
             c2_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
             for sess_id, entry in c2_sess.items():
                 if entry.get("extracted_audio_file_id"):
                     s_id = str(sess_id).lower()
                     u_str = str(entry.get("social_media_id", "")).lower()
-                    if track_stem in s_id or track_stem in u_str or filename.lower() in u_str:
+                    sc_str = str(entry.get("shortcode", "")).lower()
+                    if track_stem in s_id or track_stem in u_str or (sc_str and track_stem in sc_str) or filename.lower() in u_str:
                         resolved_file_id = entry["extracted_audio_file_id"]
                         break
+
+            if not resolved_file_id:
+                c2_soc = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
+                for _url, entry in c2_soc.items():
+                    if entry.get("extracted_audio_file_id"):
+                        s_id = str(entry.get("session_id", "")).lower()
+                        u_str = str(entry.get("social_media_id", "")).lower()
+                        sc_str = str(entry.get("shortcode", "")).lower()
+                        if track_stem in s_id or track_stem in u_str or (sc_str and track_stem in sc_str) or filename.lower() in u_str:
+                            resolved_file_id = entry["extracted_audio_file_id"]
+                            break
 
         if resolved_file_id:
             logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, resolved_file_id[:15])
@@ -447,17 +459,13 @@ class TelegramVaultIndexer:
                              whose session_id or social_media_id contains this shortcode are
                              excluded — preventing same-reel session aliases from masquerading
                              as external BGM tracks.
-
-        IMPORTANT — Column 2 tracks are ALWAYS tagged ``is_source_extract=True``.
-        These are raw audio ripped from downloaded reels, NOT real music.
-        The BGM selector uses this flag to exclude them from the external candidate pool.
         """
         pool = {}
 
         # Normalise current clip shortcode for comparison
         clip_stem = current_clip_id.lower().strip() if current_clip_id else ""
 
-        # ── 1. Column 2 downloaded sources (source-extracted audio, NOT real BGM) ──
+        # ── 1. Column 2 downloaded sources (source-extracted audio) ──
         c2 = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
         for _url, entry in c2.items():
             file_id = entry.get("extracted_audio_file_id")
@@ -479,22 +487,29 @@ class TelegramVaultIndexer:
                 )
                 continue
 
-            fname = f"{sess_id}.wav"
+            shortcode_val = entry.get("shortcode") or ""
+            if not shortcode_val and "/" in social_id:
+                parts = [p for p in social_id.split("/") if p and not p.startswith("?")]
+                shortcode_val = parts[-1].split("?")[0] if parts else ""
+            clean_tag = shortcode_val or sess_id.replace("sess_", "").strip() or "track"
+            fname = f"vault_bgm_{clean_tag}.wav"
+
             audio_math = entry.get("audio_math") or {}
+            dur_val = audio_math.get("duration") or audio_math.get("duration_sec") or 0.0
+
             pool[fname] = {
                 "file_id": file_id,
+                "session_id": sess_id,
+                "shortcode": shortcode_val,
                 "tempo_bpm": audio_math.get("tempo_bpm", 120.0),
                 "dominant_emotion": audio_math.get("dominant_emotion", "hype"),
                 "energy_profile": audio_math.get("energy_profile", "medium"),
                 "has_vocals": audio_math.get("has_vocals", False),
                 "language": audio_math.get("language", "unknown"),
+                "duration": dur_val,
+                "duration_sec": dur_val,
                 "last_used": entry.get("timestamp", 0),
                 "usage_count": 0,
-                # ─────────────────────────────────────────────────────────────
-                # CRITICAL FLAG: This track is a raw audio extract from a
-                # downloaded reel — it is NOT an independent music track.
-                # BGM selector must NEVER treat it as an external BGM option.
-                # ─────────────────────────────────────────────────────────────
                 "is_source_extract": True,
             }
 
@@ -508,11 +523,9 @@ class TelegramVaultIndexer:
                     if isinstance(files_dict, dict):
                         for k, v in files_dict.items():
                             if isinstance(v, dict):
-                                # If this pool entry is for the current clip's harvested audio,
-                                # mark it as a source extract so the BGM selector deprioritises it.
+                                # If this pool entry is for the current clip's harvested audio, skip it
                                 if clip_stem and clip_stem in k.lower():
-                                    v = dict(v)  # don't mutate original
-                                    v["is_source_extract"] = True
+                                    continue
                                 pool[k] = v
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)

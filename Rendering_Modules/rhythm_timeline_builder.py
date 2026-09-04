@@ -886,7 +886,7 @@ class RhythmTimelineBuilder:
         _selected_total = sum(
             max(0.0, s.get("end", 0) - s.get("start", 0)) for s in timeline
         ) if timeline else 0.0
-        _vo_min_needed = (target_max or 0.0) * 0.50   # need at least 50% of VO target
+        _vo_min_needed = min(target_max or 0.0, total_duration or target_max or 0.0) * 0.50   # need at least 50% of target
 
         if not timeline:
             logger.warning("⚠️ RhythmTimelineBuilder: timeline empty; applying fallback grid reshaping.")
@@ -900,7 +900,7 @@ class RhythmTimelineBuilder:
             expanded = list(timeline)
             curr_dur = _selected_total
             used_starts = {s.get("start", 0.0) for s in expanded}
-            cand_pool = sorted(all_candidates, key=lambda x: x.get("score", 0.0), reverse=True)
+            cand_pool = sorted(scored_shots, key=lambda x: x.get("score", 0.0), reverse=True)
             for cand in cand_pool:
                 if curr_dur >= target_max:
                     break

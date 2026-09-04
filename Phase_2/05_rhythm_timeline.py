@@ -139,12 +139,13 @@ def build_rhythm_timeline(
 
             raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur, "score": 0.85}]
 
+            target_hint = min(15.0, v_dur) if v_dur > 0 else 15.0
             full_timeline = builder.build_timeline(
                 scenes=raw_scenes,
                 beat_grid=bgm_beats,
                 vibe=route_params.get("recommended_editing_mode", "hype"),
                 music_intelligence=lyric_intel if lyric_intel else None,
-                target_duration_hint=15.0,
+                target_duration_hint=target_hint,
             )
             micro_shots = full_timeline if full_timeline else []
     except Exception as rte:

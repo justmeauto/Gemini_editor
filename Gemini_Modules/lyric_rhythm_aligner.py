@@ -938,7 +938,9 @@ def select_best_audio_for_clip(
     except ImportError:
         def _is_pipeline_artifact(f):
             fl = f.lower()
-            return fl.startswith("sess_") or "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
+            if fl.startswith("vault_bgm_") or fl.startswith("bgm_"):
+                return False
+            return "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
 
     def _is_noisy_or_unusable(fname, meta):
         if not isinstance(meta, dict):
@@ -958,10 +960,48 @@ def select_best_audio_for_clip(
         dur = meta.get("duration") or meta.get("duration_sec") or meta.get("audio_duration", 0.0)
         try:
             dur_f = float(dur)
-            if 0 < dur_f < 10.0:
-                return True
+            if dur_f > 0:
+                return dur_f < 10.0
         except (ValueError, TypeError):
             pass
+        # If duration missing or zero in metadata, probe local disk file if present
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            search_paths = [
+                fname,
+                os.path.join(repo_root, "Original_audio", "active", fname),
+                os.path.join(repo_root, "Original_audio", fname),
+            ]
+            for sp in search_paths:
+                if sp and os.path.isfile(sp):
+                    import wave
+                    with wave.open(sp, 'rb') as wf:
+                        disk_dur = float(wf.getnframes()) / float(wf.getframerate())
+                        if 0 < disk_dur < 10.0:
+                            return True
+                    break
+        except Exception:
+            pass
+        return False
+
+    # Normalized current clip identifiers for self-audio rejection
+    clip_stem = (clip_id or "").lower().strip()
+    folder_stem = os.path.basename(clip_folder or "").lower().strip()
+
+    def _is_self_extracted(fname, meta):
+        fn_l = fname.lower()
+        if clip_stem and (
+            fn_l == f"bgm_{clip_stem}.wav"
+            or fn_l.startswith(f"bgm_{clip_stem}")
+            or (f"manual_{clip_stem}" in fn_l)
+            or (clip_stem in fn_l and "extracted" in fn_l)
+        ):
+            return True
+        if folder_stem and folder_stem in fn_l:
+            return True
+        sess_val = str(meta.get("session_id", "")).lower()
+        if clip_stem and clip_stem in sess_val:
+            return True
         return False
 
     all_candidates = [
@@ -1040,15 +1080,12 @@ def select_best_audio_for_clip(
         c_vocals = bool(meta.get("has_vocals", False))
         c_lang = str(meta.get("language", "unknown"))
 
-        is_own_clip_audio = (
-            c_file.lower() == f"bgm_{clip_id.lower()}.wav"
-            or c_file.lower().startswith(f"bgm_{clip_id.lower()}")
-            or (clip_folder and os.path.basename(clip_folder).lower() in c_file.lower())
-        )
+        is_own_clip_audio = _is_self_extracted(c_file, meta)
         is_harvested_audio = (
             bool(meta.get("is_source_extract", False))
             or c_file.lower().startswith("bgm_manual_")
             or c_file.lower().startswith("sess_")
+            or c_file.lower().startswith("vault_bgm_")
         )
         # Tier 1 = Real BGM Music Library (.mp3)
         # Tier 2 = Harvested Audio from OTHER clips

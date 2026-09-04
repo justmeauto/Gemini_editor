@@ -184,6 +184,16 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
                 ),
             })
 
+            # Measure audio duration
+            try:
+                import wave
+                with wave.open(wav_path, "rb") as wf:
+                    dur_val = round(wf.getnframes() / float(wf.getframerate()), 2)
+                    analysis["duration"] = dur_val
+                    analysis["duration_sec"] = dur_val
+            except Exception:
+                pass
+
             # Step 2b: Extract word-level speech boundaries using faster-whisper
             try:
                 from Audio_Modules.speech_boundary_detector import extract_speech_boundaries
@@ -248,6 +258,12 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
         clean_stem = stem
         if clean_stem.lower() in ("video", "video_extracted", "audio") and clip_folder and clip_folder != ".":
             clean_stem = f"bgm_{clip_folder}"
+
+        # Duration Gate: never ingest audio shorter than 10 seconds into the BGM rotation pool
+        clip_dur = float(analysis.get("duration") or analysis.get("duration_sec") or 0.0)
+        if 0 < clip_dur < 10.0:
+            logger.info("ℹ️ [POOL_INGEST] Extracted audio is too short (%.1fs < 10.0s) for BGM rotation pool. Preserving in clip folder only.", clip_dur)
+            return
 
         target_wav = os.path.join(active_dir, f"{clean_stem}.wav")
         if not os.path.exists(target_wav):
@@ -320,6 +336,8 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                 "beat_count": analysis.get("beat_count", 0),
                 "drop_count": analysis.get("drop_count", 0),
                 "beat_score": analysis.get("beat_score", 0.0),
+                "duration": clip_dur,
+                "duration_sec": clip_dur,
                 "audio_hash": pm._calculate_hash(target_wav),
                 "version": pm.CURRENT_VERSION,
                 "is_source_extract": True,

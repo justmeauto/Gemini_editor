@@ -19,14 +19,19 @@ _VAULT_HYDRATION_IN_PROGRESS = False
 PIPELINE_BLOCKED_KWS = [
     "_reaction", "_textreaction", "first_shot", "first_shots",
     "general_intro", "watermark_clean", "intro_mixed_temp",
-    "final_compilation", "tmp", "extracted_", "video", "sess_"
+    "final_compilation", "tmp"
 ]
 
 def _is_pipeline_artifact(filename: str) -> bool:
     lower_name = filename.lower()
-    if lower_name.startswith("sess_") or lower_name.startswith("video") or lower_name.startswith("tmp"):
+    # Explicit BGM files are never pipeline artifacts
+    if lower_name.startswith("vault_bgm_") or lower_name.startswith("bgm_"):
+        return False
+    if lower_name.startswith("video") or lower_name.startswith("tmp") or lower_name.startswith("step_"):
         return True
-    if lower_name.endswith(".wav") and ("tmp" in lower_name or "extracted" in lower_name or "video" in lower_name or "sess_" in lower_name):
+    if lower_name.endswith((".wav", ".mp4")) and ("_master" in lower_name or "_proxy" in lower_name or "_stripped" in lower_name or "_clean" in lower_name):
+        return True
+    if lower_name in ("video.wav", "video.mp4", "video_extracted.wav"):
         return True
     return any(kw in lower_name for kw in PIPELINE_BLOCKED_KWS)
 
