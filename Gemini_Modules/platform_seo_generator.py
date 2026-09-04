@@ -82,11 +82,29 @@ PLATFORM_LIMITS = {
     },
 }
 
+def clean_entity_name(entity_str: str) -> str:
+    """
+    Cleans entity strings like 'celebrity:Avneet_Kaur', 'outfit:olive_suit', 'person:John_Doe'
+    into human-readable names like 'Avneet Kaur', 'Olive Suit', 'John Doe'.
+    Strips entity category prefixes, removes underscores, and strips 'None'/null literals.
+    """
+    if not entity_str or not isinstance(entity_str, str):
+        return ""
+    text = entity_str.strip()
+    text = re.sub(r'^(?:celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|model|influencer|brand|subject|star|celeb|tag):\s*', '', text, flags=re.IGNORECASE)
+    # Strip None / null / unknown attached at end of word or standalone
+    text = re.sub(r'(?i)(?<=[a-zA-Z0-9_]{2})(?:None|null|unknown)\b', '', text)
+    text = re.sub(r'(?i)\b(?:None|null|unknown)\b', '', text)
+    text = text.replace("_", " ")
+    text = re.sub(r'\s+', ' ', text).strip()
+    words = [w.capitalize() for w in text.split() if w.lower() not in {"none", "null", "unknown"}]
+    return " ".join(words)
+
 def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
     """
     Recursively scrubs Instagram internal tracking tokens (#AQ...), raw system hashes,
-    and default placeholder tags (#Creatorunknown, #Nicheunknown, #unknown) from text,
-    lists, sets, tuples, and dictionary objects.
+    entity category prefixes (celebrity:), appended 'None' literals, and placeholder tags
+    from text, lists, sets, tuples, and dictionary objects.
     """
     if isinstance(text_or_obj, str):
         text = text_or_obj
@@ -97,17 +115,37 @@ def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
         # 2. Strip hashtags > 25 chars containing mixed alphanumeric hash signatures
         text = re.sub(r'#(?=[a-zA-Z0-9_-]{26,})(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[a-zA-Z])[a-zA-Z0-9_-]+', '', text)
 
-        # 3. Strip system placeholders (case-insensitive)
-        text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown)\b', '', text)
+        # 3. Strip system placeholders & None / null tags (case-insensitive)
+        text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown|none|null)\b', '', text)
 
-        # 4. Clean orphaned '#' symbols
+        # 4. Strip entity prefixes from text and hashtags (e.g. celebrity:Avneet_Kaur -> Avneet Kaur, #celebrityAvneet_Kaur -> #AvneetKaur)
+        text = re.sub(r'(?i)#celebrity_?:?\s*([A-Za-z0-9_]+)', r'#\1', text)
+        text = re.sub(r'(?i)\b(?:celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|model|influencer|brand|subject|star|celeb):\s*', '', text)
+
+        # 5. Clean appended "None" or "null" from hashtags (e.g. #AvneetkaurNone -> #Avneetkaur)
+        text = re.sub(r'(?i)(?<=#[a-zA-Z0-9_]{2})None\b', '', text)
+
+        # 6. Clean orphaned '#' symbols and standalone 'None' strings in text
         text = re.sub(r'#(?![a-zA-Z0-9_])', '', text)
+        text = re.sub(r'(?i)\bNone\b', '', text)
 
-        # 5. Collapse duplicate spaces and clean line endings
+        # 7. Convert remaining underscores in entity names to spaces where appropriate (not in valid hashtags)
         lines = text.split('\n')
         cleaned_lines = []
         for line in lines:
-            sub_l = re.sub(r'[ \t]{2,}', ' ', line).strip()
+            tokens = line.split()
+            cleaned_tokens = []
+            for tok in tokens:
+                if tok.startswith("#"):
+                    tag_inner = tok[1:].replace("_", "")
+                    if tag_inner:
+                        cleaned_tokens.append(f"#{tag_inner}")
+                else:
+                    tok_clean = tok.replace("_", " ")
+                    if tok_clean.strip():
+                        cleaned_tokens.append(tok_clean)
+            sub_l = " ".join(cleaned_tokens)
+            sub_l = re.sub(r'[ \t]{2,}', ' ', sub_l).strip()
             cleaned_lines.append(sub_l)
 
         text = '\n'.join(cleaned_lines)
@@ -136,8 +174,7 @@ def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
     elif isinstance(text_or_obj, dict):
         cleaned_dict = {}
         for key, val in text_or_obj.items():
-            cleaned_key = strip_system_and_tracking_tokens(key) if isinstance(key, str) else key
-            cleaned_dict[cleaned_key] = strip_system_and_tracking_tokens(val)
+            cleaned_dict[key] = strip_system_and_tracking_tokens(val)
         return cleaned_dict
 
     return text_or_obj
@@ -173,6 +210,7 @@ def extract_main_subject_and_context(
     if user_hint:
         hint_clean = re.sub(r'https?://[^\s<>"]+', "", user_hint).strip()
         hint_clean = re.sub(r"\s+", " ", hint_clean)
+        hint_clean = clean_entity_name(hint_clean)
 
     # Extract fields from cache
     vc = cache.get("visual_context", {}) if isinstance(cache.get("visual_context"), dict) else {}
@@ -187,12 +225,13 @@ def extract_main_subject_and_context(
     else:
         tags_str = str(tags)
 
-    detected_entities = vc.get("detected_entities") or cache.get("detected_entities") or []
-    if isinstance(detected_entities, str):
-        detected_entities = [detected_entities]
+    raw_detected = vc.get("detected_entities") or cache.get("detected_entities") or []
+    if isinstance(raw_detected, str):
+        raw_detected = [raw_detected]
 
-    person_name = vc.get("person_name") or cache.get("person_name") or ""
-    cached_subject = vc.get("main_subject") or cache.get("main_subject") or ""
+    detected_entities = [clean_entity_name(e) for e in raw_detected if clean_entity_name(e)]
+    person_name = clean_entity_name(vc.get("person_name") or cache.get("person_name") or "")
+    cached_subject = clean_entity_name(vc.get("main_subject") or cache.get("main_subject") or "")
 
     full_text = f"{hint_clean} {video_context} {source_title} {raw_caption} {tags_str} {' '.join(detected_entities)}".strip()
 
@@ -201,9 +240,9 @@ def extract_main_subject_and_context(
     if hint_clean:
         # User provided explicit hint/title clue
         main_subject = hint_clean
-    elif person_name and "celeb" not in person_name.lower():
+    elif person_name:
         main_subject = person_name
-    elif cached_subject and "celeb" not in cached_subject.lower():
+    elif cached_subject:
         main_subject = cached_subject
     elif detected_entities and len(detected_entities) > 0:
         main_subject = detected_entities[0]
@@ -212,13 +251,13 @@ def extract_main_subject_and_context(
         # Search for capitalized names/entities (e.g. "Main Subject", "Brand Name")
         cap_matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", full_text)
         if cap_matches:
-            main_subject = cap_matches[0]
+            main_subject = clean_entity_name(cap_matches[0])
 
     if not main_subject and full_text:
         # Match single notable keywords
-        words = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", full_text) if len(w) > 3 and w.lower() not in {"video", "short", "reels", "trending", "viral", "post"}]
+        words = [w for w in re.findall(r"\b[A-Za-z0-9_]+\b", full_text) if len(w) > 3 and w.lower() not in {"video", "short", "reels", "trending", "viral", "post", "none", "null"}]
         if words:
-            main_subject = words[0].title()
+            main_subject = clean_entity_name(words[0])
 
     if not main_subject:
         # Check shortcode/session_id/clip_id in metadata
@@ -241,15 +280,15 @@ def extract_main_subject_and_context(
     caption_snippets = [s.strip() for s in re.split(r"[\n\r\t,#|.]+", f"{source_title} {raw_caption} {video_context}") if s.strip() and len(s.strip()) > 3]
     for snip in caption_snippets[:4]:
         if main_subject.lower() not in snip.lower() and snip.lower() not in main_subject.lower():
-            if snip.lower() not in {"video", "reels", "shorts", "trending", "viral", "daily inspiration", "viral moment", "daily special"}:
+            if snip.lower() not in {"video", "reels", "shorts", "trending", "viral", "daily inspiration", "viral moment", "daily special", "none", "null"}:
                 descriptors.append(snip)
 
     # Filter out generic fluff
-    fluff_set = {"daily inspiration", "viral moment", "daily special", "trending feature", "viral reel", "daily"}
+    fluff_set = {"daily inspiration", "viral moment", "daily special", "trending feature", "viral reel", "daily", "none", "null"}
     clean_descriptors = [d for d in descriptors if d.lower().strip() not in fluff_set]
 
     applicable_context = ", ".join(dict.fromkeys(clean_descriptors)) if clean_descriptors else (video_context[:100].strip() if video_context else "video highlights")
-    main_subject_clean = strip_system_and_tracking_tokens(main_subject) or "Featured Reel"
+    main_subject_clean = strip_system_and_tracking_tokens(clean_entity_name(main_subject)) or "Featured Reel"
     applicable_context_clean = strip_system_and_tracking_tokens(applicable_context) or "video highlights"
 
     return {
@@ -334,6 +373,7 @@ CRITICAL RULES (STRICTLY ENFORCED):
    - TITLES: Anchor the title using the subject/keywords from the title clue.
    - DESCRIPTIONS: Naturally integrate the title clue subject in the opening 1-2 lines.
    - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Ethnic Outfit Look', include #EthnicOutfit #StyleLook).
+8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output entity category prefixes like 'celebrity:', 'outfit:', 'accessory:', etc. in titles, descriptions, or hashtags. Always format main subjects as clean, spaced human names (e.g. 'Avneet Kaur'). NEVER concatenate 'None' or 'null' into hashtags or text (e.g. write '#AvneetKaur', NEVER '#AvneetkaurNone' or '#celebrityAvneet_Kaur').
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
