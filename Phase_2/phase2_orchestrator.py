@@ -172,7 +172,7 @@ def run_phase2_pipeline(
                 else:
                     logger.warning(f"⚠️ [WATERMARK ALIGNMENT] No coords sidecar found at '{coords_sidecar}' — brand mask shield will use default position.")
 
-            elif _has_coord_boxes or _wm_count_int > 0:
+            else:
                 try:
                     from Watermark_and_Inpainting.watermark_main import run_watermark_removal
                     logger.info(f"🧼 [UPFRONT INPAINTING] Running OpenCV watermark inpainting on raw input BEFORE synthesis: {os.path.basename(video_path)}")
