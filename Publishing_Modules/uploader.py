@@ -90,23 +90,24 @@ def set_platform_lock(reason: str):
 def send_telegram_notification(message: str):
     """Sends a notification via Telegram if token and admin ID are present."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    admin_id = os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_OWNER_CHAT_ID")
-    if not admin_id and os.getenv("ADMIN_IDS"):
-        admin_id = os.getenv("ADMIN_IDS").split(",")[0].strip()
-        
-    # Prevent blasting auth/error messages to public groups/channels
-    if admin_id and (str(admin_id).startswith("@") or str(admin_id).startswith("-")):
-        logger.warning(f"⚠️ WARNING: admin_id='{admin_id}' looks like a public group/channel. Notification blocked.")
-        admin_id = None
-        
-    if token and admin_id:
+    admin_raw = os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_OWNER_CHAT_ID") or os.getenv("ADMIN_IDS", "")
+    if not token or not admin_raw:
+        return
+
+    admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()]
+    for admin_id in admin_ids:
+        # Prevent blasting auth/error messages to public groups/channels
+        if admin_id and (str(admin_id).startswith("@") or str(admin_id).startswith("-")):
+            logger.warning(f"⚠️ WARNING: admin_id='{admin_id}' looks like a public group/channel. Notification blocked.")
+            continue
+
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             data = urllib.parse.urlencode({"chat_id": admin_id, "text": message}).encode("utf-8")
             urllib.request.urlopen(url, data=data, timeout=10)
-            logger.info("📡 Telegram notification sent.")
+            logger.info("📡 Telegram notification sent to %s.", admin_id)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to send Telegram notification: {e}")
+            logger.warning(f"⚠️ Failed to send Telegram notification to {admin_id}: {e}")
 
 
 def _resolve_credential_paths(niche: str = None):
@@ -248,6 +249,29 @@ def _get_service_sync(niche: str = None):
     return service
 
 
+def _get_service_from_token_json(token_json_str: str):
+    """
+    Builds a YouTube service directly from a token JSON string (in-memory).
+    Used for per-user YouTube uploads without touching disk credential files.
+    """
+    import socket
+    import json as _json
+    token_data = _json.loads(token_json_str)
+    from google.oauth2.credentials import Credentials as GoogleCreds
+    from google.auth.transport.requests import Request
+    creds = GoogleCreds.from_authorized_user_info(token_data, SCOPES)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            logger.info("[USER YT] Token refreshed in-memory for non-admin user.")
+        except Exception as re:
+            logger.warning("[USER YT] Token refresh failed: %s", re)
+    if not creds or not creds.valid:
+        raise Exception("[USER YT] YouTube token is expired/invalid. User must re-authenticate.")
+    socket.setdefaulttimeout(60)
+    return build("youtube", "v3", credentials=creds)
+
+
 def verify_metadata(file_path: str) -> bool:
     """
     Checks if the video file has fresh metadata (Unique ID, Creation Time).
@@ -342,18 +366,24 @@ def _upload_sync(
     privacy: str = "public",
     publish_at: Optional[str] = None,
     niche: Optional[str] = None,
+    user_yt_token_json: Optional[str] = None,
 ) -> Optional[str]:
     # 0. Check Platform Lock First
     if check_platform_lock():
-        logger.warning("🚫 Upload Skipped: YouTube Platform Safety Lock is Active (Wait 24h).")
+        logger.warning("Upload Skipped: YouTube Platform Safety Lock is Active.")
         return None
 
     # Enforce .mp4 extension
     if not file_path.lower().endswith(".mp4"):
-        logger.error("❌ Upload rejected: File must be .mp4")
+        logger.error("Upload rejected: File must be .mp4")
         return None
 
-    service = _get_service_sync(niche=niche)
+    # Build service: prefer in-memory user token if provided, else use niche disk credentials
+    if user_yt_token_json:
+        logger.info("[YOUTUBE] Using in-memory user YouTube token (non-admin user upload).")
+        service = _get_service_from_token_json(user_yt_token_json)
+    else:
+        service = _get_service_sync(niche=niche)
     logger.info(f"DEBUG: _upload_sync called with title input: '{title}'")
     
     # Robust title logic: Ensure it's not None, not empty, and not just whitespace

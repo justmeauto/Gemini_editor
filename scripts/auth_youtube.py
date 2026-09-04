@@ -63,6 +63,13 @@ def _send_telegram(message: str, token: str, admin_id, button_url: str = None):
                 sent_any = True
         return sent_any
 
+    if isinstance(admin_id, str) and "," in admin_id:
+        sent_any = False
+        for cid in [x.strip() for x in admin_id.split(",") if x.strip()]:
+            if _send_telegram(message, token, cid, button_url=button_url):
+                sent_any = True
+        return sent_any
+
     chat_id = str(admin_id).strip()
     try:
         api_url = f"https://api.telegram.org/bot{token}/sendMessage"

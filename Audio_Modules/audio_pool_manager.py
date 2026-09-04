@@ -690,6 +690,23 @@ class AudioPoolManager:
                 logger.debug(f"[POOL] Skipping unusable/speech audio: {filename}")
                 continue
 
+            # ── 6-HOUR USAGE COOLDOWN ENFORCEMENT ────────────────────────────────────
+            cooldown_sec = float(os.getenv("AUDIO_COOLDOWN_HOURS", "6.0")) * 3600.0
+            last_used = float(meta.get("last_used", 0) or 0)
+            if last_used > 0 and (time.time() - last_used) < cooldown_sec:
+                hrs_ago = (time.time() - last_used) / 3600.0
+                logger.info(f"[POOL] Skipping '{filename}' — used {hrs_ago:.1f}h ago (under 6h cooldown limit).")
+                continue
+
+            # Skip snippets under 10 seconds
+            dur = meta.get("duration") or meta.get("duration_sec") or meta.get("audio_duration", 0.0)
+            try:
+                if 0 < float(dur) < 10.0:
+                    logger.debug(f"[POOL] Skipping short audio snippet (<10s): {filename}")
+                    continue
+            except (ValueError, TypeError):
+                pass
+
             # 2. Penalty/Recent Logic
             recent_penalty = (filename in recent_history)
 
@@ -788,6 +805,10 @@ class AudioPoolManager:
                     logger.info(f"📥 [POOL - PRIMARY] Hydrated selected track '{best_audio}' directly from Telegram Storage Vault.")
             except Exception as _he:
                 logger.debug(f"[POOL] Hydration notice for '{best_audio}': {_he}")
+
+        if not os.path.exists(src):
+            logger.warning(f"❌ [POOL] Selected track '{best_audio}' does not exist on disk and could not be hydrated from vault.")
+            return None
 
         meta = self._get_file_metadata(best_audio)
         if meta:

@@ -952,23 +952,71 @@ def select_best_audio_for_clip(
             return True
         return False
 
+    def _is_too_short(fname, meta):
+        if not isinstance(meta, dict):
+            return False
+        dur = meta.get("duration") or meta.get("duration_sec") or meta.get("audio_duration", 0.0)
+        try:
+            dur_f = float(dur)
+            if 0 < dur_f < 10.0:
+                return True
+        except (ValueError, TypeError):
+            pass
+        return False
+
     all_candidates = [
         fname for fname, meta in pool_files.items()
         if isinstance(meta, dict)
         and not _is_noisy_or_unusable(fname, meta)
         and not _is_pipeline_artifact(fname)
+        and not _is_too_short(fname, meta)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
     if not all_candidates:
-        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts and noisy audio excluded).")
+        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts, noisy, and <10s audio excluded).")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid clean BGM tracks in pool."}
+
+    # ── 6-HOUR USAGE COOLDOWN ENFORCEMENT ────────────────────────────────────
+    cooldown_hours = float(os.getenv("AUDIO_COOLDOWN_HOURS", "6.0"))
+    cooldown_sec = cooldown_hours * 3600.0
+    now = time.time()
+
+    cooling_down_tracks = set()
+    for fname in all_candidates:
+        meta = pool_files.get(fname, {})
+        last_used = float(meta.get("last_used", 0) or 0)
+        if last_used > 0 and (now - last_used) < cooldown_sec:
+            cooling_down_tracks.add(fname.lower())
+            cooling_down_tracks.add(os.path.basename(fname).lower())
+            hrs_ago = (now - last_used) / 3600.0
+            logger.info(
+                f"⏳ [BGM COOLDOWN] Track '{fname}' was used {hrs_ago:.1f}h ago "
+                f"(< {cooldown_hours:.1f}h cooldown limit) — disqualifying from candidate pool."
+            )
+
+    effective_disqualified = set(disqualified_tracks).union(cooling_down_tracks)
 
     fresh_candidates = [
         c for c in all_candidates
-        if c.lower() not in disqualified_tracks and os.path.basename(c).lower() not in disqualified_tracks
+        if c.lower() not in effective_disqualified and os.path.basename(c).lower() not in effective_disqualified
     ]
-    available_candidates = fresh_candidates if fresh_candidates else all_candidates
+
+    # Pool exhaustion safeguard: if excluding tracks under 6 hours leaves 0 candidates,
+    # fall back to the least-recently-used candidate so the editing pipeline does not crash.
+    if not fresh_candidates and all_candidates:
+        logger.warning(
+            f"⚠️ [BGM COOLDOWN] All {len(all_candidates)} candidate tracks were used within the last {cooldown_hours:.1f}h! "
+            f"Falling back to least-recently-used track to avoid pipeline failure."
+        )
+        sorted_by_lru = sorted(
+            all_candidates,
+            key=lambda c: float(pool_files.get(c, {}).get("last_used", 0) or 0)
+        )
+        lru_fresh = [c for c in sorted_by_lru if c.lower() not in disqualified_tracks and os.path.basename(c).lower() not in disqualified_tracks]
+        available_candidates = lru_fresh if lru_fresh else sorted_by_lru
+    else:
+        available_candidates = fresh_candidates if fresh_candidates else all_candidates
 
     candidate_lines = {}
     candidate_scores = []
@@ -1058,7 +1106,7 @@ def select_best_audio_for_clip(
         line = candidate_lines.get(fname, f"- '{fname}': score={sc:.3f}")
         top_lines.append(f"#{rank} {line}")
     candidates_str = "\n".join(top_lines)
-    forbidden_str = ", ".join([f"'{t}'" for t in disqualified_tracks]) or "None"
+    forbidden_str = ", ".join([f"'{t}'" for t in sorted(effective_disqualified)]) or "None"
 
     prompt = f"""You are an Expert BGM Music Selector for short-form video reels.
 
@@ -1113,7 +1161,7 @@ Return ONLY valid JSON:
                 data = json.loads(_clean_json(raw_response))
                 win_track = data.get("selected_audio_track")
                 win_fid = data.get("telegram_file_id")
-                if win_track and any(c.lower() == win_track.lower() for c in available_candidates) and win_track.lower() not in disqualified_tracks:
+                if win_track and any(c.lower() == win_track.lower() for c in available_candidates) and win_track.lower() not in effective_disqualified:
                     selected_track = win_track
                     reasoning = data.get("reasoning", reasoning)
                     alignment_score = float(data.get("alignment_score", 0.90))

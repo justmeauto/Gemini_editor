@@ -39,9 +39,11 @@ except ImportError:
 
 def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Resolves per-user social media credentials.
-    If user_id is passed and user is NOT admin and has NOT set their credentials,
-    returns None to PREVENT non-admin users from uploading to admin's socials.
+    Resolves per-user social media credentials from telegram_users.json first,
+    then USER_<id>_* environment variables, then root .env (admin fallback only).
+
+    For non-admin users: NEVER falls back to admin root .env credentials.
+    For admin users: falls back to root .env only if no personal record found.
     """
     cred_file = os.getenv("CLIENT_SECRET_FILE", os.path.join(_REPO_ROOT, "Credentials", "youtube", "client_secret.json"))
     if not os.path.exists(cred_file):
@@ -57,50 +59,84 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
 
     has_yt = os.path.exists(cred_file) or os.path.exists(token_file) or bool(os.getenv("YOUTUBE_TOKEN_JSON"))
 
+    # No user_id: use root admin credentials
     if not user_id:
         return {
             "meta_token": os.getenv("IG_BUSINESS_TOKEN") or os.getenv("META_PAGE_TOKEN"),
             "meta_id": os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("IG_BUSINESS_ID") or os.getenv("META_PAGE_ID"),
+            "meta_page_id": os.getenv("META_PAGE_ID"),
+            "meta_page_token": os.getenv("META_PAGE_TOKEN"),
             "yt_token": token_file if has_yt else None,
             "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN"),
             "is_admin": True
         }
+
     try:
-        from Publishing_Modules.telegram_user_manager import load_all_users
+        from Publishing_Modules.telegram_user_manager import load_all_users, _is_admin_user
         users = load_all_users()
         u_rec = users.get(str(user_id), {})
-        admin_id_env = os.getenv("TELEGRAM_ADMIN_ID")
-        is_admin = u_rec.get("role") == "admin" or str(user_id) == str(admin_id_env)
-        
-        meta_tok = u_rec.get("ig_business_token") or u_rec.get("meta_page_token") or (os.getenv("IG_BUSINESS_TOKEN") if is_admin else None)
-        meta_id = u_rec.get("ig_business_id") or u_rec.get("meta_page_id") or (os.getenv("IG_BUSINESS_ID") if is_admin else None)
-        yt_tok = u_rec.get("youtube_token_json") or (token_file if (has_yt and is_admin) else None)
-        tt_tok = u_rec.get("tiktok_access_token") or (os.getenv("TIKTOK_ACCESS_TOKEN") if is_admin else None)
-        
+        is_admin = _is_admin_user(str(user_id))
+        user_id_clean = str(user_id).strip()
+
+        def _pick(json_key, env_suffix, root_env_key=None):
+            """Resolve credential: user record -> USER_<id>_ENV -> root_env (admin only)."""
+            val = (u_rec.get(json_key) or "").strip()
+            if val:
+                return val
+            prefixed = os.getenv(f"USER_{user_id_clean}_{env_suffix}", "").strip()
+            if prefixed:
+                return prefixed
+            if is_admin and root_env_key:
+                return (os.getenv(root_env_key) or "").strip() or None
+            return None
+
+        meta_tok = _pick("ig_business_token", "IG_BUSINESS_TOKEN", "IG_BUSINESS_TOKEN")
+        if not meta_tok:
+            meta_tok = _pick("meta_page_token", "META_PAGE_TOKEN", "META_PAGE_TOKEN")
+
+        meta_id = _pick("ig_business_id", "IG_BUSINESS_ID", "IG_BUSINESS_ID")
+        meta_page_id = _pick("meta_page_id", "META_PAGE_ID", "META_PAGE_ID")
+        meta_page_tok = _pick("meta_page_token", "META_PAGE_TOKEN", "META_PAGE_TOKEN")
+
+        yt_tok_json = (u_rec.get("youtube_token_json") or "").strip() or None
+        if not yt_tok_json:
+            yt_tok_json = os.getenv(f"USER_{user_id_clean}_TOKEN_JSON", "").strip() or None
+        yt_tok = yt_tok_json if yt_tok_json else (token_file if (has_yt and is_admin) else None)
+
+        tt_tok = _pick("tiktok_access_token", "TIKTOK_ACCESS_TOKEN", "TIKTOK_ACCESS_TOKEN")
+
         return {
             "meta_token": meta_tok,
             "meta_id": meta_id,
+            "meta_page_id": meta_page_id,
+            "meta_page_token": meta_page_tok,
             "yt_token": yt_tok,
+            "yt_token_json": yt_tok_json,  # raw JSON string for in-memory auth
             "tiktok_token": tt_tok,
             "is_admin": is_admin
         }
-    except Exception:
+    except Exception as ex:
+        logger.warning("[CREDENTIAL RESOLVE] Error for user %s: %s. Returning empty credentials.", user_id, ex)
+        # Never silently fall back to admin credentials for an unknown user
         return {
-            "meta_token": os.getenv("IG_BUSINESS_TOKEN"),
-            "meta_id": os.getenv("IG_BUSINESS_ID"),
-            "yt_token": token_file if has_yt else None,
-            "tiktok_token": os.getenv("TIKTOK_ACCESS_TOKEN"),
-            "is_admin": True
+            "meta_token": None,
+            "meta_id": None,
+            "meta_page_id": None,
+            "meta_page_token": None,
+            "yt_token": None,
+            "yt_token_json": None,
+            "tiktok_token": None,
+            "is_admin": False
         }
 
 
 def publish_to_youtube(video_path: str, title: str, description: str = "", tags: str = "", niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Uploads video reel to YouTube Shorts via YouTube Data API v3."""
-    logger.info("🔴 [PUBLISHER 1/4] Uploading to YouTube Shorts...")
+    logger.info("[PUBLISHER 1/4] Uploading to YouTube Shorts (user_id=%s)...", user_id or "admin")
     try:
         user_creds = _resolve_user_credentials(user_id)
         if user_id and not user_creds.get("is_admin") and not user_creds.get("yt_token"):
-            logger.warning("⚠️ YouTube API credentials missing for non-admin User %s. Skipping YouTube upload.", user_id)
+            logger.warning("YouTube API credentials missing for non-admin User %s. Skipping YouTube upload.", user_id)
             return {"status": "skipped", "message": "Personal YouTube credentials not configured for non-admin user"}
 
         from Publishing_Modules.uploader import _upload_sync
@@ -110,43 +146,62 @@ def publish_to_youtube(video_path: str, title: str, description: str = "", tags:
             description=description or f"{title}\n\n#shorts #viral #trending",
             hashtags=tags or "#shorts #viral #trending",
             privacy="public",
-            niche=niche
+            niche=niche,
+            user_yt_token_json=user_creds.get("yt_token_json")
         )
         if video_id:
-            logger.info("✅ [YOUTUBE SUCCESS] Video ID: %s", video_id)
+            logger.info("[YOUTUBE SUCCESS] Video ID: %s", video_id)
             clean_url = video_id if str(video_id).startswith("http") else f"https://youtu.be/{video_id}"
             return {"status": "success", "video_id": video_id, "url": clean_url}
         else:
-            logger.warning("⚠️ YouTube upload completed without returning Video ID.")
+            logger.warning("YouTube upload completed without returning Video ID.")
             return {"status": "failed", "message": "No video ID returned (possible rate limit or lock)"}
     except Exception as e:
-        logger.error("❌ [YOUTUBE ERROR] %s", e)
+        logger.error("[YOUTUBE ERROR] %s", e)
         return {"status": "failed", "error": str(e)}
 
 
 async def publish_to_meta(video_path: str, caption: str, niche: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
-    """Uploads video reel to Instagram & Facebook via Meta Graph API."""
-    logger.info("📸 [PUBLISHER 2/4] Uploading to Meta (Instagram & Facebook Reels)...")
+    """Uploads video reel to Instagram & Facebook via Meta Graph API using per-user credentials."""
+    logger.info("[PUBLISHER 2/4] Uploading to Meta Instagram & Facebook (user_id=%s)...", user_id or "admin")
     try:
         from Publishing_Modules.meta_uploader import AsyncMetaUploader
         user_creds = _resolve_user_credentials(user_id)
         token = user_creds.get("meta_token")
         ig_user_id = user_creds.get("meta_id")
 
-        if not token or not ig_user_id:
-            logger.warning("⚠️ Meta Graph API credentials missing for User %s. Skipping Meta upload.", user_id or "default")
-            return {"instagram": {"status": "skipped", "message": "Personal Instagram credentials not configured for user"}, "facebook": {"status": "skipped", "message": "Personal Facebook credentials not configured for user"}}
+        # Non-admin without credentials: skip — do NOT fall back to admin account
+        if user_id and not user_creds.get("is_admin") and (not token or not ig_user_id):
+            logger.warning("Meta credentials missing for non-admin User %s. Skipping Meta upload.", user_id)
+            return {
+                "instagram": {"status": "skipped", "message": "Personal Instagram credentials not configured for user"},
+                "facebook": {"status": "skipped", "message": "Personal Facebook credentials not configured for user"}
+            }
+
+        # Build explicit meta_config from resolved user credentials.
+        # This bypasses _resolve_meta_config() reading from root .env so the correct user account is used.
+        if token or ig_user_id:
+            meta_config_override = {
+                "IG_BUSINESS_ID": ig_user_id or "",
+                "IG_BUSINESS_TOKEN": token or "",
+                "META_PAGE_ID": user_creds.get("meta_page_id") or "",
+                "META_PAGE_TOKEN": user_creds.get("meta_page_token") or token or "",
+            }
+            logger.info("[META CRED] Using user-resolved config: IG_ID=%s", (ig_user_id or "")[:8] + "...")
+        else:
+            meta_config_override = None  # Admin fallback: let meta_uploader resolve from niche/env
 
         uploader = AsyncMetaUploader()
         res = await uploader.upload_to_meta(
             video_path=video_path,
             caption=caption,
             upload_type="Reels",
-            niche=niche or "General_Fallback"
+            niche=niche or "General_Fallback",
+            meta_config_override=meta_config_override
         )
         return res
     except Exception as e:
-        logger.error("❌ [META ERROR] %s", e)
+        logger.error("[META ERROR] %s", e)
         return {"instagram": {"status": "failed", "error": str(e)}, "facebook": {"status": "failed", "error": str(e)}}
 
 
@@ -309,17 +364,18 @@ async def run_phase4_publishing_async(
     title: str,
     description: str = "",
     tags: str = "#viral #shorts #trending",
-    niche: Optional[str] = None
+    niche: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Async implementation of Phase 4 Multi-Platform Publishing."""
     logger.info("==================================================================")
-    logger.info("🚀 [PHASE 4 MEDIA PUBLISHER] Starting Multi-Platform Publishing Workflow")
-    logger.info("📌 Reel: %s", os.path.basename(video_path))
-    logger.info("📌 Title: '%s'", title)
-    logger.info("==================================================================")
+    logger.info("[PHASE 4 MEDIA PUBLISHER] Starting Multi-Platform Publishing Workflow")
+    logger.info("Reel: %s | User: %s", os.path.basename(video_path), user_id or "admin")
+    logger.info("Title: '%s'", title)
+    logger.info("===========================================================================")
 
     if not os.path.exists(video_path):
-        logger.error("❌ [PUBLISHER FAILED] Video file not found: %s", video_path)
+        logger.error("[PUBLISHER FAILED] Video file not found: %s", video_path)
         return {"success": False, "error": f"File not found: {video_path}"}
 
     results = {
@@ -329,13 +385,13 @@ async def run_phase4_publishing_async(
     }
 
     # 1. YouTube Shorts (sync function)
-    yt_res = publish_to_youtube(video_path=video_path, title=title, description=description, tags=tags, niche=niche)
+    yt_res = publish_to_youtube(video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id)
     results["platforms"]["youtube"] = yt_res
 
     # 2. Meta (Instagram Reels & Facebook Reels)
     caption_text = f"{title}\n\n{tags}"
     try:
-        meta_res = await publish_to_meta(video_path=video_path, caption=caption_text, niche=niche)
+        meta_res = await publish_to_meta(video_path=video_path, caption=caption_text, niche=niche, user_id=user_id)
         
         # Instagram
         ig_result = meta_res.get("instagram", {})
@@ -361,10 +417,10 @@ async def run_phase4_publishing_async(
     enable_tiktok = os.getenv("ENABLE_TIKTOK", "no").lower() in ("yes", "true", "1")
     if enable_tiktok:
         try:
-            tt_res = await publish_to_tiktok(video_path=video_path, title=title, tags=tags, niche=niche)
+            tt_res = await publish_to_tiktok(video_path=video_path, title=title, tags=tags, niche=niche, user_id=user_id)
             results["platforms"]["tiktok"] = tt_res
         except Exception as e:
-            logger.error("❌ TikTok publish error: %s", e)
+            logger.error("TikTok publish error: %s", e)
             results["platforms"]["tiktok"] = {"status": "failed", "error": str(e)}
 
     # 4. Telegram Channel
@@ -395,7 +451,8 @@ def run_phase4_publishing(
     title: str,
     description: str = "",
     tags: str = "#viral #shorts #trending",
-    niche: Optional[str] = None
+    niche: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Master Orchestration Entry Point for Phase 4 Multi-Platform Publishing.
@@ -414,7 +471,7 @@ def run_phase4_publishing(
             future = pool.submit(
                 lambda: asyncio.run(
                     run_phase4_publishing_async(
-                        video_path=video_path, title=title, description=description, tags=tags, niche=niche
+                        video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id
                     )
                 )
             )
@@ -422,7 +479,7 @@ def run_phase4_publishing(
     else:
         return asyncio.run(
             run_phase4_publishing_async(
-                video_path=video_path, title=title, description=description, tags=tags, niche=niche
+                video_path=video_path, title=title, description=description, tags=tags, niche=niche, user_id=user_id
             )
         )
 

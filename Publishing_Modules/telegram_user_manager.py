@@ -253,29 +253,60 @@ def increment_user_scrape_count(user_id_str: str) -> int:
     return 0
 
 
+def _is_admin_user(user_id_str: str) -> bool:
+    """
+    Returns True if user_id_str matches any admin ID in TELEGRAM_ADMIN_ID.
+    Supports comma-separated multiple admin IDs e.g. '1363193987,7822881619'.
+    Also returns True if the user has role='admin' in telegram_users.json.
+    """
+    user_id_clean = str(user_id_str).strip()
+    admin_env = str(os.getenv("TELEGRAM_ADMIN_ID", "")).strip()
+
+    # Check comma-separated admin IDs from env
+    if admin_env:
+        admin_ids = [x.strip() for x in admin_env.split(",") if x.strip()]
+        if user_id_clean in admin_ids:
+            return True
+
+    # Check role in telegram_users.json
+    try:
+        users = load_all_users()
+        u_rec = users.get(user_id_clean, {})
+        if u_rec.get("role") == "admin":
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def sync_user_secret_to_github(user_id_str: str, secret_suffix: str, secret_value: str) -> bool:
     """
-    Syncs a user-specific secret (e.g. USER_1363193987_GEMINI_API_KEY) and,
-    if called by Admin, also syncs the root secret (e.g. TELEGRAM_PUBLIC_GROUP_ID) to GitHub Secrets using GH_PAT.
+    Syncs credentials to GitHub Secrets:
+    - Admin users: Updates the root canonical secret (e.g. IG_BUSINESS_ID) in-place.
+      Does NOT create USER_<id>_ prefixed variables for admins.
+    - Non-admin users: Creates/updates the user-prefixed secret (e.g. USER_7822881619_IG_BUSINESS_ID).
+      Does NOT touch root secrets — preserving admin isolation.
+
+    Supports comma-separated TELEGRAM_ADMIN_ID for multiple admin accounts.
     """
     try:
         from Utilities.github_secret_updater import sync_custom_secret_to_github
-        admin_id = str(os.getenv("TELEGRAM_ADMIN_ID", "")).strip()
         user_id_clean = str(user_id_str).strip()
+        is_admin = _is_admin_user(user_id_clean)
 
-        ok1 = False
-        ok2 = False
-
-        # 1. Sync user-prefixed secret
-        user_secret_name = f"USER_{user_id_clean}_{secret_suffix.upper()}"
-        ok1 = sync_custom_secret_to_github(user_secret_name, secret_value)
-
-        # 2. If Admin, ALSO sync root secret directly
-        if not admin_id or user_id_clean == admin_id or admin_id == "":
+        if is_admin:
+            # Admin: update root canonical secret directly (replace in-place, no prefix)
             root_secret_name = secret_suffix.upper()
-            ok2 = sync_custom_secret_to_github(root_secret_name, secret_value)
-
-        return ok1 or ok2
+            ok = sync_custom_secret_to_github(root_secret_name, secret_value)
+            logger.info("🔒 [GITHUB SYNC] Admin root secret '%s' updated → %s", root_secret_name, "OK" if ok else "FAILED")
+            return ok
+        else:
+            # Non-admin: update user-prefixed secret only
+            user_secret_name = f"USER_{user_id_clean}_{secret_suffix.upper()}"
+            ok = sync_custom_secret_to_github(user_secret_name, secret_value)
+            logger.info("🔒 [GITHUB SYNC] User secret '%s' updated → %s", user_secret_name, "OK" if ok else "FAILED")
+            return ok
     except Exception as _ex:
         logger.warning("⚠️ Notice on user GitHub Secret sync: %s", _ex)
         return False
@@ -291,7 +322,6 @@ def set_user_apify_token(user_id_str: str, apify_token: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["apify_api_token"] = clean_token
         save_all_users(users)
-        sync_user_secret_to_github(user_id_str, "APIFY_TOKEN", clean_token)
         sync_user_secret_to_github(user_id_str, "APIFY_API_TOKEN", clean_token)
         logger.info("🔑 [TELEGRAM USER MANAGER] Personal Apify token saved for User ID %s", user_id_str)
         return True
@@ -331,7 +361,6 @@ def set_user_meta_token(user_id_str: str, meta_token: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["meta_page_token"] = clean_token
         save_all_users(users)
-        sync_user_secret_to_github(user_id_str, "META_TOKEN", clean_token)
         sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_token)
         logger.info("📸 [TELEGRAM USER MANAGER] Personal Meta Access Token saved for User ID %s", user_id_str)
         return True
@@ -347,16 +376,16 @@ def set_user_youtube_token(user_id_str: str, token_json_str: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["youtube_token_json"] = clean_json
         save_all_users(users)
-        
-        # Write local disk files for immediate auth use
-        for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
-            os.makedirs(os.path.dirname(fpath), exist_ok=True)
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(clean_json)
-                
-        sync_user_secret_to_github(user_id_str, "YOUTUBE_TOKEN_JSON", clean_json)
+
+        # Write local disk files for immediate auth use (shared disk path, only do this for admin)
+        if _is_admin_user(user_id_str):
+            for fpath in ["Credentials/youtube/token.json", "Credentials/token.json"]:
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(clean_json)
+
         sync_user_secret_to_github(user_id_str, "TOKEN_JSON", clean_json)
-        logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved locally & synced for User ID %s", user_id_str)
+        logger.info("🔴 [TELEGRAM USER MANAGER] Personal YouTube OAuth Token saved & synced for User ID %s", user_id_str)
         return True
     return False
 
@@ -370,7 +399,6 @@ def set_user_branding(user_id_str: str, brand_text: str) -> bool:
         u_rec = users.setdefault(user_id_str, {})
         u_rec["brand_watermark"] = clean_brand
         save_all_users(users)
-        sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK", clean_brand)
         sync_user_secret_to_github(user_id_str, "BRAND_WATERMARK_TEXT", clean_brand)
         logger.info("🏷️ [TELEGRAM USER MANAGER] Personal brand watermark saved for User ID %s: %s", user_id_str, clean_brand)
         return True
@@ -416,22 +444,22 @@ def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> 
         u_rec = users.setdefault(user_id_str, {})
         u_rec["youtube_client_secret"] = clean_secret
         save_all_users(users)
-        
-        # Write local disk files for immediate auth use
-        for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
-            os.makedirs(os.path.dirname(fpath), exist_ok=True)
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(clean_secret)
 
-        sync_user_secret_to_github(user_id_str, "YOUTUBE_CLIENT_SECRET", clean_secret)
+        # Write local disk files only for admin to avoid overwriting shared credentials
+        if _is_admin_user(user_id_str):
+            for fpath in ["Credentials/youtube/client_secret.json", "Credentials/client_secret.json"]:
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(clean_secret)
+
         sync_user_secret_to_github(user_id_str, "CLIENT_SECRET_JSON", clean_secret)
-        logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved locally & synced for User ID %s", user_id_str)
+        logger.info("🔐 [TELEGRAM USER MANAGER] YouTube Client Secret saved & synced for User ID %s", user_id_str)
         return True
     return False
 
 
 def set_user_instagram_token(user_id_str: str, token: str) -> bool:
-    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets."""
+    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN in GitHub Secrets."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_tok = token.strip()
@@ -441,7 +469,6 @@ def set_user_instagram_token(user_id_str: str, token: str) -> bool:
         u_rec["meta_page_token"] = clean_tok
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_tok)
-        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
         logger.info("📸 [TELEGRAM USER MANAGER] Instagram Access Token saved for User ID %s", user_id_str)
         return True
     return False

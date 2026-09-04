@@ -97,8 +97,12 @@ def select_clip_bgm(
         # 1. PRIMARY: If present in Telegram Storage Vault and missing locally, hydrate directly from Telegram lake
         try:
             from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
-            vault = TelegramVaultIndexer()
-            vault_hydrated = vault.hydrate_bgm_track_from_vault(selected_track_name, active_dir)
+            selected_fid = res.get("telegram_file_id")
+            vault_hydrated = vault.hydrate_bgm_track_from_vault(
+                selected_track_name,
+                active_dir,
+                file_id=selected_fid
+            )
             if vault_hydrated and os.path.isfile(vault_hydrated):
                 resolved_path = vault_hydrated
                 logger.info(f"✓ [STEP 04] BGM track resolved: '{selected_track_name}' -> {resolved_path}")

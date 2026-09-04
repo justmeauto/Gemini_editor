@@ -632,6 +632,7 @@ async def handle_telegram_callback(update, context):
             PublishQueue.add(video_path, channel_title=approved_title, channel_folder=creator_niche)
             import asyncio
             loop = asyncio.get_running_loop()
+            cb_user_id = str(query.from_user.id) if query.from_user else str(query.message.chat_id)
             _dispatch_phase4_publishing_in_background(
                 bot_obj=context.bot,
                 chat_id=query.message.chat_id,
@@ -640,7 +641,8 @@ async def handle_telegram_callback(update, context):
                 title=approved_title,
                 niche=creator_niche,
                 tags=tags_str,
-                description=ig_desc
+                description=ig_desc,
+                user_id=cb_user_id
             )
 
     elif data.startswith("reedit_"):
@@ -1015,17 +1017,29 @@ def _dispatch_pipeline_in_background(**kwargs):
     t.start()
 
 
-def _dispatch_phase4_publishing_in_background(bot_obj, chat_id: int, loop, video_path: str, title: str, niche: str = "General", tags: str = "#viral #shorts #trending", description: str = ""):
+def _dispatch_phase4_publishing_in_background(
+    bot_obj,
+    chat_id: int,
+    loop,
+    video_path: str,
+    title: str,
+    niche: str = "General",
+    tags: str = "#viral #shorts #trending",
+    description: str = "",
+    user_id: Optional[str] = None
+):
     """Spawns non-blocking daemon thread for Phase 4 publishing so the Telegram bot asyncio event loop never freezes."""
     def _worker():
         try:
             from Publishing_Modules.media_publisher_main import run_phase4_publishing
+            pub_user_id = str(user_id) if user_id else (str(chat_id) if chat_id else None)
             pub_res = run_phase4_publishing(
                 video_path=video_path,
                 title=title,
                 tags=tags,
                 niche=niche,
-                description=description
+                description=description,
+                user_id=pub_user_id
             )
             status_lines = []
             for p_name, p_info in pub_res.get("platforms", {}).items():
@@ -1540,7 +1554,8 @@ async def handle_telegram_incoming_msg(update, context):
                 title=approved_title,
                 niche=creator_niche,
                 tags=tags_str,
-                description=ig_desc
+                description=ig_desc,
+                user_id=user_id
             )
             return
 
@@ -2030,27 +2045,33 @@ async def _async_static_scheduler_task(bot_app=None):
         try:
             rendered = run_scheduled_scraper_batch(max_accounts=2)
             if bot_app and rendered:
-                admin_id = os.getenv("TELEGRAM_ADMIN_ID")
-                if admin_id:
+                admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+                if admin_raw:
+                    admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()]
                     for r_file in rendered:
                         try:
                             sess_id = session_manager.create_session(video_path=r_file)
                             keyboard = build_telegram_session_keyboard(session_id=sess_id)
                             with open(r_file, "rb") as vf:
-                                sent_msg = await bot_app.bot.send_video(
-                                    chat_id=int(admin_id),
-                                    video=vf,
-                                    caption=(
-                                        f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
-                                        f"📁 `{os.path.basename(r_file)}`\n"
-                                        f"🆔 `Session: {sess_id}`"
-                                    ),
-                                    reply_markup=keyboard
-                                )
-                                if sent_msg:
-                                    session_manager.update_message_id(sess_id, sent_msg.message_id)
+                                for aid in admin_ids:
+                                    try:
+                                        vf.seek(0)
+                                        sent_msg = await bot_app.bot.send_video(
+                                            chat_id=int(aid),
+                                            video=vf,
+                                            caption=(
+                                                f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
+                                                f"📁 `{os.path.basename(r_file)}`\n"
+                                                f"🆔 `Session: {sess_id}`"
+                                            ),
+                                            reply_markup=keyboard
+                                        )
+                                        if sent_msg:
+                                            session_manager.update_message_id(sess_id, sent_msg.message_id)
+                                    except Exception as _push_e:
+                                        logger.warning(f"Failed to send scheduled video to admin {aid}: {_push_e}")
                         except Exception as _e:
-                            logger.warning(f"Failed to send scheduled video to Telegram admin: {_e}")
+                            logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
         except Exception as e:
             logger.error(f"❌ [ASYNC SCHEDULER] Error during scheduled run: {e}")
 
@@ -2117,32 +2138,36 @@ def start_telegram_bot_service():
                 except Exception as _cmd_err:
                     logger.warning(f"⚠️ set_my_commands notice: {_cmd_err}")
 
-                admin_id = os.getenv("TELEGRAM_ADMIN_ID")
-                if admin_id and str(admin_id).strip() != bot_id:
-                    try:
-                        keyboard = build_platform_selection_keyboard()
-                        await application.bot.send_message(
-                            chat_id=int(admin_id),
-                            text=(
-                                "🚀 **Master AI Video Factory Bot Active!**\n\n"
-                                "🎯 **Select a platform below to begin bulk scraping & editing**, or send a creator handle / video link:\n"
-                                "• 📸 **Instagram**: `@username` or `/addaccount @handle`\n"
-                                "• 🔴 **YouTube**: `@ChannelName`\n"
-                                "• 🎵 **TikTok**: `@tiktokuser`\n"
-                                "• 🌐 **Direct URL / File**: Paste link or upload video\n\n"
-                                "👇 **Select your target platform below:**"
-                            ),
-                            reply_markup=keyboard
-                        )
-                        logger.info(f"📲 Automatically pushed Platform Selection Menu to Telegram Admin ID: {admin_id}")
-                    except Exception as _st_err:
-                        error_str = str(_st_err)
-                        if "can't send messages to the bot" in error_str.lower() or "bot can't initiate" in error_str.lower():
-                            logger.info("ℹ️ Startup push skipped: TELEGRAM_ADMIN_ID is set to bot ID or user has not sent /start yet.")
-                        elif "Chat not found" in error_str or "chat not found" in error_str.lower():
-                            logger.warning(f"⚠️ Startup welcome push warning: Admin chat ID {admin_id} not found. Bot may not have access to this chat, or the ID is incorrect.")
-                        else:
-                            logger.warning(f"⚠️ Startup welcome push warning: {_st_err}")
+                admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
+                if admin_raw:
+                    admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()]
+                    keyboard = build_platform_selection_keyboard()
+                    for aid in admin_ids:
+                        if aid == bot_id:
+                            continue
+                        try:
+                            await application.bot.send_message(
+                                chat_id=int(aid),
+                                text=(
+                                    "🚀 **Master AI Video Factory Bot Active!**\n\n"
+                                    "🎯 **Select a platform below to begin bulk scraping & editing**, or send a creator handle / video link:\n"
+                                    "• 📸 **Instagram**: `@username` or `/addaccount @handle`\n"
+                                    "• 🔴 **YouTube**: `@ChannelName`\n"
+                                    "• 🎵 **TikTok**: `@tiktokuser`\n"
+                                    "• 🌐 **Direct URL / File**: Paste link or upload video\n\n"
+                                    "👇 **Select your target platform below:**"
+                                ),
+                                reply_markup=keyboard
+                            )
+                            logger.info(f"📲 Automatically pushed Platform Selection Menu to Telegram Admin ID: {aid}")
+                        except Exception as _st_err:
+                            error_str = str(_st_err)
+                            if "can't send messages to the bot" in error_str.lower() or "bot can't initiate" in error_str.lower():
+                                logger.info(f"ℹ️ Startup push skipped for {aid}: TELEGRAM_ADMIN_ID is set to bot ID or user has not sent /start yet.")
+                            elif "Chat not found" in error_str or "chat not found" in error_str.lower():
+                                logger.warning(f"⚠️ Startup welcome push warning: Admin chat ID {aid} not found. Bot may not have access to this chat, or the ID is incorrect.")
+                            else:
+                                logger.warning(f"⚠️ Startup welcome push warning for {aid}: {_st_err}")
 
                 # Spawn background auto-input schedule task alongside Telegram bot polling
                 asyncio.create_task(_async_static_scheduler_task(application))

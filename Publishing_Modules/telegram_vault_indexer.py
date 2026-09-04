@@ -358,7 +358,12 @@ class TelegramVaultIndexer:
             logger.warning("⚠️ Vault JSON hydration notice: %s", _h_err)
         return results
 
-    def hydrate_bgm_track_from_vault(self, track_name_or_file_id: str, dest_dir: Optional[str] = None) -> Optional[str]:
+    def hydrate_bgm_track_from_vault(
+        self,
+        track_name_or_file_id: str,
+        dest_dir: Optional[str] = None,
+        file_id: Optional[str] = None
+    ) -> Optional[str]:
         """
         Synchronously hydrates a BGM track from Telegram Storage Group using
         file_id stored in pool_metadata.json (the single source of truth for audio data)
@@ -367,13 +372,13 @@ class TelegramVaultIndexer:
         if not track_name_or_file_id:
             return None
 
-        file_id = None
+        resolved_file_id = file_id
         filename = os.path.basename(track_name_or_file_id)
 
         # Direct file_id check (Telegram file_ids are alphanumeric strings usually > 20 chars without file extensions)
-        if len(track_name_or_file_id) > 20 and not track_name_or_file_id.endswith((".mp3", ".wav", ".m4a")):
-            file_id = track_name_or_file_id
-            filename = f"bgm_{file_id[:10]}.wav"
+        if not resolved_file_id and len(track_name_or_file_id) > 20 and not track_name_or_file_id.endswith((".mp3", ".wav", ".m4a")):
+            resolved_file_id = track_name_or_file_id
+            filename = f"bgm_{resolved_file_id[:10]}.wav"
 
         if not dest_dir:
             dest_dir = os.path.join(_REPO_ROOT, "Original_audio", "active")
@@ -388,9 +393,9 @@ class TelegramVaultIndexer:
                     pm_data = json.load(f)
                 files = pm_data.get("files", pm_data)
                 meta = files.get(filename) or {}
-                if not meta and file_id:
+                if not meta and resolved_file_id:
                     for k, v in files.items():
-                        if isinstance(v, dict) and v.get("file_id") == file_id:
+                        if isinstance(v, dict) and v.get("file_id") == resolved_file_id:
                             meta = v
                             filename = k
                             break
@@ -401,8 +406,8 @@ class TelegramVaultIndexer:
                             meta = v
                             filename = k
                             break
-                if not file_id:
-                    file_id = meta.get("file_id")
+                if not resolved_file_id:
+                    resolved_file_id = meta.get("file_id")
             except Exception as _pe:
                 logger.debug("Notice on pool_metadata BGM lookup: %s", _pe)
 
@@ -412,7 +417,7 @@ class TelegramVaultIndexer:
             return local_path
 
         # 2. Secondary Fallback: Column 2 in master_vault_index.json
-        if not file_id:
+        if not resolved_file_id:
             track_stem = os.path.splitext(filename.lower())[0]
             c2_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
             for sess_id, entry in c2_sess.items():
@@ -420,12 +425,12 @@ class TelegramVaultIndexer:
                     s_id = str(sess_id).lower()
                     u_str = str(entry.get("social_media_id", "")).lower()
                     if track_stem in s_id or track_stem in u_str or filename.lower() in u_str:
-                        file_id = entry["extracted_audio_file_id"]
+                        resolved_file_id = entry["extracted_audio_file_id"]
                         break
 
-        if file_id:
-            logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, file_id[:15])
-            if self.download_vault_file_by_id(file_id, local_path):
+        if resolved_file_id:
+            logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, resolved_file_id[:15])
+            if self.download_vault_file_by_id(resolved_file_id, local_path):
                 logger.info("✅ [VAULT BGM HYDRATION SUCCESS] Downloaded BGM '%s' from Telegram Storage Group!", filename)
                 return local_path
 

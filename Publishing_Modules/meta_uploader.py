@@ -170,12 +170,17 @@ class AsyncMetaUploader:
         facebook_caption: str = None,
         thumbnail_path: str = None,
         niche: str = "General_Fallback",
+        meta_config_override: Optional[Dict] = None,
     ) -> Dict:
         """
         Orchestrates uploads to enabled Meta platforms.
 
         The ``niche`` parameter drives credential resolution via
         _resolve_meta_config(), enabling per-niche Instagram/Facebook accounts.
+
+        ``meta_config_override``: When provided, skips _resolve_meta_config() entirely
+        and uses the supplied credentials directly. Used by the multi-tenant publisher
+        to inject per-user credentials without touching root .env variables.
         """
         results = {
             "instagram": {"status": "skipped"},
@@ -183,11 +188,16 @@ class AsyncMetaUploader:
         }
         
         if not os.getenv("ENABLE_META_UPLOAD", "yes").lower() in ["yes", "true", "on"]:
-            logger.info("🚫 Meta Upload Disabled in .env")
+            logger.info("Meta Upload Disabled in .env")
             return results
 
         # Resolve credentials once; pass the config dict to each sub-uploader.
-        meta_config = AsyncMetaUploader._resolve_meta_config(niche)
+        # If a per-user override is provided, use it directly without touching root .env.
+        if meta_config_override is not None:
+            meta_config = meta_config_override
+            logger.info("[META AUTH] Using caller-supplied meta_config_override (user-isolated credentials).")
+        else:
+            meta_config = AsyncMetaUploader._resolve_meta_config(niche)
 
         caption_stripped = caption # logic if needed
         
@@ -203,7 +213,7 @@ class AsyncMetaUploader:
             
             # --- New: Upload Thumbnail as a separate Image Post ---
             if thumbnail_path and os.path.exists(thumbnail_path):
-                logger.info("🖼️ Valid thumbnail found. Attempting to post as Instagram Image...")
+                logger.info("Valid thumbnail found. Attempting to post as Instagram Image...")
                 photo_res = await AsyncMetaUploader._upload_photo_to_instagram(thumbnail_path, caption, meta_config)
                 results["instagram"]["photo"] = photo_res
                 
@@ -214,7 +224,7 @@ class AsyncMetaUploader:
                     results["instagram"]["status"] = "success (photo only)"
                     results["instagram"]["link"] = photo_res.get("link", "")
         else:
-             logger.info("🚫 SEND_TO_INSTAGRAM is OFF.")
+             logger.info("SEND_TO_INSTAGRAM is OFF.")
              results["instagram"] = {"status": "disabled"}
         
         # 2. Facebook (Independent)
@@ -224,9 +234,9 @@ class AsyncMetaUploader:
             results["facebook"] = await AsyncMetaUploader._upload_to_facebook(video_path, final_fb_caption, meta_config)
         else:
              if skip_facebook:
-                  logger.info("🚫 Facebook Skipped (Restricted to Compilation Mode).")
+                  logger.info("Facebook Skipped (Restricted to Compilation Mode).")
              else:
-                  logger.info("🚫 SEND_TO_FACEBOOK is OFF.")
+                  logger.info("SEND_TO_FACEBOOK is OFF.")
              results["facebook"] = {"status": "disabled/skipped"}
         
         return results
