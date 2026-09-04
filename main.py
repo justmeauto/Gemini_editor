@@ -679,6 +679,7 @@ async def handle_telegram_callback(update, context):
         try:
             from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens, clean_entity_name
             main_subject = strip_system_and_tracking_tokens(clean_entity_name(main_subject))
+            approved_title = strip_system_and_tracking_tokens(approved_title)
             tags_str = strip_system_and_tracking_tokens(tags_str)
         except Exception:
             pass
@@ -1590,19 +1591,27 @@ async def handle_telegram_incoming_msg(update, context):
         except Exception as _seo_err:
             logger.warning(f"⚠️ [PlatformSEO] Failed to generate commercial SEO for session {sess_id}: {_seo_err}")
 
-        main_subject = seo_res.get("main_subject") or user_hint_text or "Viral Reel"
         try:
             from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens, clean_entity_name
-            main_subject = strip_system_and_tracking_tokens(clean_entity_name(main_subject))
-            tags_str = strip_system_and_tracking_tokens(tags_str)
+            main_subject = strip_system_and_tracking_tokens(clean_entity_name(seo_res.get("main_subject") or user_hint_text or "Viral Reel"))
         except Exception:
-            pass
+            main_subject = seo_res.get("main_subject") or user_hint_text or "Viral Reel"
+
         yt_info = seo_res.get("platforms", {}).get("youtube", {})
-        approved_title = yt_info.get("title") or f"{main_subject} 🌟"
+        raw_title = yt_info.get("title") or f"{main_subject} 🌟"
+        try:
+            from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens
+            approved_title = strip_system_and_tracking_tokens(raw_title)
+        except Exception:
+            approved_title = raw_title
         
         tags_list = yt_info.get("hashtags", []) or seo_res.get("platforms", {}).get("instagram", {}).get("hashtags", []) or ["#viral", "#shorts"]
         tags_str = " ".join(tags_list)
-        tags_str = strip_system_and_tracking_tokens(tags_str)
+        try:
+            from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens
+            tags_str = strip_system_and_tracking_tokens(tags_str)
+        except Exception:
+            pass
 
         ig_info = seo_res.get("platforms", {}).get("instagram", {})
         ig_desc = ig_info.get("description") or ig_info.get("title") or approved_title

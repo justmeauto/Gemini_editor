@@ -119,27 +119,32 @@ def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
         text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown|none|null)\b', '', text)
 
         # 4. Strip entity prefixes from text and hashtags (e.g. celebrity:Avneet_Kaur -> Avneet Kaur, #celebrityAvneet_Kaur -> #AvneetKaur)
-        text = re.sub(r'(?i)#celebrity_?:?\s*([A-Za-z0-9_]+)', r'#\1', text)
+        text = re.sub(r'(?i)#(?:celebrity|model|actress|actor|influencer|star|person)_?:?\s*([A-Za-z0-9_]+)', r'#\1', text)
         text = re.sub(r'(?i)\b(?:celebrity|outfit|accessory|environment|concept|niche|person|actor|actress|model|influencer|brand|subject|star|celeb):\s*', '', text)
 
         # 5. Clean appended "None" or "null" from hashtags (e.g. #AvneetkaurNone -> #Avneetkaur)
         text = re.sub(r'(?i)(?<=#[a-zA-Z0-9_]{2})None\b', '', text)
+        text = re.sub(r'(?i)(?<=#[a-zA-Z0-9_]{2})null\b', '', text)
 
         # 6. Clean orphaned '#' symbols and standalone 'None' strings in text
         text = re.sub(r'#(?![a-zA-Z0-9_])', '', text)
         text = re.sub(r'(?i)\bNone\b', '', text)
 
-        # 7. Convert remaining underscores in entity names to spaces where appropriate (not in valid hashtags)
+        # 7. Convert remaining underscores in entity names to spaces where appropriate, and deduplicate hashtags case-insensitively
         lines = text.split('\n')
         cleaned_lines = []
         for line in lines:
             tokens = line.split()
             cleaned_tokens = []
+            seen_tags_lower = set()
             for tok in tokens:
                 if tok.startswith("#"):
                     tag_inner = tok[1:].replace("_", "")
                     if tag_inner:
-                        cleaned_tokens.append(f"#{tag_inner}")
+                        tag_lower = tag_inner.lower()
+                        if tag_lower not in seen_tags_lower:
+                            seen_tags_lower.add(tag_lower)
+                            cleaned_tokens.append(f"#{tag_inner}")
                 else:
                     tok_clean = tok.replace("_", " ")
                     if tok_clean.strip():
@@ -154,10 +159,17 @@ def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
 
     elif isinstance(text_or_obj, list):
         cleaned_list = []
+        seen_tags_lower = set()
         for item in text_or_obj:
             res = strip_system_and_tracking_tokens(item)
             if res or isinstance(res, (bool, int, float)):
-                cleaned_list.append(res)
+                if isinstance(res, str) and res.startswith("#"):
+                    t_lower = res.lower().replace("_", "")
+                    if t_lower not in seen_tags_lower:
+                        seen_tags_lower.add(t_lower)
+                        cleaned_list.append(res)
+                else:
+                    cleaned_list.append(res)
         return cleaned_list
 
     elif isinstance(text_or_obj, set):
@@ -483,6 +495,12 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
     if len(title) > max_title:
         title = title[:max_title-3] + "..."
     validated["title"] = strip_system_and_tracking_tokens(title or "Untitled Video")
+
+    # Description validation
+    description = content.get("description", "")
+    max_desc = limits.get("description_max", 2200)
+    if len(description) > max_desc:
+        description = description[:max_desc-3] + "..."
     validated["description"] = strip_system_and_tracking_tokens(description or "Check out this amazing video!")
 
     # Hashtag validation
@@ -695,8 +713,8 @@ def generate_platform_seo(
         seo_data.setdefault("content_category", extracted.get("intent", "general"))
         seo_data.setdefault("target_audience", "general")
         seo_data.setdefault("engagement_prediction", "high")
-        seo_data["main_subject"] = main_subject
-        seo_data["applicable_context"] = applicable_context
+        seo_data["main_subject"] = strip_system_and_tracking_tokens(clean_entity_name(main_subject))
+        seo_data["applicable_context"] = strip_system_and_tracking_tokens(applicable_context)
         seo_data["_source"] = "gemini_semantic"
 
         # Sanitize output to strip raw handle / ID text if present

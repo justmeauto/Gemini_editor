@@ -75,35 +75,49 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
         from Publishing_Modules.telegram_user_manager import load_all_users, _is_admin_user
         users = load_all_users()
         u_rec = users.get(str(user_id), {})
-        is_admin = _is_admin_user(str(user_id))
-        user_id_clean = str(user_id).strip()
+        is_admin = _is_admin_user(str(user_id)) if user_id else True
+        user_id_clean = str(user_id).strip() if user_id else ""
 
-        def _pick(json_key, env_suffix, root_env_key=None):
+        def _pick(json_key, env_suffixes, root_env_key=None):
             """Resolve credential: user record -> USER_<id>_ENV -> root_env (admin only)."""
             val = (u_rec.get(json_key) or "").strip()
             if val:
                 return val
-            prefixed = os.getenv(f"USER_{user_id_clean}_{env_suffix}", "").strip()
-            if prefixed:
-                return prefixed
+            if isinstance(env_suffixes, str):
+                env_suffixes = [env_suffixes]
+            if user_id_clean:
+                for suffix in env_suffixes:
+                    prefixed = os.getenv(f"USER_{user_id_clean}_{suffix}", "").strip()
+                    if prefixed:
+                        return prefixed
             if is_admin and root_env_key:
                 return (os.getenv(root_env_key) or "").strip() or None
             return None
 
-        meta_tok = _pick("ig_business_token", "IG_BUSINESS_TOKEN", "IG_BUSINESS_TOKEN")
-        if not meta_tok:
-            meta_tok = _pick("meta_page_token", "META_PAGE_TOKEN", "META_PAGE_TOKEN")
+        meta_tok = _pick("ig_business_token", ["IG_BUSINESS_TOKEN", "META_PAGE_TOKEN", "META_TOKEN"], "IG_BUSINESS_TOKEN")
+        if not meta_tok and is_admin:
+            meta_tok = (os.getenv("META_PAGE_TOKEN") or os.getenv("META_TOKEN") or "").strip() or None
 
-        meta_id = _pick("ig_business_id", "IG_BUSINESS_ID", "IG_BUSINESS_ID")
-        meta_page_id = _pick("meta_page_id", "META_PAGE_ID", "META_PAGE_ID")
-        meta_page_tok = _pick("meta_page_token", "META_PAGE_TOKEN", "META_PAGE_TOKEN")
+        meta_id = _pick("ig_business_id", ["IG_BUSINESS_ID", "IG_BUSINESS_ACCOUNT_ID", "META_PAGE_ID"], "IG_BUSINESS_ID")
+        if not meta_id and is_admin:
+            meta_id = (os.getenv("IG_BUSINESS_ACCOUNT_ID") or os.getenv("META_PAGE_ID") or "").strip() or None
+
+        meta_page_id = _pick("meta_page_id", ["META_PAGE_ID", "IG_BUSINESS_ID"], "META_PAGE_ID")
+        meta_page_tok = _pick("meta_page_token", ["META_PAGE_TOKEN", "IG_BUSINESS_TOKEN", "META_TOKEN"], "META_PAGE_TOKEN")
 
         yt_tok_json = (u_rec.get("youtube_token_json") or "").strip() or None
-        if not yt_tok_json:
-            yt_tok_json = os.getenv(f"USER_{user_id_clean}_TOKEN_JSON", "").strip() or None
+        if not yt_tok_json and user_id_clean:
+            for y_suf in ["TOKEN_JSON", "YOUTUBE_TOKEN_JSON"]:
+                v = os.getenv(f"USER_{user_id_clean}_{y_suf}", "").strip()
+                if v:
+                    yt_tok_json = v
+                    break
+        if not yt_tok_json and is_admin:
+            yt_tok_json = os.getenv("TOKEN_JSON", "").strip() or os.getenv("YOUTUBE_TOKEN_JSON", "").strip() or None
+
         yt_tok = yt_tok_json if yt_tok_json else (token_file if (has_yt and is_admin) else None)
 
-        tt_tok = _pick("tiktok_access_token", "TIKTOK_ACCESS_TOKEN", "TIKTOK_ACCESS_TOKEN")
+        tt_tok = _pick("tiktok_access_token", ["TIKTOK_ACCESS_TOKEN", "TIKTOK_TOKEN"], "TIKTOK_ACCESS_TOKEN")
 
         return {
             "meta_token": meta_tok,

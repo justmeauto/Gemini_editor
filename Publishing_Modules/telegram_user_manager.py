@@ -6,6 +6,7 @@ session verification, OTP recovery, and persistent storage in data/telegram_user
 """
 
 import os
+import re
 import time
 import json
 import secrets
@@ -27,15 +28,58 @@ def _hash_password(password: str) -> str:
 
 
 def load_all_users() -> Dict[str, Dict]:
-    """Loads all registered user records from data/telegram_users.json."""
-    if not os.path.exists(USERS_JSON_PATH):
-        return {}
-    try:
-        with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as err:
-        logger.error("Failed to load %s: %s", USERS_JSON_PATH, err)
-        return {}
+    """Loads all registered user records from data/telegram_users.json, and hydrates from USER_<id>_* environment variables."""
+    users = {}
+    if os.path.exists(USERS_JSON_PATH):
+        try:
+            with open(USERS_JSON_PATH, "r", encoding="utf-8") as f:
+                users = json.load(f)
+        except Exception as err:
+            logger.error("Failed to load %s: %s", USERS_JSON_PATH, err)
+            users = {}
+
+    # Dynamically hydrate from any USER_<chat_id>_<var> variables in os.environ
+    for k, v in os.environ.items():
+        if k.startswith("USER_") and v and v.strip():
+            m = re.match(r"^USER_(\d+)_(.+)$", k)
+            if m:
+                uid = m.group(1)
+                suffix = m.group(2).lower()
+                val = v.strip()
+                u_rec = users.setdefault(uid, {})
+                if suffix in ("ig_business_token", "meta_page_token", "meta_token"):
+                    if not u_rec.get("ig_business_token"):
+                        u_rec["ig_business_token"] = val
+                    if not u_rec.get("meta_page_token"):
+                        u_rec["meta_page_token"] = val
+                elif suffix in ("ig_business_id", "meta_page_id"):
+                    if not u_rec.get("ig_business_id"):
+                        u_rec["ig_business_id"] = val
+                    if not u_rec.get("meta_page_id"):
+                        u_rec["meta_page_id"] = val
+                elif suffix in ("client_secret_json", "youtube_client_secret"):
+                    if not u_rec.get("youtube_client_secret"):
+                        u_rec["youtube_client_secret"] = val
+                elif suffix in ("token_json", "youtube_token_json"):
+                    if not u_rec.get("youtube_token_json"):
+                        u_rec["youtube_token_json"] = val
+                elif suffix in ("gemini_api_key",):
+                    if not u_rec.get("gemini_api_key"):
+                        u_rec["gemini_api_key"] = val
+                elif suffix in ("apify_api_token", "apify_token"):
+                    if not u_rec.get("apify_api_token"):
+                        u_rec["apify_api_token"] = val
+                elif suffix in ("brand_watermark_text", "brand_watermark"):
+                    if not u_rec.get("brand_watermark"):
+                        u_rec["brand_watermark"] = val
+                elif suffix in ("telegram_public_group_id",):
+                    if not u_rec.get("telegram_public_group_id"):
+                        u_rec["telegram_public_group_id"] = val
+                elif suffix in ("auto_input_schedule_times",):
+                    if not u_rec.get("auto_input_schedule_times"):
+                        u_rec["auto_input_schedule_times"] = val
+
+    return users
 
 
 def _upload_file_to_telegram_storage(file_path: str, caption: str = "") -> Optional[str]:
@@ -256,15 +300,16 @@ def increment_user_scrape_count(user_id_str: str) -> int:
 def _is_admin_user(user_id_str: str) -> bool:
     """
     Returns True if user_id_str matches any admin ID in TELEGRAM_ADMIN_ID.
-    Supports comma-separated multiple admin IDs e.g. '1363193987,7822881619'.
-    Also returns True if the user has role='admin' in telegram_users.json.
+    Strictly checks TELEGRAM_ADMIN_ID (supports comma-separated admin IDs).
+    Also returns True if user has role='admin' in telegram_users.json.
     """
     user_id_clean = str(user_id_str).strip()
     admin_env = str(os.getenv("TELEGRAM_ADMIN_ID", "")).strip()
 
-    # Check comma-separated admin IDs from env
+    # Check comma-separated admin IDs strictly from TELEGRAM_ADMIN_ID
     if admin_env:
-        admin_ids = [x.strip() for x in admin_env.split(",") if x.strip()]
+        admin_env_clean = admin_env.strip('"').strip("'")
+        admin_ids = [x.strip().strip('"').strip("'") for x in admin_env_clean.split(",") if x.strip()]
         if user_id_clean in admin_ids:
             return True
 
@@ -546,35 +591,45 @@ def get_user_gemini_key(user_id_str: str) -> Optional[str]:
 def format_user_credentials_summary(user_id_str: str) -> str:
     """Formats a status checklist of all configured user credentials with exact command syntax."""
     users = load_all_users()
-    user_id_str = str(user_id_str)
+    user_id_str = str(user_id_str).strip()
     u_rec = users.get(user_id_str, {})
+    is_admin = _is_admin_user(user_id_str)
     
     def _chk(key, env_var):
         if u_rec.get(key, "").strip():
-            return "✅ Personal Key"
-        elif os.getenv(env_var, "").strip():
-            return "✅ Active (Shared Pool)"
+            return "✅ Configured"
+        user_env = os.getenv(f"USER_{user_id_str}_{env_var}", "").strip()
+        if user_env:
+            return "✅ Configured (Secret)"
+        if is_admin and os.getenv(env_var, "").strip():
+            return "✅ Active (Admin Root)"
         return "❌ Not Set"
 
+    role_badge = "👑 **Role:** `Admin` (Root Credentials)" if is_admin else "👤 **Role:** `Standard User` (Personal Credentials)"
+
+    def _val(key, env_var):
+        return u_rec.get(key) or os.getenv(f"USER_{user_id_str}_{env_var}") or (os.getenv(env_var) if is_admin else None) or "Not Set"
+
     lines = [
-        "⚙️ **Your SaaS Configuration Checklist & Command Guide**\n",
+        "⚙️ **Your SaaS Configuration Checklist & Command Guide**",
+        role_badge + "\n",
         f"🤖 **Gemini API Key:** `{_chk('gemini_api_key', 'GEMINI_API_KEY')}`",
         "   👉 Command: `/setgemini YOUR_GEMINI_KEY`\n",
         f"🕷️ **Apify Scraper Token:** `{_chk('apify_api_token', 'APIFY_API_TOKEN')}`",
         "   👉 Command: `/setapify YOUR_APIFY_TOKEN`\n",
-        f"🏷️ **Brand Watermark:** `{u_rec.get('brand_watermark') or os.getenv('BRAND_WATERMARK_TEXT') or 'Not Set'}`",
+        f"🏷️ **Brand Watermark:** `{_val('brand_watermark', 'BRAND_WATERMARK_TEXT')}`",
         "   👉 Command: `/setbranding YOUR_WATERMARK_TEXT`\n",
-        f"📢 **Public Group ID:** `{u_rec.get('telegram_public_group_id') or os.getenv('TELEGRAM_PUBLIC_GROUP_ID') or 'Not Set'}`",
+        f"📢 **Public Group ID:** `{_val('telegram_public_group_id', 'TELEGRAM_PUBLIC_GROUP_ID')}`",
         "   👉 Command: `/setgroup YOUR_GROUP_ID`\n",
-        f"⏰ **Schedule Times:** `{u_rec.get('auto_input_schedule_times') or os.getenv('AUTO_INPUT_SCHEDULE_TIMES') or 'Not Set'}`",
+        f"⏰ **Schedule Times:** `{_val('auto_input_schedule_times', 'AUTO_INPUT_SCHEDULE_TIMES')}`",
         "   👉 Command: `/setschedule HH:MM,HH:MM`\n",
         f"📸 **Instagram Token:** `{_chk('ig_business_token', 'IG_BUSINESS_TOKEN')}`",
         "   👉 Command: `/instagramtoken YOUR_ACCESS_TOKEN`\n",
-        f"🆔 **Instagram Business ID:** `{u_rec.get('ig_business_id') or os.getenv('IG_BUSINESS_ID') or 'Not Set'}`",
+        f"🆔 **Instagram Business ID:** `{_val('ig_business_id', 'IG_BUSINESS_ID')}`",
         "   👉 Command: `/instagramid YOUR_BUSINESS_ID`\n",
-        f"📘 **Facebook Page ID:** `{u_rec.get('meta_page_id') or os.getenv('META_PAGE_ID') or 'Not Set'}`",
+        f"📘 **Facebook Page ID:** `{_val('meta_page_id', 'META_PAGE_ID')}`",
         "   👉 Command: `/facebookid YOUR_PAGE_ID`\n",
-        f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'YOUTUBE_TOKEN_JSON')}`",
+        f"🔴 **YouTube OAuth Token:** `{_chk('youtube_token_json', 'TOKEN_JSON')}`",
         "   👉 Command: `/setytclient CLIENT_JSON` then `/ytcode AUTH_CODE`\n",
         f"🎵 **TikTok Access Token:** `{_chk('tiktok_access_token', 'TIKTOK_ACCESS_TOKEN')}`",
         "   👉 Command: `/tiktoktoken YOUR_ACCESS_TOKEN`\n",
