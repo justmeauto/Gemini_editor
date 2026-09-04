@@ -6,6 +6,19 @@ import json
 import httpx
 from typing import Dict, Optional, Tuple
 
+try:
+    from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens
+except ImportError:
+    import re
+    def strip_system_and_tracking_tokens(text):
+        if not isinstance(text, str): return text
+        text = re.sub(r'#?AQ[a-zA-Z0-9_-]{10,}', '', text)
+        text = re.sub(r'#(?=[a-zA-Z0-9_-]{26,})(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[a-zA-Z])[a-zA-Z0-9_-]+', '', text)
+        text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown)\b', '', text)
+        text = re.sub(r'#(?![a-zA-Z0-9_])', '', text)
+        lines = [re.sub(r'[ \t]{2,}', ' ', l).strip() for l in text.split('\n')]
+        return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+
 # Initialize Logger
 logger = logging.getLogger("meta_uploader")
 logger.setLevel(logging.INFO)
@@ -806,16 +819,21 @@ class AsyncMetaUploader:
     @staticmethod
     def _clean_caption(caption: str) -> str:
         """
-        Cleans captions of UTF-16 surrogates that cause UnicodeEncodeError in httpx/UTF-8.
+        Cleans captions of UTF-16 surrogates and applies regex sanitization to strip:
+        - Instagram internal tracking tokens (#?AQ...)
+        - Long mixed hash tags (>25 chars containing alphanumeric hashes)
+        - System placeholders (#Creatorunknown, #Nicheunknown, #unknown)
+        - Duplicate spaces and orphaned # symbols
         """
         if not caption:
             return ""
         try:
             # Re-encode with surrogatepass and decode to resolve any stray surrogates
-            return caption.encode('utf-16', 'surrogatepass').decode('utf-16')
+            cleaned = caption.encode('utf-16', 'surrogatepass').decode('utf-16')
+            return strip_system_and_tracking_tokens(cleaned)
         except Exception as e:
             logger.warning(f"⚠️ Caption cleaning failed: {e}")
-            return caption
+            return strip_system_and_tracking_tokens(caption)
 
     @staticmethod
     async def _retry_request(method, url, timeout=1200.0, **kwargs) -> Dict:

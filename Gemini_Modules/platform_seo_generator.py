@@ -82,6 +82,66 @@ PLATFORM_LIMITS = {
     },
 }
 
+def strip_system_and_tracking_tokens(text_or_obj: Any) -> Any:
+    """
+    Recursively scrubs Instagram internal tracking tokens (#AQ...), raw system hashes,
+    and default placeholder tags (#Creatorunknown, #Nicheunknown, #unknown) from text,
+    lists, sets, tuples, and dictionary objects.
+    """
+    if isinstance(text_or_obj, str):
+        text = text_or_obj
+
+        # 1. Strip IG tracking tokens (#?AQ...)
+        text = re.sub(r'#?AQ[a-zA-Z0-9_-]{10,}', '', text)
+
+        # 2. Strip hashtags > 25 chars containing mixed alphanumeric hash signatures
+        text = re.sub(r'#(?=[a-zA-Z0-9_-]{26,})(?=[a-zA-Z0-9_-]*\d)(?=[a-zA-Z0-9_-]*[a-zA-Z])[a-zA-Z0-9_-]+', '', text)
+
+        # 3. Strip system placeholders (case-insensitive)
+        text = re.sub(r'(?i)#?(?:creator_?unknown|niche_?unknown|unknown)\b', '', text)
+
+        # 4. Clean orphaned '#' symbols
+        text = re.sub(r'#(?![a-zA-Z0-9_])', '', text)
+
+        # 5. Collapse duplicate spaces and clean line endings
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            sub_l = re.sub(r'[ \t]{2,}', ' ', line).strip()
+            cleaned_lines.append(sub_l)
+
+        text = '\n'.join(cleaned_lines)
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        return text
+
+    elif isinstance(text_or_obj, list):
+        cleaned_list = []
+        for item in text_or_obj:
+            res = strip_system_and_tracking_tokens(item)
+            if res or isinstance(res, (bool, int, float)):
+                cleaned_list.append(res)
+        return cleaned_list
+
+    elif isinstance(text_or_obj, set):
+        cleaned_set = set()
+        for item in text_or_obj:
+            res = strip_system_and_tracking_tokens(item)
+            if res or isinstance(res, (bool, int, float)):
+                cleaned_set.add(res)
+        return cleaned_set
+
+    elif isinstance(text_or_obj, tuple):
+        return tuple(strip_system_and_tracking_tokens(list(text_or_obj)))
+
+    elif isinstance(text_or_obj, dict):
+        cleaned_dict = {}
+        for key, val in text_or_obj.items():
+            cleaned_key = strip_system_and_tracking_tokens(key) if isinstance(key, str) else key
+            cleaned_dict[cleaned_key] = strip_system_and_tracking_tokens(val)
+        return cleaned_dict
+
+    return text_or_obj
+
 def extract_celebrity_human_name(handle: str) -> str:
     """Extract a human name or clean title from a handle string."""
     if not handle:
@@ -189,10 +249,12 @@ def extract_main_subject_and_context(
     clean_descriptors = [d for d in descriptors if d.lower().strip() not in fluff_set]
 
     applicable_context = ", ".join(dict.fromkeys(clean_descriptors)) if clean_descriptors else (video_context[:100].strip() if video_context else "video highlights")
+    main_subject_clean = strip_system_and_tracking_tokens(main_subject) or "Featured Reel"
+    applicable_context_clean = strip_system_and_tracking_tokens(applicable_context) or "video highlights"
 
     return {
-        "main_subject": main_subject,
-        "applicable_context": applicable_context,
+        "main_subject": main_subject_clean,
+        "applicable_context": applicable_context_clean,
         "raw_caption": raw_caption,
         "source_title": source_title,
         "detected_entities": detected_entities,
@@ -380,14 +442,8 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
     max_title = limits.get("title_max", 255)
     if len(title) > max_title:
         title = title[:max_title-3] + "..."
-    validated["title"] = title or "Untitled Video"
-
-    # Description validation
-    description = content.get("description", "")
-    max_desc = limits.get("description_max", 5000)
-    if len(description) > max_desc:
-        description = description[:max_desc-3] + "..."
-    validated["description"] = description or "Check out this amazing video!"
+    validated["title"] = strip_system_and_tracking_tokens(title or "Untitled Video")
+    validated["description"] = strip_system_and_tracking_tokens(description or "Check out this amazing video!")
 
     # Hashtag validation
     hashtags = content.get("hashtags", [])
@@ -396,13 +452,13 @@ def _validate_platform_content(platform: str, content: Dict[str, Any]) -> Dict[s
         hashtags = hashtags[:max_tags]
     # Ensure hashtags start with #
     hashtags = [tag if tag.startswith("#") else f"#{tag}" for tag in hashtags]
-    validated["hashtags"] = hashtags
+    validated["hashtags"] = strip_system_and_tracking_tokens(hashtags)
 
     # SEO score
     validated["seo_score"] = content.get("seo_score", 75)
     validated["keyword_density"] = content.get("keyword_density", "N/A")
 
-    return validated
+    return strip_system_and_tracking_tokens(validated)
 
 def _heuristic_fallback(
     video_context: str,
@@ -484,7 +540,7 @@ def _heuristic_fallback(
         }
     }
 
-    return {
+    return strip_system_and_tracking_tokens({
         "generated_at": datetime.utcnow().isoformat(),
         "platforms": platforms,
         "global_keywords": [main_subject] + desc_tags[:4],
@@ -493,7 +549,7 @@ def _heuristic_fallback(
         "engagement_prediction": "medium (subject_heuristic)",
         "main_subject": main_subject,
         "_source": "heuristic_fallback"
-    }
+    })
 
 def generate_platform_seo(
     video_context: str,
@@ -614,14 +670,14 @@ def generate_platform_seo(
             seo_data = sanitize_raw_handles_out(seo_data, raw_h, clean_name or main_subject)
 
         logger.info(f"✅ [PlatformSEO] Generated SEO content for subject='{main_subject}' across {len(seo_data['platforms'])} platforms")
-        return seo_data
+        return strip_system_and_tracking_tokens(seo_data)
 
     except Exception as e:
         logger.warning(f"[PlatformSEO] Gemini call failed ({e}) — using heuristic fallback.")
         result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
-        return result
+        return strip_system_and_tracking_tokens(result)
 
 def approve_and_finalize(
     seo_data: Dict[str, Any],
@@ -665,7 +721,7 @@ def approve_and_finalize(
     platform_data["status"] = "approved"
     
     logger.info(f"✅ [PlatformSEO] Finalized {platform} content with title: '{approved_title[:50]}...'")
-    return platform_data
+    return strip_system_and_tracking_tokens(platform_data)
 
 def format_for_telegram_preview(seo_data: Dict[str, Any]) -> str:
     """

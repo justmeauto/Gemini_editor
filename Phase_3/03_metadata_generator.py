@@ -8,6 +8,11 @@ high-engagement titles, captions, and platform hashtags.
 import logging
 from typing import Dict, Any
 
+try:
+    from Gemini_Modules.platform_seo_generator import strip_system_and_tracking_tokens
+except ImportError:
+    def strip_system_and_tracking_tokens(obj): return obj
+
 logger = logging.getLogger("phase3.step03_metadata_generator")
 
 # Default category hashtag maps
@@ -66,7 +71,7 @@ def generate_publishing_metadata(intelligence: Dict[str, Any], fallback_title: s
 
     logger.info(f"✨ Step 03 Metadata: generated title='{title[:40]}...' intent={intent}")
 
-    return {
+    return strip_system_and_tracking_tokens({
         "title": title,
         "caption": caption,
         "hashtags": base_tags,
@@ -86,4 +91,4 @@ def generate_publishing_metadata(intelligence: Dict[str, Any], fallback_title: s
                 "caption": f"{title} {hashtag_str}"
             }
         }
-    }
+    })
