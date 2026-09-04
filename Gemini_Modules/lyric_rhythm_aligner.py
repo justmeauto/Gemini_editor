@@ -938,13 +938,20 @@ def select_best_audio_for_clip(
     except ImportError:
         def _is_pipeline_artifact(f):
             fl = f.lower()
-            if fl.startswith("vault_bgm_") or fl.startswith("bgm_"):
+            if fl.startswith("bgm_manual_") or "manual_" in fl:
+                return True  # Exclude raw manual harvest clip extractions
+            if fl.startswith("vault_bgm_"):
+                return False
+            if fl.startswith("bgm_") and not fl.startswith("bgm_manual_"):
                 return False
             return "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
 
     def _is_noisy_or_unusable(fname, meta):
         if not isinstance(meta, dict):
             return False
+        fn_l = fname.lower()
+        if fn_l.startswith("bgm_manual_") or "manual_" in fn_l:
+            return True
         if meta.get("is_unusable", False) or meta.get("is_speech_only", False):
             return True
         reason = str(meta.get("unusable_reason", "")).lower()

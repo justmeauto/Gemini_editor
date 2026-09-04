@@ -24,8 +24,12 @@ PIPELINE_BLOCKED_KWS = [
 
 def _is_pipeline_artifact(filename: str) -> bool:
     lower_name = filename.lower()
+    if lower_name.startswith("bgm_manual_") or "manual_" in lower_name:
+        return True  # Exclude raw manual harvest clip extractions
     # Explicit BGM files are never pipeline artifacts
-    if lower_name.startswith("vault_bgm_") or lower_name.startswith("bgm_"):
+    if lower_name.startswith("vault_bgm_"):
+        return False
+    if lower_name.startswith("bgm_") and not lower_name.startswith("bgm_manual_"):
         return False
     if lower_name.startswith("video") or lower_name.startswith("tmp") or lower_name.startswith("step_"):
         return True

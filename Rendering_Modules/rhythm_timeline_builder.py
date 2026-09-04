@@ -914,7 +914,25 @@ class RhythmTimelineBuilder:
                 expanded.append(cand)
                 used_starts.add(c_st)
                 curr_dur += c_dur
-            base_for_final = sorted(expanded, key=lambda x: x.get("start", 0.0))
+            base_for_final = expanded
+            # Single-Clip Anti-Linear Guard:
+            # If all shots come from a single clip and form a strictly linear 1:1 sequence,
+            # apply dynamic non-linear jump-cut re-ordering (e.g. Hook -> Climax -> Reaction -> Outro)
+            if len(base_for_final) >= 3 and len(set(s.get("clip_id", 0) for s in base_for_final)) == 1:
+                is_strictly_linear = all(
+                    abs(base_for_final[j]["end"] - base_for_final[j+1]["start"]) < 0.2
+                    for j in range(len(base_for_final) - 1)
+                )
+                if is_strictly_linear:
+                    logger.info("🎬 [SINGLE-CLIP JUMP-CUT] Reshaping strictly linear 1:1 timeline into dynamic non-linear micro-shots.")
+                    if len(base_for_final) == 3:
+                        base_for_final = [base_for_final[0], base_for_final[2], base_for_final[1]]
+                    elif len(base_for_final) == 4:
+                        base_for_final = [base_for_final[0], base_for_final[2], base_for_final[1], base_for_final[3]]
+                    elif len(base_for_final) >= 5:
+                        evens = base_for_final[::2]
+                        odds = base_for_final[1::2]
+                        base_for_final = evens + odds
         else:
             base_for_final = timeline
 

@@ -237,9 +237,8 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
         except Exception as pool_err:
             logger.warning("⚠️ Failed to register harvested audio into active pool: %s", pool_err)
 
-    # Step 4: Auto-ingest clean musical audio into central BGM pool (Original_audio/active/) & index
-    if has_audio and os.path.exists(wav_path) and analysis.get("beat_count", 0) >= 5:
-        _ingest_clip_audio_to_pool(stem, wav_path, analysis)
+    # Step 4: Preserve raw extracted audio in clip folder only (do NOT dump raw speech/paparazzi clip audio into BGM pool)
+    logger.info("ℹ️ [AUDIO] Extracted audio preserved in clip folder. BGM pool ingestion bypassed for raw clip extractions.")
 
     return analysis
 
