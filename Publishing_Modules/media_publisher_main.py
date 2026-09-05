@@ -118,6 +118,7 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
         yt_tok = yt_tok_json if yt_tok_json else (token_file if (has_yt and is_admin) else None)
 
         tt_tok = _pick("tiktok_access_token", ["TIKTOK_ACCESS_TOKEN", "TIKTOK_TOKEN"], "TIKTOK_ACCESS_TOKEN")
+        tg_pub_group = _pick("telegram_public_group_id", ["TELEGRAM_PUBLIC_GROUP_ID"], "TELEGRAM_PUBLIC_GROUP_ID")
 
         return {
             "meta_token": meta_tok,
@@ -127,6 +128,7 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
             "yt_token": yt_tok,
             "yt_token_json": yt_tok_json,  # raw JSON string for in-memory auth
             "tiktok_token": tt_tok,
+            "tg_public_group": tg_pub_group,
             "is_admin": is_admin
         }
     except Exception as ex:
@@ -140,6 +142,7 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
             "yt_token": None,
             "yt_token_json": None,
             "tiktok_token": None,
+            "tg_public_group": None,
             "is_admin": False
         }
 
@@ -260,17 +263,18 @@ async def publish_to_tiktok(video_path: str, title: str, tags: str = "", niche: 
         return {"status": "failed", "error": str(e)}
 
 
-async def publish_to_telegram(video_path: str, title: str, caption: str = "") -> Dict[str, Any]:
+async def publish_to_telegram(video_path: str, title: str, caption: str = "", user_id: Optional[str] = None) -> Dict[str, Any]:
     """Dispatches published master reel to Telegram Public Group & Vault Storage Group."""
-    logger.info("✈️ [PUBLISHER 4/4] Publishing to Telegram Public Group / Channel...")
+    logger.info("✈️ [PUBLISHER 4/4] Publishing to Telegram Public Group / Channel (user_id=%s)...", user_id or "admin")
     try:
         from telegram import Bot
         from telegram.request import HTTPXRequest
         from telegram.error import TimedOut, NetworkError, RetryAfter
         import asyncio
 
+        user_creds = _resolve_user_credentials(user_id)
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        public_group = os.getenv("TELEGRAM_PUBLIC_GROUP_ID")
+        public_group = user_creds.get("tg_public_group") or os.getenv("TELEGRAM_PUBLIC_GROUP_ID")
         storage_group = os.getenv("TELEGRAM_STORAGE_GROUP_ID") or os.getenv("TELEGRAM_STORAGE_CHAT_ID")
 
         if not bot_token:
@@ -439,7 +443,7 @@ async def run_phase4_publishing_async(
 
     # 4. Telegram Channel
     try:
-        tg_res = await publish_to_telegram(video_path=video_path, title=title, caption=caption_text)
+        tg_res = await publish_to_telegram(video_path=video_path, title=title, caption=caption_text, user_id=user_id)
         results["platforms"]["telegram"] = tg_res
     except Exception as e:
         logger.error("❌ Telegram publish error: %s", e)
