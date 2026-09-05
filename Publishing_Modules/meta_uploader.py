@@ -713,20 +713,31 @@ class AsyncMetaUploader:
         
         if not page_id or not page_token:
             return {"status": "skipped_no_creds"}
-            
+
+        # Validate that META_PAGE_ID is not accidentally set to Instagram Business ID (17841...)
+        if page_id.startswith("17841"):
+            logger.warning(
+                f"⚠️ [FB UPLOAD] META_PAGE_ID ('{page_id}') is an Instagram Business ID, not a Facebook Page ID. "
+                "Skipping Facebook Reels upload. Please set META_PAGE_ID to your Facebook Page ID."
+            )
+            return {"status": "skipped_invalid_page_id"}
+
         logger.info(f"📘 Starting Facebook Upload ({upload_type_env})...")
-        
+
         caption = AsyncMetaUploader._clean_caption(caption)
-        
-        # Auto-resolve Page Access Token if User Access Token was provided
+
+        # Auto-resolve Page Access Token if User Access Token was provided (safely without tripping auth retry limit)
         try:
-            tok_url = f"{GRAPH_API_URL}/{page_id}"
-            tok_res = await AsyncMetaUploader._retry_request("GET", tok_url, params={"fields": "access_token", "access_token": page_token})
-            if isinstance(tok_res, dict) and tok_res.get("access_token"):
-                resolved_tok = tok_res["access_token"]
-                if resolved_tok != page_token:
-                    logger.info(f"🔑 Auto-resolved Facebook Page Access Token for Page ID {page_id}")
-                    page_token = resolved_tok
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                tok_url = f"{GRAPH_API_URL}/{page_id}"
+                tok_resp = await client.get(tok_url, params={"fields": "access_token", "access_token": page_token})
+                if tok_resp.status_code == 200:
+                    tok_data = tok_resp.json()
+                    if isinstance(tok_data, dict) and tok_data.get("access_token"):
+                        resolved_tok = tok_data["access_token"]
+                        if resolved_tok != page_token:
+                            logger.info(f"🔑 Auto-resolved Facebook Page Access Token for Page ID {page_id}")
+                            page_token = resolved_tok
         except Exception as _tok_err:
             logger.debug(f"Notice auto-resolving FB Page token: {_tok_err}")
 
