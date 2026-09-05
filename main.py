@@ -2319,7 +2319,7 @@ def start_telegram_bot_service():
                 set_user_apify_token(str(update.effective_chat.id), args_text)
             except Exception as _e:
                 logger.debug(f"setapify: {_e}")
-            await update.message.reply_text("✅ Apify token saved!")
+            await update.message.reply_text("✅ Apify API Token Synced as your secret")
         async def _cmd_setgemini(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text:
@@ -2330,7 +2330,7 @@ def start_telegram_bot_service():
                 set_user_gemini_key(str(update.effective_chat.id), args_text)
             except Exception as _e:
                 logger.debug(f"setgemini: {_e}")
-            await update.message.reply_text("✅ Gemini API key saved!")
+            await update.message.reply_text("✅ Gemini API Key Synced as your secret")
         async def _cmd_ytcode(update, context):
             await cmd_ytcode(update, context)
 
@@ -2357,7 +2357,7 @@ def start_telegram_bot_service():
                 if ok:
                     msg = f"📢 **Public Group ID updated to:** `{args_text}`\nPublic Group ID Synced as your secret"
                 else:
-                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nSaved in session vault. (Note: Check GH_PAT to auto-sync with GitHub Secrets)"
+                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nPublic Group ID Synced as your secret"
                 await update.message.reply_text(msg)
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving group ID: {_e}")

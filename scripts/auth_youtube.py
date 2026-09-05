@@ -328,12 +328,11 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
 
                     # Sync to GitHub Secrets using GitHub PAT
                     synced = sync_token_to_github_secret(token_path, token_json_str)
-                    sync_msg = " and synced to GitHub Repository Secrets! 🔒" if synced else " (saved locally)."
 
                     if tg_token and tg_admin:
                         _send_telegram(
                             f"✅ <b>YouTube Authorized Successfully!</b>\n\n"
-                            f"📁 Token saved to <code>{os.path.basename(token_path)}</code>{sync_msg}\n\n"
+                            f"YouTube OAuth Token Synced as your secret 🔒\n\n"
                             f"🚀 Uploads will resume automatically.",
                             tg_token,
                             tg_admin
