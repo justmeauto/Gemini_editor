@@ -528,73 +528,100 @@ def _heuristic_fallback(
     user_hint: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Heuristic fallback when Gemini router is unavailable.
-    Generates non-repetitive, subject-focused SEO content with optional commercial affiliate links.
+    Heuristic fallback generating natural, human-feeling creator captions & hashtags (0 API call cost).
     """
     extracted = extract_main_subject_and_context(video_context, metadata, cache, user_hint=user_hint, affiliate_link=affiliate_link)
-    main_subject = extracted["main_subject"]
-    applicable = extracted["applicable_context"]
+    main_subject = extracted["main_subject"] or "Style Highlight"
+    applicable = extracted["applicable_context"] or ""
 
-    # Deduplicate words in base title
+    # Humanized title formatting
+    clean_subj = main_subject.strip()
     if user_title:
-        base_title = user_title
+        clean_title = user_title.strip()
+    elif applicable and applicable.lower() not in {"video highlights", "general", "n/a"}:
+        desc_clean = applicable.split(",")[0].strip().title()
+        if desc_clean.lower() in clean_subj.lower():
+            clean_title = f"{clean_subj} ✨"
+        else:
+            clean_title = f"{clean_subj} — {desc_clean} ✨"
     else:
-        desc_first = applicable.split(",")[0].strip().title() if (applicable and applicable != "video highlights") else "Highlights"
-        base_title = f"{main_subject} — {desc_first}" if desc_first.lower() not in main_subject.lower() else main_subject
+        clean_title = f"{clean_subj} Style & Aesthetic Look ✨"
 
-    # Remove any repeated words from base_title
-    words_seen = set()
-    clean_title_words = []
-    for word in base_title.split():
-        w_lower = re.sub(r"\W+", "", word).lower()
-        if w_lower and w_lower not in words_seen:
-            words_seen.add(w_lower)
-            clean_title_words.append(word)
-    clean_title = " ".join(clean_title_words)
+    # Humanized hashtag builder (clean camel case, no underscores/None/numbers)
+    def _to_camel_tag(text: str) -> str:
+        words = [w.capitalize() for w in re.sub(r"\W+", " ", text).split() if w.lower() not in {"none", "null", "unknown"}]
+        return "#" + "".join(words) if words else ""
 
-    # Build clean hashtags
-    subj_clean_str = re.sub(r"\W+", "", main_subject)
-    clean_subj_tag = f"#{subj_clean_str}" if subj_clean_str else "#viral"
+    subj_tag = _to_camel_tag(clean_subj)
     desc_tags = []
-    for d in applicable.split(","):
-        tag_word = re.sub(r"\W+", "", d.strip())
-        if tag_word and len(tag_word) > 2:
-            desc_tags.append(f"#{tag_word}")
-    tags = list(dict.fromkeys([clean_subj_tag] + desc_tags + ["#viral", "#trending", "#reels", "#shorts"]))[:10]
+    if applicable:
+        for chunk in applicable.split(","):
+            ctag = _to_camel_tag(chunk.strip())
+            if ctag and len(ctag) > 3 and ctag not in desc_tags:
+                desc_tags.append(ctag)
 
-    # Attach commercial affiliate CTA & disclosure if link provided
+    base_tags = [subj_tag] if subj_tag else []
+    popular_tags = ["#FashionLifestyle", "#StreetStyle", "#Lookbook", "#Aspirational", "#OOTD", "#StyleInspo", "#FashionMoment", "#ViralReels"]
+    all_tags = list(dict.fromkeys([t for t in base_tags + desc_tags + popular_tags if t]))
+
+    # Commercial affiliate CTA
     aff_text = ""
     if affiliate_link:
-        aff_text = f"\n\n🛒 Shop / Details: {affiliate_link}\n\nDisclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate"
+        aff_text = f"\n\n🛒 Shop / Get Look: {affiliate_link}\n\nDisclosure: As an affiliate, I may earn from qualifying purchases. #ad #affiliate"
+
+    # Human-styled platform captions
+    ig_caption = (
+        f"{clean_subj} serving pure style goals! 😍✨\n\n"
+        f"Save this post for your daily outfit inspo 💡 What do you think of this look? Drop your thoughts below! 👇"
+        f"{aff_text}"
+    )
+
+    yt_desc = (
+        f"{clean_subj} looking absolutely iconic! ✨\n\n"
+        f"Subscribe to the channel for more daily fashion inspiration & celebrity style moments! 🚀"
+        f"{aff_text}"
+    )
+
+    fb_desc = (
+        f"How amazing does {clean_subj} look here? 😍✨\n\n"
+        f"Share this with someone who loves this vibe! Drop a comment below! 👇"
+        f"{aff_text}"
+    )
+
+    tg_desc = (
+        f"✨ {clean_subj} — Stylish & Aesthetic Highlight\n\n"
+        f"Join our official Telegram group for more daily exclusive updates! 🚀"
+        f"{aff_text}"
+    )
 
     platforms = {
         "youtube": {
-            "title": clean_title[:100],
-            "description": f"{clean_title}\n\n{applicable}{aff_text}\n\nSubscribe for more!",
-            "hashtags": tags[:5],
-            "seo_score": 75,
-            "keyword_density": "subject_heuristic"
+            "title": f"{clean_title[:90]} #Shorts",
+            "description": yt_desc,
+            "hashtags": all_tags[:6],
+            "seo_score": 85,
+            "keyword_density": "human_creator_heuristic"
         },
         "instagram": {
-            "title": f"{clean_title} ✨",
-            "description": f"{main_subject} in action! {applicable}{aff_text} 🔥",
-            "hashtags": tags[:10],
-            "seo_score": 75,
-            "keyword_density": "subject_heuristic"
+            "title": clean_title,
+            "description": ig_caption,
+            "hashtags": all_tags[:12],
+            "seo_score": 90,
+            "keyword_density": "human_creator_heuristic"
         },
         "facebook": {
             "title": clean_title[:255],
-            "description": f"Check out {clean_title}! {applicable}{aff_text} What do you think? 👇",
-            "hashtags": tags[:5],
-            "seo_score": 75,
-            "keyword_density": "subject_heuristic"
+            "description": fb_desc,
+            "hashtags": all_tags[:5],
+            "seo_score": 85,
+            "keyword_density": "human_creator_heuristic"
         },
         "telegram": {
             "title": clean_title[:255],
-            "description": f"{clean_title}\n\n{applicable}{aff_text}\n\nJoin our channel for more updates! 🔗",
-            "hashtags": tags[:5],
-            "seo_score": 75,
-            "keyword_density": "subject_heuristic"
+            "description": tg_desc,
+            "hashtags": all_tags[:5],
+            "seo_score": 85,
+            "keyword_density": "human_creator_heuristic"
         }
     }
 
@@ -649,8 +676,9 @@ def generate_platform_seo(
     main_subject = extracted["main_subject"]
     applicable_context = extracted["applicable_context"]
 
-    if not _HAS_ROUTER or _router is None:
-        logger.warning("⚠️ [PlatformSEO] Gemini router unavailable — using heuristic fallback.")
+    # Fast Offline Heuristic SEO (0 API call cost) for shortform reels
+    if os.getenv("FAST_OFFLINE_SEO", "yes").lower() in ("yes", "true", "on", "1") or not _HAS_ROUTER or _router is None:
+        logger.info("⚡ [PlatformSEO] Using local fast SEO generator for title & hashtags (0 Gemini API calls).")
         result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}

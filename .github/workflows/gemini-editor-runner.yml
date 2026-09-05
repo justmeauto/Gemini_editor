@@ -113,103 +113,58 @@ jobs:
     # ── 5. Credential Injection ───────────────────────────────────────────────
     - name: Setup Environment Variables & Tokens
       env:
-        ENV_FILE_CONTENT: ${{ secrets.ENV || secrets.ENV_FILE_CONTENT }}
-        GH_PAT: ${{ secrets.GH_PAT }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID || vars.TELEGRAM_ADMIN_ID }}
-        TELEGRAM_PUBLIC_GROUP_ID: ${{ secrets.TELEGRAM_PUBLIC_GROUP_ID || vars.TELEGRAM_PUBLIC_GROUP_ID }}
-        TELEGRAM_STORAGE_GROUP_ID: ${{ secrets.TELEGRAM_STORAGE_GROUP_ID || vars.TELEGRAM_STORAGE_GROUP_ID }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN || secrets.APIFY_TOKEN }}
-        META_PAGE_ID: ${{ secrets.META_PAGE_ID }}
-        META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN || secrets.META_TOKEN }}
-        IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
-        IG_BUSINESS_TOKEN: ${{ secrets.IG_BUSINESS_TOKEN || secrets.META_PAGE_TOKEN || secrets.META_TOKEN }}
-        TELEGRAM_CONFIG_JSON: ${{ secrets.TELEGRAM_CONFIG_JSON }}
-        CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
-        TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
-        BRAND_WATERMARK_TEXT: ${{ secrets.BRAND_WATERMARK_TEXT || secrets.BRAND_WATERMARK }}
-        AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.AUTO_INPUT_SCHEDULE_TIMES }}
-        USER_7822881619_APIFY_API_TOKEN: ${{ secrets.USER_7822881619_APIFY_API_TOKEN }}
-        USER_7822881619_AUTO_INPUT_SCHEDULE_TIMES: ${{ secrets.USER_7822881619_AUTO_INPUT_SCHEDULE_TIMES }}
-        USER_7822881619_BRAND_WATERMARK_TEXT: ${{ secrets.USER_7822881619_BRAND_WATERMARK_TEXT }}
-        USER_7822881619_CLIENT_SECRET_JSON: ${{ secrets.USER_7822881619_CLIENT_SECRET_JSON }}
-        USER_7822881619_GEMINI_API_KEY: ${{ secrets.USER_7822881619_GEMINI_API_KEY }}
-        USER_7822881619_IG_BUSINESS_ID: ${{ secrets.USER_7822881619_IG_BUSINESS_ID }}
-        USER_7822881619_IG_BUSINESS_TOKEN: ${{ secrets.USER_7822881619_IG_BUSINESS_TOKEN }}
-        USER_7822881619_META_PAGE_ID: ${{ secrets.USER_7822881619_META_PAGE_ID }}
-        USER_7822881619_META_PAGE_TOKEN: ${{ secrets.USER_7822881619_META_PAGE_TOKEN }}
-        USER_7822881619_TELEGRAM_PUBLIC_GROUP_ID: ${{ secrets.USER_7822881619_TELEGRAM_PUBLIC_GROUP_ID }}
-        USER_7822881619_YOUTUBE_CLIENT_SECRET: ${{ secrets.USER_7822881619_YOUTUBE_CLIENT_SECRET }}
-        USER_7822881619_TOKEN_JSON: ${{ secrets.USER_7822881619_TOKEN_JSON }}
-        USER_7822881619_YOUTUBE_TOKEN_JSON: ${{ secrets.USER_7822881619_YOUTUBE_TOKEN_JSON }}
-        USER_1363193987_BRAND_WATERMARK: ${{ secrets.USER_1363193987_BRAND_WATERMARK }}
-        USER_1363193987_BRAND_WATERMARK_TEXT: ${{ secrets.USER_1363193987_BRAND_WATERMARK_TEXT }}
-        USER_1363193987_CLIENT_SECRET_JSON: ${{ secrets.USER_1363193987_CLIENT_SECRET_JSON }}
-        USER_1363193987_IG_BUSINESS_ID: ${{ secrets.USER_1363193987_IG_BUSINESS_ID }}
-        USER_1363193987_IG_BUSINESS_TOKEN: ${{ secrets.USER_1363193987_IG_BUSINESS_TOKEN }}
-        USER_1363193987_META_PAGE_ID: ${{ secrets.USER_1363193987_META_PAGE_ID }}
-        USER_1363193987_META_PAGE_TOKEN: ${{ secrets.USER_1363193987_META_PAGE_TOKEN }}
-        USER_1363193987_YOUTUBE_CLIENT_SECRET: ${{ secrets.USER_1363193987_YOUTUBE_CLIENT_SECRET }}
-        USER_1363193987_TOKEN_JSON: ${{ secrets.USER_1363193987_TOKEN_JSON }}
-        USER_1363193987_YOUTUBE_TOKEN_JSON: ${{ secrets.USER_1363193987_YOUTUBE_TOKEN_JSON }}
+        SECRETS_JSON: ${{ toJson(secrets) }}
+        VARS_JSON: ${{ toJson(vars) }}
       run: |
         mkdir -p Credentials
         rm -f .env Credentials/.env
 
-        # Write base .env content
-        if [ -n "$ENV_FILE_CONTENT" ]; then
-          echo "$ENV_FILE_CONTENT" > .env
-        fi
+        # Dynamically dump ALL GitHub Repository Secrets and Variables into .env
+        python3 -c "
+        import json, os
 
-        # Write explicit individual secrets into root .env
-        [ -n "$GH_PAT" ] && echo "GH_PAT=$GH_PAT" >> .env
-        [ -n "$TELEGRAM_BOT_TOKEN" ] && echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" >> .env
-        [ -n "$TELEGRAM_ADMIN_ID" ] && echo "TELEGRAM_ADMIN_ID=$TELEGRAM_ADMIN_ID" >> .env
-        [ -n "$TELEGRAM_CHAT_ID" ] && echo "TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID" >> .env
-        [ -n "$TELEGRAM_PUBLIC_GROUP_ID" ] && echo "TELEGRAM_PUBLIC_GROUP_ID=$TELEGRAM_PUBLIC_GROUP_ID" >> .env
-        [ -n "$TELEGRAM_STORAGE_GROUP_ID" ] && echo "TELEGRAM_STORAGE_GROUP_ID=$TELEGRAM_STORAGE_GROUP_ID" >> .env
-        [ -n "$GEMINI_API_KEY" ] && echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> .env
-        [ -n "$APIFY_API_TOKEN" ] && echo "APIFY_API_TOKEN=$APIFY_API_TOKEN" >> .env
-        [ -n "$META_PAGE_ID" ] && echo "META_PAGE_ID=$META_PAGE_ID" >> .env
-        [ -n "$META_PAGE_TOKEN" ] && echo "META_PAGE_TOKEN=$META_PAGE_TOKEN" >> .env
-        [ -n "$IG_BUSINESS_ID" ] && echo "IG_BUSINESS_ID=$IG_BUSINESS_ID" >> .env
-        [ -n "$IG_BUSINESS_ID" ] && echo "IG_BUSINESS_ACCOUNT_ID=$IG_BUSINESS_ID" >> .env
-        [ -n "$IG_BUSINESS_TOKEN" ] && echo "IG_BUSINESS_TOKEN=$IG_BUSINESS_TOKEN" >> .env
-        [ -n "$TOKEN_JSON" ] && echo "TOKEN_JSON=$TOKEN_JSON" >> .env
-        [ -n "$YOUTUBE_TOKEN_JSON" ] && echo "YOUTUBE_TOKEN_JSON=$YOUTUBE_TOKEN_JSON" >> .env
-        [ -n "$BRAND_WATERMARK_TEXT" ] && echo "BRAND_WATERMARK_TEXT=$BRAND_WATERMARK_TEXT" >> .env
-        [ -n "$AUTO_INPUT_SCHEDULE_TIMES" ] && echo "AUTO_INPUT_SCHEDULE_TIMES=$AUTO_INPUT_SCHEDULE_TIMES" >> .env
-        # Write user-specific secrets into .env if present
-        [ -n "$USER_7822881619_APIFY_API_TOKEN" ] && echo "USER_7822881619_APIFY_API_TOKEN=$USER_7822881619_APIFY_API_TOKEN" >> .env
-        [ -n "$USER_7822881619_AUTO_INPUT_SCHEDULE_TIMES" ] && echo "USER_7822881619_AUTO_INPUT_SCHEDULE_TIMES=$USER_7822881619_AUTO_INPUT_SCHEDULE_TIMES" >> .env
-        [ -n "$USER_7822881619_BRAND_WATERMARK_TEXT" ] && echo "USER_7822881619_BRAND_WATERMARK_TEXT=$USER_7822881619_BRAND_WATERMARK_TEXT" >> .env
-        [ -n "$USER_7822881619_CLIENT_SECRET_JSON" ] && echo "USER_7822881619_CLIENT_SECRET_JSON=$USER_7822881619_CLIENT_SECRET_JSON" >> .env
-        [ -n "$USER_7822881619_GEMINI_API_KEY" ] && echo "USER_7822881619_GEMINI_API_KEY=$USER_7822881619_GEMINI_API_KEY" >> .env
-        [ -n "$USER_7822881619_IG_BUSINESS_ID" ] && echo "USER_7822881619_IG_BUSINESS_ID=$USER_7822881619_IG_BUSINESS_ID" >> .env
-        [ -n "$USER_7822881619_IG_BUSINESS_TOKEN" ] && echo "USER_7822881619_IG_BUSINESS_TOKEN=$USER_7822881619_IG_BUSINESS_TOKEN" >> .env
-        [ -n "$USER_7822881619_META_PAGE_ID" ] && echo "USER_7822881619_META_PAGE_ID=$USER_7822881619_META_PAGE_ID" >> .env
-        [ -n "$USER_7822881619_META_PAGE_TOKEN" ] && echo "USER_7822881619_META_PAGE_TOKEN=$USER_7822881619_META_PAGE_TOKEN" >> .env
-        [ -n "$USER_7822881619_TELEGRAM_PUBLIC_GROUP_ID" ] && echo "USER_7822881619_TELEGRAM_PUBLIC_GROUP_ID=$USER_7822881619_TELEGRAM_PUBLIC_GROUP_ID" >> .env
-        [ -n "$USER_7822881619_YOUTUBE_CLIENT_SECRET" ] && echo "USER_7822881619_YOUTUBE_CLIENT_SECRET=$USER_7822881619_YOUTUBE_CLIENT_SECRET" >> .env
-        [ -n "$USER_7822881619_TOKEN_JSON" ] && echo "USER_7822881619_TOKEN_JSON=$USER_7822881619_TOKEN_JSON" >> .env
-        [ -n "$USER_7822881619_YOUTUBE_TOKEN_JSON" ] && echo "USER_7822881619_YOUTUBE_TOKEN_JSON=$USER_7822881619_YOUTUBE_TOKEN_JSON" >> .env
-        [ -n "$USER_1363193987_BRAND_WATERMARK" ] && echo "USER_1363193987_BRAND_WATERMARK=$USER_1363193987_BRAND_WATERMARK" >> .env
-        [ -n "$USER_1363193987_BRAND_WATERMARK_TEXT" ] && echo "USER_1363193987_BRAND_WATERMARK_TEXT=$USER_1363193987_BRAND_WATERMARK_TEXT" >> .env
-        [ -n "$USER_1363193987_CLIENT_SECRET_JSON" ] && echo "USER_1363193987_CLIENT_SECRET_JSON=$USER_1363193987_CLIENT_SECRET_JSON" >> .env
-        [ -n "$USER_1363193987_IG_BUSINESS_ID" ] && echo "USER_1363193987_IG_BUSINESS_ID=$USER_1363193987_IG_BUSINESS_ID" >> .env
-        [ -n "$USER_1363193987_IG_BUSINESS_TOKEN" ] && echo "USER_1363193987_IG_BUSINESS_TOKEN=$USER_1363193987_IG_BUSINESS_TOKEN" >> .env
-        [ -n "$USER_1363193987_META_PAGE_ID" ] && echo "USER_1363193987_META_PAGE_ID=$USER_1363193987_META_PAGE_ID" >> .env
-        [ -n "$USER_1363193987_META_PAGE_TOKEN" ] && echo "USER_1363193987_META_PAGE_TOKEN=$USER_1363193987_META_PAGE_TOKEN" >> .env
-        [ -n "$USER_1363193987_YOUTUBE_CLIENT_SECRET" ] && echo "USER_1363193987_YOUTUBE_CLIENT_SECRET=$USER_1363193987_YOUTUBE_CLIENT_SECRET" >> .env
-        [ -n "$USER_1363193987_TOKEN_JSON" ] && echo "USER_1363193987_TOKEN_JSON=$USER_1363193987_TOKEN_JSON" >> .env
-        [ -n "$USER_1363193987_YOUTUBE_TOKEN_JSON" ] && echo "USER_1363193987_YOUTUBE_TOKEN_JSON=$USER_1363193987_YOUTUBE_TOKEN_JSON" >> .env
-        [ -n "$USER_1363193987_META_PAGE_TOKEN" ] && echo "USER_1363193987_META_PAGE_TOKEN=$USER_1363193987_META_PAGE_TOKEN" >> .env
-        [ -n "$USER_1363193987_YOUTUBE_CLIENT_SECRET" ] && echo "USER_1363193987_YOUTUBE_CLIENT_SECRET=$USER_1363193987_YOUTUBE_CLIENT_SECRET" >> .env
-        echo "CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json" >> .env
-        echo "YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json" >> .env
-        echo "AUTO_PUBLISH_CLIPS=yes" >> .env
+        env_file = '.env'
+        secrets_raw = os.getenv('SECRETS_JSON', '{}')
+        vars_raw = os.getenv('VARS_JSON', '{}')
+
+        secrets = json.loads(secrets_raw) if secrets_raw else {}
+        variables = json.loads(vars_raw) if vars_raw else {}
+
+        written_keys = set()
+
+        with open(env_file, 'w', encoding='utf-8') as f:
+            # 1. Base ENV content if provided
+            env_content = secrets.get('ENV') or secrets.get('ENV_FILE_CONTENT')
+            if env_content:
+                f.write(env_content.strip() + '\n')
+
+            # 2. Dump all secrets dynamically (including all USER_<chat_id>_* variables)
+            for k, v in secrets.items():
+                if k not in ('ENV', 'ENV_FILE_CONTENT') and v and str(v).strip():
+                    f.write(f'{k}={v.strip()}\n')
+                    written_keys.add(k)
+
+            # 3. Dump all repository variables dynamically if not overridden by secrets
+            for k, v in variables.items():
+                if k not in written_keys and v and str(v).strip():
+                    f.write(f'{k}={v.strip()}\n')
+                    written_keys.add(k)
+
+            # 4. Set fallback aliases & defaults
+            if 'APIFY_TOKEN' in written_keys and 'APIFY_API_TOKEN' not in written_keys:
+                f.write(f'APIFY_API_TOKEN={secrets[\"APIFY_TOKEN\"].strip()}\n')
+            if 'YOUTUBE_CLIENT_SECRET' in written_keys and 'CLIENT_SECRET_JSON' not in written_keys:
+                f.write(f'CLIENT_SECRET_JSON={secrets[\"YOUTUBE_CLIENT_SECRET\"].strip()}\n')
+            if 'YOUTUBE_TOKEN_JSON' in written_keys and 'TOKEN_JSON' not in written_keys:
+                f.write(f'TOKEN_JSON={secrets[\"YOUTUBE_TOKEN_JSON\"].strip()}\n')
+            if 'BRAND_WATERMARK' in written_keys and 'BRAND_WATERMARK_TEXT' not in written_keys:
+                f.write(f'BRAND_WATERMARK_TEXT={secrets[\"BRAND_WATERMARK\"].strip()}\n')
+            if 'IG_BUSINESS_ID' in written_keys:
+                f.write(f'IG_BUSINESS_ACCOUNT_ID={secrets[\"IG_BUSINESS_ID\"].strip()}\n')
+            f.write('CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json\n')
+            f.write('YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json\n')
+            f.write('AUTO_PUBLISH_CLIPS=yes\n')
+        "
 
         # Sync to Credentials/.env
         cp .env Credentials/.env
