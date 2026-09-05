@@ -1017,7 +1017,7 @@ async def cmd_ytcode(update, context):
         try:
             from Publishing_Modules.telegram_user_manager import set_user_youtube_token
             set_user_youtube_token(str(update.effective_chat.id), raw)
-            await msg.reply_text("✅ YouTube OAuth token JSON saved & synced to GitHub Secrets!")
+            await msg.reply_text("✅ YouTube OAuth Token Synced as your secret")
             return
         except Exception as _e:
             await msg.reply_text(f"⚠️ Error saving YouTube token JSON: {_e}")
@@ -2342,7 +2342,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_branding
                 set_user_branding(str(update.effective_chat.id), args_text)
-                await update.message.reply_text(f"🏷️ **Personal branding watermark updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+                await update.message.reply_text(f"🏷️ **Personal branding watermark updated to:** `{args_text}`\nPersonal Branding Watermark Synced as your secret")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving branding watermark: {_e}")
 
@@ -2355,7 +2355,7 @@ def start_telegram_bot_service():
                 from Publishing_Modules.telegram_user_manager import set_user_public_group_id
                 ok = set_user_public_group_id(str(update.effective_chat.id), args_text)
                 if ok:
-                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nSynced to GitHub Secrets!"
+                    msg = f"📢 **Public Group ID updated to:** `{args_text}`\nPublic Group ID Synced as your secret"
                 else:
                     msg = f"📢 **Public Group ID updated to:** `{args_text}`\nSaved in session vault. (Note: Check GH_PAT to auto-sync with GitHub Secrets)"
                 await update.message.reply_text(msg)
@@ -2370,7 +2370,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_schedule_times
                 set_user_schedule_times(str(update.effective_chat.id), args_text)
-                await update.message.reply_text(f"⏰ **Schedule times updated to:** `{args_text}`\nSynced to GitHub Secrets!")
+                await update.message.reply_text(f"⏰ **Schedule times updated to:** `{args_text}`\nSchedule Times Synced as your secret")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving schedule times: {_e}")
 
@@ -2382,7 +2382,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_youtube_client_secret
                 set_user_youtube_client_secret(str(update.effective_chat.id), args_text)
-                await update.message.reply_text("🔐 **YouTube Client Secret saved and synced to GitHub Secrets!**")
+                await update.message.reply_text("🔐 **YouTube Client Secret Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving YouTube client secret: {_e}")
 
@@ -2394,7 +2394,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_instagram_token
                 set_user_instagram_token(str(update.effective_chat.id), args_text)
-                await update.message.reply_text("📸 **Instagram Access Token saved & synced to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets!**")
+                await update.message.reply_text("📸 **Instagram Access Token Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Instagram token: {_e}")
 
@@ -2406,7 +2406,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_instagram_id
                 set_user_instagram_id(str(update.effective_chat.id), args_text)
-                await update.message.reply_text(f"🆔 **Instagram Business Account ID updated to:** `{args_text}`\nSynced to IG_BUSINESS_ID in GitHub Secrets!")
+                await update.message.reply_text(f"🆔 **Instagram Business Account ID updated to:** `{args_text}`\nInstagram Business Account ID Synced as your secret")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Instagram Business ID: {_e}")
 
@@ -2418,7 +2418,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_facebook_id
                 set_user_facebook_id(str(update.effective_chat.id), args_text)
-                await update.message.reply_text(f"📘 **Facebook Page ID updated to:** `{args_text}`\nSynced to META_PAGE_ID in GitHub Secrets!")
+                await update.message.reply_text(f"📘 **Facebook Page ID updated to:** `{args_text}`\nFacebook Page ID Synced as your secret")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Facebook Page ID: {_e}")
 
@@ -2430,7 +2430,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_facebook_token
                 set_user_facebook_token(str(update.effective_chat.id), args_text)
-                await update.message.reply_text("🔑 **Facebook Page Access Token saved & synced to META_PAGE_TOKEN in GitHub Secrets!**")
+                await update.message.reply_text("🔑 **Facebook Page Access Token Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving Facebook token: {_e}")
 
@@ -2442,7 +2442,7 @@ def start_telegram_bot_service():
             try:
                 from Publishing_Modules.telegram_user_manager import set_user_tiktok_token
                 set_user_tiktok_token(str(update.effective_chat.id), args_text)
-                await update.message.reply_text("🎵 **TikTok Access Token saved & synced to TIKTOK_ACCESS_TOKEN in GitHub Secrets!**")
+                await update.message.reply_text("🎵 **TikTok Access Token Synced as your secret**")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error saving TikTok token: {_e}")
 
