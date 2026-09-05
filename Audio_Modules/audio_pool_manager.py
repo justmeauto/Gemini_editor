@@ -662,15 +662,14 @@ class AudioPoolManager:
         except Exception as _tve:
             logger.debug(f"[POOL] Vault sync notice: {_tve}")
 
-        # ── 2. SECONDARY: Local active/ Directory Check ───────────────────────
-        active_files = os.listdir(self.active_dir)
-        if not active_files:
-            logger.info("ℹ️ Active audio pool is empty — auto-recycling tracks from cooldown...")
-            self.recycle_cooldown(force=True)
-            active_files = os.listdir(self.active_dir)
+        # ── 2. SECONDARY: Candidate Pool Resolution via Telegram Storage Vault Index ──
+        candidate_pool_files = set()
+        if os.path.exists(self.active_dir):
+            try:
+                candidate_pool_files.update(os.listdir(self.active_dir))
+            except Exception:
+                pass
 
-        # Merge any candidates from metadata that exist in vault
-        candidate_pool_files = set(active_files)
         for fname in self.metadata.get("files", {}).keys():
             if fname.lower().endswith((".mp3", ".wav", ".m4a")):
                 candidate_pool_files.add(fname)

@@ -685,7 +685,7 @@ class TelegramVaultIndexer:
 
         filename = os.path.basename(track_name)
         if not dest_dir:
-            dest_dir = os.path.join(_REPO_ROOT, "Original_audio", "active")
+            dest_dir = os.path.join(_REPO_ROOT, "data", "runtime_audio")
         os.makedirs(dest_dir, exist_ok=True)
         local_path = os.path.join(dest_dir, filename)
 

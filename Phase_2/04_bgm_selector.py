@@ -88,39 +88,31 @@ def select_clip_bgm(
 
     # Resolve physical path
     resolved_path = None
-    if audio_dir is None:
-        audio_dir = os.path.join(_REPO_ROOT, "Original_audio")
-    active_dir = os.path.join(audio_dir, "active")
-    os.makedirs(active_dir, exist_ok=True)
+    target_dest = clip_folder if (clip_folder and os.path.exists(clip_folder)) else os.path.join(_REPO_ROOT, "data", "runtime_audio")
+    os.makedirs(target_dest, exist_ok=True)
 
     if selected_track_name:
-        # 1. PRIMARY: If present in Telegram Storage Vault and missing locally, hydrate directly from Telegram lake
+        # 1. PRIMARY: Hydrate directly from Telegram Storage Vault lake into target clip workspace
         try:
             from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            vault = TelegramVaultIndexer()
             selected_fid = res.get("telegram_file_id")
             vault_hydrated = vault.hydrate_bgm_track_from_vault(
                 selected_track_name,
-                active_dir,
+                target_dest,
                 file_id=selected_fid
             )
             if vault_hydrated and os.path.isfile(vault_hydrated):
                 resolved_path = vault_hydrated
-                logger.info(f"✓ [STEP 04] BGM track resolved: '{selected_track_name}' -> {resolved_path}")
+                logger.info(f"✓ [STEP 04] BGM track hydrated from Telegram Vault: '{selected_track_name}' -> {resolved_path}")
         except Exception as _vh_err:
             logger.debug(f"[STEP 04] Vault BGM track hydration notice: {_vh_err}")
 
-        # 2. SECONDARY: Check local directories
-        if not resolved_path:
-            for candidate_dir in [
-                active_dir,
-                audio_dir,
-                os.path.join(audio_dir, "cooldown"),
-            ]:
-                if os.path.isdir(candidate_dir):
-                    candidate_path = os.path.join(candidate_dir, selected_track_name)
-                    if os.path.isfile(candidate_path):
-                        resolved_path = candidate_path
-                        break
+        # 2. SECONDARY: Check clip folder or target destination
+        if not resolved_path and os.path.isdir(target_dest):
+            candidate_path = os.path.join(target_dest, selected_track_name)
+            if os.path.isfile(candidate_path):
+                resolved_path = candidate_path
 
     # Fallback to pool manager if not found
     if not resolved_path:

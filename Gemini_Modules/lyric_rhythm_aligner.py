@@ -904,25 +904,9 @@ def select_best_audio_for_clip(
         else:
             pool_files[fname] = meta
 
-    try:
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        active_dir = os.path.join(repo_root, "Original_audio", "active")
-        if os.path.isdir(active_dir):
-            for lf in os.listdir(active_dir):
-                if lf.lower().endswith((".mp3", ".wav", ".m4a")) and lf not in pool_files:
-                    pool_files[lf] = {
-                        "usage_count": 0,
-                        "last_used": 0,
-                        "bpm": 120.0,
-                        "energy": 0.5,
-                        "dominant_emotion": "hype"
-                    }
-    except Exception as _dir_err:
-        logger.debug(f"[BGM SELECTOR] Local disk check notice: {_dir_err}")
-
     if not pool_files:
-        logger.warning("🎶 [BGM Selector] Neither Telegram Vault index nor local pool has candidates.")
-        return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "Empty pool index."}
+        logger.warning("🎶 [BGM Selector] Telegram Vault index has no candidate tracks.")
+        return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "Empty Telegram Vault index."}
 
     previous_bgm = current_audio.get("selected_bgm_track") or current_audio.get("selected_audio_track")
     disqualified_tracks = set()
