@@ -113,54 +113,43 @@ jobs:
     # ── 5. Credential Injection ───────────────────────────────────────────────
     - name: Setup Environment Variables & Tokens
       env:
-        SECRETS_JSON: ${{ toJson(secrets) }}
-        VARS_JSON: ${{ toJson(vars) }}
+        ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT || secrets.ENV }}
+        GH_PAT: ${{ secrets.GH_PAT }}
+        APIFY_TOKEN: ${{ secrets.APIFY_TOKEN || secrets.APIFY_API_TOKEN }}
+        CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
+        TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
+        TELEGRAM_CONFIG_JSON: ${{ secrets.TELEGRAM_CONFIG_JSON }}
+        IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID }}
+        BRAND_WATERMARK: ${{ secrets.BRAND_WATERMARK || secrets.BRAND_WATERMARK_TEXT }}
       run: |
         mkdir -p Credentials
         rm -f .env Credentials/.env
 
-        # Dynamically dump ALL GitHub Repository Secrets and Variables into .env
+        # Build clean .env without toJson(secrets)
         python3 -c "
-        import json, os
+        import os
 
         env_file = '.env'
-        secrets_raw = os.getenv('SECRETS_JSON', '{}')
-        vars_raw = os.getenv('VARS_JSON', '{}')
-
-        secrets = json.loads(secrets_raw) if secrets_raw else {}
-        variables = json.loads(vars_raw) if vars_raw else {}
-
-        written_keys = set()
-
         with open(env_file, 'w', encoding='utf-8') as f:
-            # 1. Base ENV content if provided
-            env_content = secrets.get('ENV') or secrets.get('ENV_FILE_CONTENT')
-            if env_content:
-                f.write(env_content.strip() + '\n')
+            base_env = os.getenv('ENV_FILE_CONTENT', '').strip()
+            if base_env:
+                f.write(base_env + '\n')
 
-            # 2. Dump all secrets dynamically (including all USER_<chat_id>_* variables)
-            for k, v in secrets.items():
-                if k not in ('ENV', 'ENV_FILE_CONTENT') and v and str(v).strip():
+            # Write standard mapped environment variables if present
+            mappings = {
+                'GH_PAT': os.getenv('GH_PAT'),
+                'APIFY_API_TOKEN': os.getenv('APIFY_TOKEN'),
+                'APIFY_TOKEN': os.getenv('APIFY_TOKEN'),
+                'CLIENT_SECRET_JSON': os.getenv('CLIENT_SECRET_JSON'),
+                'TOKEN_JSON': os.getenv('TOKEN_JSON'),
+                'TELEGRAM_CONFIG_JSON': os.getenv('TELEGRAM_CONFIG_JSON'),
+                'IG_BUSINESS_ACCOUNT_ID': os.getenv('IG_BUSINESS_ID'),
+                'BRAND_WATERMARK_TEXT': os.getenv('BRAND_WATERMARK'),
+            }
+            for k, v in mappings.items():
+                if v and v.strip():
                     f.write(f'{k}={v.strip()}\n')
-                    written_keys.add(k)
 
-            # 3. Dump all repository variables dynamically if not overridden by secrets
-            for k, v in variables.items():
-                if k not in written_keys and v and str(v).strip():
-                    f.write(f'{k}={v.strip()}\n')
-                    written_keys.add(k)
-
-            # 4. Set fallback aliases & defaults
-            if 'APIFY_TOKEN' in written_keys and 'APIFY_API_TOKEN' not in written_keys:
-                f.write(f'APIFY_API_TOKEN={secrets[\"APIFY_TOKEN\"].strip()}\n')
-            if 'YOUTUBE_CLIENT_SECRET' in written_keys and 'CLIENT_SECRET_JSON' not in written_keys:
-                f.write(f'CLIENT_SECRET_JSON={secrets[\"YOUTUBE_CLIENT_SECRET\"].strip()}\n')
-            if 'YOUTUBE_TOKEN_JSON' in written_keys and 'TOKEN_JSON' not in written_keys:
-                f.write(f'TOKEN_JSON={secrets[\"YOUTUBE_TOKEN_JSON\"].strip()}\n')
-            if 'BRAND_WATERMARK' in written_keys and 'BRAND_WATERMARK_TEXT' not in written_keys:
-                f.write(f'BRAND_WATERMARK_TEXT={secrets[\"BRAND_WATERMARK\"].strip()}\n')
-            if 'IG_BUSINESS_ID' in written_keys:
-                f.write(f'IG_BUSINESS_ACCOUNT_ID={secrets[\"IG_BUSINESS_ID\"].strip()}\n')
             f.write('CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json\n')
             f.write('YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json\n')
             f.write('AUTO_PUBLISH_CLIPS=yes\n')
