@@ -839,6 +839,32 @@ def apify_scrape_creator_accounts(
                 stage1_passed[0].get("timestamp", "unknown"),
             )
 
+        # ── Stage 0.5: Deduplication Pre-Filter (Vault & Ledger) ───────────
+        stage05_passed = []
+        stage05_rejected = 0
+        try:
+            from Content_Scraper_Modules.content_ledger import get_ledger
+            from Publishing_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            ledger = get_ledger()
+            vault = TelegramVaultIndexer()
+            for item in stage1_passed:
+                sc = item.get("shortcode")
+                url = item.get("url") or (f"https://www.instagram.com/reel/{sc}/" if sc else None)
+                in_ledger = ledger.shortcode_seen(sc) if sc else False
+                in_vault = (vault.lookup_downloaded_source(sc) or (url and vault.lookup_downloaded_source(url))) if sc else False
+                if in_ledger or in_vault:
+                    stage05_rejected += 1
+                    logger.info("♻️ [STAGE0.5 DEDUP] Reel '%s' already seen in Vault/Ledger. Skipping pre-screen.", sc)
+                else:
+                    stage05_passed.append(item)
+            logger.info(
+                "📊 [STAGE0.5] %d/%d reels passed deduplication filter (%d rejected)",
+                len(stage05_passed), len(stage1_passed), stage05_rejected
+            )
+            stage1_passed = stage05_passed
+        except Exception as _dedup_err:
+            logger.warning("Stage 0.5 dedup filter notice: %s", _dedup_err)
+
         # ── Stage 2: Gemini Thumbnail Pre-Screen ──────────────────────────────
         stage2_passed = []
         stage2_rejected = 0

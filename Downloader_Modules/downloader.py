@@ -989,6 +989,14 @@ def download_video(
                 logger.debug("🎵  Audio extraction skipped (non-fatal): %s", _ae)
 
 
+        # Commit to ContentLedger
+        try:
+            from Content_Scraper_Modules.content_ledger import get_ledger, extract_shortcode
+            sc = extract_shortcode(url)
+            get_ledger().commit(sc, final_path)
+        except Exception as _cle:
+            logger.debug("ContentLedger commit notice: %s", _cle)
+
         return final_path, False
 
     except Exception as exc:

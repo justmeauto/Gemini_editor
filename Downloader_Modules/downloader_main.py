@@ -186,8 +186,10 @@ def run_phase1_ingestion(
 
         logger.info(f"   ✓ Targeting MAX 2 accounts for scrape: {sources}")
         try:
+            import importlib
             from Downloader_Modules.apify_downloader import apify_scrape_creator_accounts
             from Downloader_Modules.downloader import download_video
+            check_deduplication = importlib.import_module("Phase_1.02_dedup_ledger").check_deduplication
             approved_reels = apify_scrape_creator_accounts("General", sources, limit_per_account=limit_per_account)
             downloaded_files = []
             for item in (approved_reels or []):
@@ -199,12 +201,12 @@ def run_phase1_ingestion(
                     clip_folder_name = f"{owner}_{shortcode}"
                     clip_dir = os.path.join(downloads_dir, clip_folder_name)
 
-                    # Quick disk-check: skip if already downloaded with video.mp4 & metadata.json
-                    meta_path = os.path.join(clip_dir, "metadata.json")
-                    video_file_check = os.path.join(clip_dir, "video.mp4")
-                    if os.path.exists(meta_path) and os.path.exists(video_file_check):
-                        logger.info(f"♻️ [DISK SKIP] Reel {clip_folder_name} already exists in downloads/")
-                        downloaded_files.append(video_file_check)
+                    # Deduplication check across Vault, Disk, and Content Ledger
+                    dedup_info = check_deduplication(shortcode, owner=owner, downloads_dir=downloads_dir)
+                    if dedup_info.get("is_duplicate"):
+                        logger.info(f"♻️ [DEDUP SKIP] Reel {clip_folder_name} already exists in Vault/Disk/Ledger")
+                        if dedup_info.get("video_path") and os.path.exists(dedup_info["video_path"]):
+                            downloaded_files.append(os.path.abspath(dedup_info["video_path"]))
                         continue
 
                     os.makedirs(clip_dir, exist_ok=True)

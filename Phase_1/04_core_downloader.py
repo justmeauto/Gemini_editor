@@ -99,6 +99,14 @@ def download_stream(
                 with open(meta_path, "w", encoding="utf-8") as mf:
                     json.dump(metadata, mf, indent=2, ensure_ascii=False)
 
+            # Commit to ContentLedger
+            try:
+                from Content_Scraper_Modules.content_ledger import get_ledger, extract_shortcode
+                sc = (metadata.get("shortcode") if metadata else None) or extract_shortcode(url)
+                get_ledger().commit(sc, downloaded_file)
+            except Exception as _cle:
+                logger.debug(f"[STEP 04] ContentLedger commit notice: {_cle}")
+
             logger.info(f"   ✓ [STEP 04 SUCCESS] Saved -> {destination_dir}/video.mp4 & metadata.json")
             res = {
                 "step": "step_04",

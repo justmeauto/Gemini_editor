@@ -65,12 +65,28 @@ def check_deduplication(
     try:
         from Content_Scraper_Modules.content_ledger import get_ledger
         ledger = get_ledger()
-        if hasattr(ledger, "is_downloaded") and callable(ledger.is_downloaded):
-            ledger_processed = ledger.is_downloaded(shortcode)
+        ledger_processed = ledger.shortcode_seen(shortcode) or ledger.is_in_avoid_list(shortcode, video_path)
     except Exception as e:
         logger.debug(f"Ledger check warning: {e}")
 
-    is_duplicate = bool(vault_hit) or already_on_disk or ledger_processed
+    # 4. QUATERNARY: Published Registry / Queue files check
+    published_check = False
+    for p_file in [
+        os.path.join(_REPO_ROOT, "data", "published_registry.json"),
+        os.path.join(_REPO_ROOT, "published_registry.json"),
+        os.path.join(_REPO_ROOT, "data", "publish_queue.json"),
+    ]:
+        if os.path.exists(p_file):
+            try:
+                with open(p_file, "r", encoding="utf-8") as f:
+                    p_content = f.read()
+                    if shortcode in p_content:
+                        published_check = True
+                        break
+            except Exception:
+                pass
+
+    is_duplicate = bool(vault_hit) or already_on_disk or ledger_processed or published_check
 
     res = {
         "step": "step_02",
