@@ -1,0 +1,289 @@
+name: Gemini Editor Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Execution mode (auto = 6h daemon scheduler, manual = targeted run)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - manual
+      platform:
+        description: 'Target platform to scrape'
+        required: false
+        default: 'all_available'
+        type: choice
+        options:
+          - all_available
+          - instagram
+          - youtube
+          - tiktok
+      target_accounts:
+        description: 'Target creator handle(s) (comma-separated, e.g. username)'
+        required: false
+        default: ''
+        type: string
+      target_url:
+        description: 'Source video URL to process (YouTube, TikTok, Instagram, direct link)'
+        required: false
+        default: ''
+        type: string
+
+  push:
+    branches:
+      - main
+
+  schedule:
+    # 4 clean 6-hour windows (Indian Standard Time — IST):
+    - cron: '50 22 * * *'  # 04:20 AM IST
+    - cron: '50 4 * * *'   # 10:20 AM IST
+    - cron: '50 10 * * *'  # 04:20 PM IST
+    - cron: '50 16 * * *'  # 10:20 PM IST
+
+# ── Concurrency Control ──────────────────────────────────────────────────────
+# All runs share a single concurrency group.
+# cancel-in-progress: true — Ensures old hanging runs are automatically terminated
+# when a new scheduled 6-hour window arrives so scheduled runs start promptly.
+concurrency:
+  group: rawgrab-bot
+  cancel-in-progress: true
+
+jobs:
+  run-rawgrab:
+    runs-on: ubuntu-latest
+    env:
+      TZ: "Asia/Kolkata"
+      GITHUB_CRON: ${{ github.event.schedule }}
+      # FIX: Was 'both' (invalid choice) — corrected to 'auto'
+      DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
+    timeout-minutes: 360   # 6-hour daemon ceiling — runs continuously for full 6-hour window until next schedule replaces it
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+
+    # ── 1. Checkout ───────────────────────────────────────────────────────────
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        # FIX: Prefer GH_PAT so the runner can push back to the repo
+        token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+    # ── 2. Python ─────────────────────────────────────────────────────────────
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        cache-dependency-path: 'requirements.txt'
+
+    # ── 3. Set up High-Performance FFmpeg (with full drawtext & libharfbuzz) ──
+    - name: Set up FFmpeg with drawtext
+      run: |
+        echo "🚀 Installing BtbN FFmpeg static build with full drawtext & libharfbuzz..."
+        curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ -C /tmp
+        sudo mv /tmp/ffmpeg-*-linux64-gpl/bin/ffmpeg /usr/local/bin/
+        sudo mv /tmp/ffmpeg-*-linux64-gpl/bin/ffprobe /usr/local/bin/
+        rm -rf /tmp/ffmpeg-*-linux64-gpl
+        echo "✅ FFmpeg ready: $(ffmpeg -version | head -n 1)"
+        ffmpeg -filters | grep -w drawtext || (echo "❌ drawtext missing" && exit 1)
+
+    # ── 4. Cache AI Models (HuggingFace / Faster-Whisper) ─────────────────────
+    - name: Cache AI Models & Weights
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/huggingface
+          ~/.cache/whisper
+        key: ai-models-v1-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ai-models-v1-
+
+    # ── 5. Python Dependencies ────────────────────────────────────────────────
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install --prefer-binary -r requirements.txt
+
+    # ── 5. Credential Injection ───────────────────────────────────────────────
+    - name: Setup Environment Variables & Tokens
+      env:
+        ENV_FILE_CONTENT: ${{ secrets.ENV_FILE_CONTENT || secrets.ENV }}
+        GH_PAT: ${{ secrets.GH_PAT }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+        TELEGRAM_PUBLIC_GROUP_ID: ${{ secrets.TELEGRAM_PUBLIC_GROUP_ID || vars.TELEGRAM_PUBLIC_GROUP_ID }}
+        TELEGRAM_STORAGE_GROUP_ID: ${{ secrets.TELEGRAM_STORAGE_GROUP_ID || vars.TELEGRAM_STORAGE_GROUP_ID }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
+        APIFY_TOKEN: ${{ secrets.APIFY_TOKEN || secrets.APIFY_API_TOKEN }}
+        CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON || secrets.YOUTUBE_CLIENT_SECRET }}
+        TOKEN_JSON: ${{ secrets.TOKEN_JSON || secrets.YOUTUBE_TOKEN_JSON }}
+        TELEGRAM_CONFIG_JSON: ${{ secrets.TELEGRAM_CONFIG_JSON }}
+        IG_BUSINESS_ID: ${{ secrets.IG_BUSINESS_ID || secrets.IG_BUSINESS_ACCOUNT_ID || secrets.META_IG_ACCOUNT_ID }}
+        INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN || secrets.META_ACCESS_TOKEN }}
+        FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID || secrets.META_PAGE_ID }}
+        FACEBOOK_PAGE_ACCESS_TOKEN: ${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN || secrets.META_PAGE_TOKEN }}
+        TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+        BRAND_WATERMARK: ${{ secrets.BRAND_WATERMARK || secrets.BRAND_WATERMARK_TEXT }}
+      run: |
+        mkdir -p Credentials
+        rm -f .env Credentials/.env
+
+        # Build clean .env without toJson(secrets)
+        python3 -c "
+        import os
+
+        env_file = '.env'
+        with open(env_file, 'w', encoding='utf-8') as f:
+            base_env = os.getenv('ENV_FILE_CONTENT', '').strip()
+            if base_env:
+                f.write(base_env + '\n')
+
+            # Write standard mapped environment variables if present
+            mappings = {
+                'GH_PAT': os.getenv('GH_PAT'),
+                'TELEGRAM_BOT_TOKEN': os.getenv('TELEGRAM_BOT_TOKEN'),
+                'TELEGRAM_ADMIN_ID': os.getenv('TELEGRAM_ADMIN_ID'),
+                'TELEGRAM_PUBLIC_GROUP_ID': os.getenv('TELEGRAM_PUBLIC_GROUP_ID'),
+                'TELEGRAM_STORAGE_GROUP_ID': os.getenv('TELEGRAM_STORAGE_GROUP_ID'),
+                'GEMINI_API_KEY': os.getenv('GEMINI_API_KEY'),
+                'GOOGLE_API_KEY': os.getenv('GEMINI_API_KEY'),
+                'APIFY_API_TOKEN': os.getenv('APIFY_TOKEN'),
+                'APIFY_TOKEN': os.getenv('APIFY_TOKEN'),
+                'CLIENT_SECRET_JSON': os.getenv('CLIENT_SECRET_JSON'),
+                'TOKEN_JSON': os.getenv('TOKEN_JSON'),
+                'TELEGRAM_CONFIG_JSON': os.getenv('TELEGRAM_CONFIG_JSON'),
+                'IG_BUSINESS_ACCOUNT_ID': os.getenv('IG_BUSINESS_ID'),
+                'IG_BUSINESS_ID': os.getenv('IG_BUSINESS_ID'),
+                'INSTAGRAM_ACCESS_TOKEN': os.getenv('INSTAGRAM_ACCESS_TOKEN'),
+                'META_ACCESS_TOKEN': os.getenv('INSTAGRAM_ACCESS_TOKEN'),
+                'FACEBOOK_PAGE_ID': os.getenv('FACEBOOK_PAGE_ID'),
+                'META_PAGE_ID': os.getenv('FACEBOOK_PAGE_ID'),
+                'FACEBOOK_PAGE_ACCESS_TOKEN': os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN'),
+                'META_PAGE_TOKEN': os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN'),
+                'TIKTOK_ACCESS_TOKEN': os.getenv('TIKTOK_ACCESS_TOKEN'),
+                'BRAND_WATERMARK_TEXT': os.getenv('BRAND_WATERMARK'),
+            }
+            for k, v in mappings.items():
+                if v and v.strip():
+                    f.write(f'{k}={v.strip()}\n')
+
+            f.write('CLIENT_SECRET_FILE=Credentials/youtube/client_secret.json\n')
+            f.write('YOUTUBE_TOKEN_FILE=Credentials/youtube/token.json\n')
+            f.write('AUTO_PUBLISH_CLIPS=yes\n')
+        "
+
+        # Sync to Credentials/.env
+        cp .env Credentials/.env
+
+        # Telegram config
+        if [ -n "$TELEGRAM_CONFIG_JSON" ]; then
+          echo "$TELEGRAM_CONFIG_JSON" > Credentials/telegram_config.json
+        fi
+
+        # YouTube OAuth files
+        mkdir -p Credentials/youtube
+        if [ -n "$CLIENT_SECRET_JSON" ]; then
+          echo "$CLIENT_SECRET_JSON" > Credentials/youtube/client_secret.json
+          echo "$CLIENT_SECRET_JSON" > Credentials/client_secret.json
+          echo "Injected root default YT client_secret"
+        fi
+        if [ -n "$TOKEN_JSON" ]; then
+          echo "$TOKEN_JSON" > Credentials/youtube/token.json
+          echo "$TOKEN_JSON" > Credentials/token.json
+          echo "Injected root default YT token"
+        fi
+
+    # ── 6. Run RawGrab Engine ─────────────────────────────────────────────────
+    - name: Run RawGrab Engine
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_PAT: ${{ secrets.GH_PAT }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || secrets.GEMINI_KEY || secrets.GOOGLE_API_KEY }}
+        DISPATCH_MODE: ${{ github.event.inputs.mode || 'auto' }}
+        DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
+        DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}
+        DISPATCH_TARGET_URL: ${{ github.event.inputs.target_url || '' }}
+      run: |
+        # FIX: Store the spaced path in a variable so it is correctly quoted everywhere
+        LOCK_FILE="Phase_1/The jsons/Github_Actions_json/bot_lock.json"
+        # ── Scheduled-run fast-exit guard ────────────────────────────────────
+        if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ -f "$LOCK_FILE" ]; then
+          LOCK_EXPIRES=$(python3 -c "
+        import json, sys
+        try:
+            data = json.load(open('Phase_1/The jsons/Github_Actions_json/bot_lock.json'))
+            print(data.get('expires_at', 0))
+        except Exception:
+            print(0)
+        " 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          if [ "$LOCK_EXPIRES" -gt "$NOW" ]; then
+            MINS_LEFT=$(( (LOCK_EXPIRES - NOW) / 60 ))
+            echo "🔒 [CI GUARD] Active bot lock found (~${MINS_LEFT}m remaining). Skipping duplicate cron run."
+            exit 0
+          fi
+        fi
+        # ── Write bot_lock.json so overlapping crons self-skip ────────────────
+        mkdir -p "Phase_1/The jsons/Github_Actions_json"
+        python3 -c "
+        import json, time, os
+        lock = {'started_at': int(time.time()), 'expires_at': int(time.time()) + 9000}
+        with open('Phase_1/The jsons/Github_Actions_json/bot_lock.json', 'w') as f:
+            json.dump(lock, f)
+        print('🔐 Bot lock written (expires in ~150 min)')
+        "
+        # ── Clean up bot lock on script exit ────────────────────────────────
+        cleanup() {
+          rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json"
+          echo "🔓 Bot lock released."
+        }
+        trap cleanup EXIT
+        # ─────────────────────────────────────────────────────────────────────
+        echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
+        python main.py
+
+    # ── 7. Commit State Back to Repo ─────────────────────────────────────────
+    - name: Commit Dedup State to Git
+      if: always()
+      continue-on-error: true
+      env:
+        GH_PAT: ${{ secrets.GH_PAT }}
+      run: |
+        set +e
+        git config user.name  "RawGrab Bot"
+        git config user.email "rawgrab-bot@users.noreply.github.com"
+
+        # FIX: Authenticate git push via GH_PAT or GITHUB_TOKEN
+        if [ -n "$GH_PAT" ]; then
+          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+        else
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+        fi
+
+        # Wipe leftover clip files and lock file before committing state
+        rm -f "Phase_1/The jsons/Github_Actions_json/bot_lock.json" 2>/dev/null || true
+        find downloads/ -name "*.mp4" -type f -delete 2>/dev/null || true
+        find downloads/ -empty -type d -delete 2>/dev/null || true
+
+        # Stage state files if present
+        # FIX: Use quoted path instead of backslash-escape (more reliable in run blocks)
+        git add -A "Phase_1/The jsons/Github_Actions_json/" 2>/dev/null || true
+
+        if git diff --cached --quiet; then
+          echo "No state changes to commit."
+        else
+          git commit -m "ci: release bot lock and update state [skip ci]"
+          git fetch origin main
+          git rebase origin/main --strategy-option=theirs || git rebase --abort
+          git push origin HEAD:main || echo "Push skipped (concurrent run or auth failure)"
+          echo "State committed."
+        fi
+        exit 0
