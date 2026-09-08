@@ -1026,7 +1026,17 @@ class AudioPoolManager:
                 if _is_pipeline_artifact(filename):
                     logger.debug(f"[POOL] Skipping pipeline artifact: {filename}")
                     continue
-                
+
+                # ── PERMANENT REJECTION BLACKLIST CHECK ───────────────────────────────
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+                    if _is_bl(audio_filename=filename):
+                        logger.info(f"🚫 [POOL] Skipping admin-rejected (blacklisted) audio: {filename}")
+                        continue
+                except Exception as _bl_check_err:
+                    logger.debug(f"[POOL] Blacklist check notice: {_bl_check_err}")
+                # ─────────────────────────────────────────────────────────────────────
+
                 meta = self._get_file_metadata(filename)
                 if not meta:
                     continue
@@ -1541,6 +1551,24 @@ class AudioPoolManager:
                 for ext in (".wav", ".mp3", ".m4a", ".aac"):
                     audio_sc = audio_sc.replace(ext, "")
                 audio_sc = audio_sc.strip()
+
+                # ── BLACKLIST WRITE: permanent ban before any deletion ────────────────
+                # This runs regardless of whether audio_sc matches anything in the pool,
+                # guaranteeing the audio can never be re-selected even after vault resyncs.
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import add as _bl_add
+                    _bl_add(
+                        audio_filename=audio_fname,
+                        audio_shortcode=audio_sc or None,
+                        telegram_file_id=(
+                            files_root.get(audio_fname, {}).get("file_id")
+                            or files_root.get(audio_fname, {}).get("social_media_id")
+                        ),
+                        reason="admin_rejected",
+                    )
+                except Exception as _bl_err:
+                    logger.warning(f"⚠️ [POOL PURGE] Blacklist write failed (non-fatal): {_bl_err}")
+                # ─────────────────────────────────────────────────────────────────────
 
                 if audio_sc:
                     for url_key, entry in list(social_dict.items()):

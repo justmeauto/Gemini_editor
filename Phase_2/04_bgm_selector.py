@@ -142,7 +142,8 @@ def select_clip_bgm(
                 reasoning=res.get("reasoning", "")
             )
         except Exception as _st_err:
-            logger.debug(f"[STEP 04] Store update notice: {_st_err}")
+            logger.warning(f"[STEP 04] ⚠️ Failed to record BGM selection in ClipIntelligenceStore / AudioPoolManager — "
+                           f"selected_audio will NOT be persisted and rejection purge will be blind: {_st_err}")
 
     logger.info(
         f"✓ [STEP 04 SUCCESS] BGM Selected: '{selected_track_name}' "

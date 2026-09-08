@@ -66,6 +66,37 @@ class ClipIntelligenceStore:
     Pools all clip records into pool_metadata.json → "clips" section.
     """
 
+    def __init__(self, clip_id: Optional[str] = None, clip_folder: Optional[str] = None):
+        """
+        Optional constructor. When clip_id / clip_folder are provided the instance is
+        bound to that clip so callers can use the convenience .get() / .set() API
+        (used by 04_bgm_selector.py and similar callers).
+        """
+        self._bound_clip_id: Optional[str] = clip_id
+        self._bound_clip_folder: Optional[str] = clip_folder
+        # Lazily loaded data dict for the bound clip
+        self._data: Optional[Dict[str, Any]] = None
+
+    # ── Convenience API (bound-clip mode) ───────────────────────────────────
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return a top-level key from the bound clip's intelligence record."""
+        if self._data is None and self._bound_clip_id:
+            self._data = self.load(self._bound_clip_id, self._bound_clip_folder) or {}
+        return (self._data or {}).get(key, default)
+
+    def set(self, key: str, value: Any) -> bool:
+        """Write a top-level key into the bound clip's intelligence record and persist."""
+        if not self._bound_clip_id:
+            logger.warning("[ClipStore] .set() called without a bound clip_id — no-op.")
+            return False
+        if self._data is None:
+            self._data = self.load(self._bound_clip_id, self._bound_clip_folder) or {}
+        if not self._data:
+            self._data = self.create_blank(self._bound_clip_id, self._bound_clip_folder or "")
+        self._data[key] = value
+        return self.save(self._bound_clip_id, self._data, self._bound_clip_folder)
+
     # ── Load / Save per-clip ─────────────────────────────────────────────────
 
     def load(self, clip_id: str, clip_folder: Optional[str] = None) -> Optional[Dict[str, Any]]:

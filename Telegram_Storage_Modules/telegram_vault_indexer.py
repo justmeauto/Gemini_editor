@@ -53,6 +53,7 @@ def _empty_vault_index() -> Dict[str, Any]:
         "source_accounts_file_id": None,
         "scraper_rotation_pointer_file_id": None,
         "telegram_sessions_file_id": None,
+        "rejected_audio_blacklist_file_id": None,
     }
 
 
@@ -247,7 +248,13 @@ class TelegramVaultIndexer:
             return {"pinned_index": True, "cached": True}
         _LAST_HYDRATION_TIMESTAMP = now
 
-        results = {"pinned_index": False, "telegram_users": False, "metadata_pool": False, "source_accounts": False}
+        results = {
+            "pinned_index": False,
+            "telegram_users": False,
+            "metadata_pool": False,
+            "source_accounts": False,
+            "rejected_audio_blacklist": False
+        }
         try:
             # Step 1: Download pinned index from Telegram Storage Group first!
             results["pinned_index"] = self.sync_pinned_index_from_telegram_sync()
@@ -305,6 +312,22 @@ class TelegramVaultIndexer:
             if srp_file_id:
                 srp_path = os.path.join(DATA_DIR, "scraper_rotation_pointer.json")
                 results["scraper_rotation_pointer"] = self.download_vault_file_by_id(srp_file_id, srp_path)
+
+            # Step 7: Download rejected_audio_blacklist.json (Master Rejection Blacklist)
+            bl_file_id = self.vault_index.get("rejected_audio_blacklist_file_id")
+            if bl_file_id:
+                try:
+                    from Audio_Modules.rejected_audio_blacklist import _BLACKLIST_FILE, merge_blacklist_from_file
+                    temp_bl_path = _BLACKLIST_FILE + ".download.tmp"
+                    if self.download_vault_file_by_id(bl_file_id, temp_bl_path):
+                        results["rejected_audio_blacklist"] = merge_blacklist_from_file(temp_bl_path)
+                    if os.path.exists(temp_bl_path):
+                        try:
+                            os.remove(temp_bl_path)
+                        except Exception:
+                            pass
+                except Exception as _bl_err:
+                    logger.warning("⚠️ Notice hydrating rejected_audio_blacklist: %s", _bl_err)
         except Exception as _h_err:
             logger.warning("⚠️ Vault JSON hydration notice: %s", _h_err)
         return results
@@ -413,6 +436,21 @@ class TelegramVaultIndexer:
 
             sess_id = entry.get("session_id", "audio_track")
             social_id = str(entry.get("social_media_id", "")).lower()
+
+            # ── PERMANENT REJECTION BLACKLIST CHECK ───────────────────────────────
+            shortcode_val_early = entry.get("shortcode") or ""
+            if not shortcode_val_early and "/" in social_id:
+                _parts = [p for p in social_id.split("/") if p and not p.startswith("?")]
+                shortcode_val_early = _parts[-1].split("?")[0] if _parts else ""
+            _fname_early = f"vault_bgm_{shortcode_val_early}.wav" if shortcode_val_early else ""
+            try:
+                from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl_v
+                if _is_bl_v(audio_filename=_fname_early, audio_shortcode=shortcode_val_early, telegram_file_id=file_id):
+                    logger.info(f"🚫 [VAULT POOL] Skipping admin-rejected (blacklisted) vault audio: shortcode='{shortcode_val_early}' file_id='{file_id}'")
+                    continue
+            except Exception as _vbl_err:
+                logger.debug(f"[VAULT POOL] Blacklist check notice: {_vbl_err}")
+            # ─────────────────────────────────────────────────────────────────────
 
             if clip_stem and (
                 clip_stem in sess_id.lower()
