@@ -224,10 +224,21 @@ def extract_main_subject_and_context(
         hint_clean = re.sub(r"\s+", " ", hint_clean)
         hint_clean = clean_entity_name(hint_clean)
 
-    # Extract fields from cache
-    vc = cache.get("visual_context", {}) if isinstance(cache.get("visual_context"), dict) else {}
-    ep = cache.get("editing_plan", {}) if isinstance(cache.get("editing_plan"), dict) else {}
-    audio_ctx = cache.get("audio_data", {}).get("context", {}) if isinstance(cache.get("audio_data"), dict) else {}
+    # Extract fields from cache — support both ClipIntelligenceStore schema (visual_context,
+    # editing_plan, audio_data.context) AND pool v3 social entry schema (visual_data.gemini_visual_output,
+    # video_editing_plan, audio_data.gemini_audio_output). Additive alias resolution, nothing removed.
+    _vc_raw = (cache.get("visual_context")
+               or cache.get("visual_data", {}).get("gemini_visual_output")
+               or cache.get("visual_data", {}).get("clip_intelligence"))
+    vc = _vc_raw if isinstance(_vc_raw, dict) else {}
+
+    _ep_raw = cache.get("editing_plan") or cache.get("video_editing_plan")
+    ep = _ep_raw if isinstance(_ep_raw, dict) else {}
+
+    _aud = cache.get("audio_data", {}) if isinstance(cache.get("audio_data"), dict) else {}
+    audio_ctx = _aud.get("context") or _aud.get("gemini_audio_output") or {}
+    if not isinstance(audio_ctx, dict):
+        audio_ctx = {}
 
     raw_caption = metadata.get("raw_caption") or metadata.get("caption") or ""
     source_title = metadata.get("title") or metadata.get("source_title") or ""
@@ -374,6 +385,24 @@ AFFILIATE & PRODUCT PROMOTION LINK:
 PRIOR GEMINI CALL CACHE (Forensic Perception, Audio, Editing Plan):
 {cache_context}
 
+WHISPER / SPEECH TRANSCRIPT (exact spoken words from video audio — use for lyric hooks, spoken CTAs, dialogue-driven titles):
+{whisper_transcript}
+
+CREATOR BEHAVIOR MODEL — CBM (brand tone, audience retention patterns, editorial grammar specific to this creator):
+{creator_behavior_model}
+
+VIDEO EDITING PLAN (cut transitions, speed ramps, hook zone — infer pacing-related keywords and energy adjectives):
+{video_editing_plan}
+
+ORIGINAL POST CAPTION (verbatim source caption from original creator — extract semantic context, do NOT copy wholesale):
+{original_caption}
+
+ORIGINAL POST HASHTAGS (niche signal from source post — use to infer content category and community, do NOT copy-paste):
+{source_hashtags}
+
+ANALYTICS SIGNALS — FOR SEO STRATEGY ONLY (never mention raw counts in output captions):
+{analytics_signals}
+
 CRITICAL RULES (STRICTLY ENFORCED):
 1. HERO MAIN SUBJECT FIRST: Always use the DISCOVERED MAIN SUBJECT as the core hero anchor in all platform titles, descriptions, and hashtags (e.g. if main subject is 'Focal Subject', write 'Focal Subject | Core Feature Highlights ✨'; if 'Brand Product', write 'Brand Product Review & Setup 🖥️').
 2. ZERO REPETITION RULE (STRICT): ABSOLUTELY NO repeating words or phrases within a single title (e.g. NEVER write 'Fashion Style & Lifestyle | Fashion Inspiration' or 'Trending Lookbook | Lookbook 2023'). Every title segment MUST be unique and complementary.
@@ -386,6 +415,7 @@ CRITICAL RULES (STRICTLY ENFORCED):
    - DESCRIPTIONS: Naturally integrate the title clue subject in the opening 1-2 lines.
    - HASHTAGS: Derive primary niche hashtags directly from the title clue keywords (e.g., if clue is 'Ethnic Outfit Look', include #EthnicOutfit #StyleLook).
 8. NO ENTITY CATEGORY PREFIXES OR 'NONE' STRINGS: NEVER output entity category prefixes like 'celebrity:', 'outfit:', 'accessory:', etc. in titles, descriptions, or hashtags. Always format main subjects as clean, spaced human names (e.g. 'Avneet Kaur'). NEVER concatenate 'None' or 'null' into hashtags or text (e.g. write '#AvneetKaur', NEVER '#AvneetkaurNone' or '#celebrityAvneet_Kaur').
+9. ANALYTICS SIGNALS ARE STRATEGY INPUTS ONLY: taggedUsers reveal co-creator collab angles and brand partnerships — derive hashtag strategy from them. likesCount/videoViewCount indicate viral potential and algorithm warmth — if high, prioritise sharp hooks and trending niche tags. visual_data.vectors (scene cut timestamps, hook_zone_end_sec) show where the visual hook peaks — align the title's power word to that energy level. NEVER print raw counts, timestamps, or handle names in any caption or description output.
 
 Generate SEO-optimized content for the following platforms: {platforms}
 
@@ -537,7 +567,13 @@ def _heuristic_fallback(
     # Humanized title formatting
     clean_subj = main_subject.strip()
     if user_title:
-        clean_title = user_title.strip()
+        # Strip raw platform-suffix tags (#Shorts, #Reels, etc.) — keep user intent as anchor
+        clean_title = re.sub(r'\s*#(?:Shorts?|Reels?)\b', '', user_title, flags=re.IGNORECASE).strip()
+        # Enrich with applicable context if it adds information not already in the title
+        if applicable and applicable.lower() not in {"video highlights", "general", "n/a"}:
+            desc_part = applicable.split(",")[0].strip().title()
+            if desc_part.lower() not in clean_title.lower():
+                clean_title = f"{clean_title} — {desc_part} ✨"
     elif applicable and applicable.lower() not in {"video highlights", "general", "n/a"}:
         desc_clean = applicable.split(",")[0].strip().title()
         if desc_clean.lower() in clean_subj.lower():
@@ -677,18 +713,57 @@ def generate_platform_seo(
     applicable_context = extracted["applicable_context"]
 
     # Fast Offline Heuristic SEO (0 API call cost) for shortform reels
-    if os.getenv("FAST_OFFLINE_SEO", "yes").lower() in ("yes", "true", "on", "1") or not _HAS_ROUTER or _router is None:
+    if os.getenv("FAST_OFFLINE_SEO", "auto").lower() in ("yes", "true", "on", "1") or not _HAS_ROUTER or _router is None:
         logger.info("⚡ [PlatformSEO] Using local fast SEO generator for title & hashtags (0 Gemini API calls).")
         result = _heuristic_fallback(video_context, user_title, brand_info, metadata, cache, affiliate_link=clean_aff_link, user_hint=user_hint)
         if platforms:
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return result
 
-    # Format cache & metadata context for prompt
+    # Format cache & metadata context for prompt (existing variables — untouched)
     cache_context = json.dumps(cache, indent=2) if cache else "No cached context available"
     raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
-    
     aff_info_str = f"Target Link: {clean_aff_link}\nInclude commercial CTA and mandatory affiliate disclosure (#ad #affiliate)" if clean_aff_link else "None provided"
+
+    # ── Pool v3 enrichment fields (additive — do not touch variables above) ─────
+    _aud_block = (cache or {}).get("audio_data", {}) if isinstance((cache or {}).get("audio_data"), dict) else {}
+    _vis_block = (cache or {}).get("visual_data", {}) if isinstance((cache or {}).get("visual_data"), dict) else {}
+
+    # Whisper transcript
+    _whisper = _aud_block.get("whisper_transcript", {})
+    if isinstance(_whisper, dict):
+        whisper_text = _whisper.get("text") or _whisper.get("transcript") or json.dumps(_whisper, ensure_ascii=False)[:600]
+    elif isinstance(_whisper, str):
+        whisper_text = _whisper[:600]
+    else:
+        whisper_text = "Not available"
+
+    # Creator Behavior Model (CBM)
+    _cbm = (cache or {}).get("creator_behavior_model", {})
+    cbm_text = json.dumps(_cbm, indent=2, ensure_ascii=False)[:800] if _cbm else "Not available"
+
+    # Video Editing Plan (pool v3 key alias)
+    _vep = (cache or {}).get("video_editing_plan") or (cache or {}).get("editing_plan") or {}
+    vep_text = json.dumps(_vep, indent=2, ensure_ascii=False)[:600] if _vep else "Not available"
+
+    # Original caption from source post (independent of user_title / user_hint)
+    original_caption_text = (metadata or {}).get("caption") or (metadata or {}).get("raw_caption") or "Not available"
+
+    # Source hashtags (niche signal)
+    _src_tags = (metadata or {}).get("hashtags", [])
+    if isinstance(_src_tags, list):
+        source_hashtags_text = " ".join(_src_tags[:25]) if _src_tags else "Not available"
+    else:
+        source_hashtags_text = str(_src_tags)[:200] if _src_tags else "Not available"
+
+    # Analytics signals (strategy-only)
+    _analytics = {
+        "taggedUsers":    (metadata or {}).get("taggedUsers", []),
+        "likesCount":     (metadata or {}).get("likesCount"),
+        "videoViewCount": (metadata or {}).get("videoViewCount"),
+        "scene_vectors":  _vis_block.get("vectors", [])[:10],
+    }
+    analytics_text = json.dumps(_analytics, indent=2, ensure_ascii=False)
 
     prompt = _SEO_GENERATION_PROMPT.format(
         main_subject=main_subject,
@@ -699,7 +774,14 @@ def generate_platform_seo(
         brand_info=brand_info or "No brand info provided",
         affiliate_info=aff_info_str,
         cache_context=cache_context,
-        platforms=", ".join(platforms)
+        platforms=", ".join(platforms),
+        # ── new additive fields ──────────────────────────────────────────────
+        whisper_transcript=whisper_text,
+        creator_behavior_model=cbm_text,
+        video_editing_plan=vep_text,
+        original_caption=original_caption_text,
+        source_hashtags=source_hashtags_text,
+        analytics_signals=analytics_text,
     )
 
     try:

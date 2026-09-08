@@ -78,7 +78,7 @@ class ClipIntelligenceStore:
             except Exception as e:
                 logger.warning(f"[ClipStore] Failed to load {path}: {e}")
 
-        # Secondary fallback: Look up in master pool_metadata.json
+        # Secondary fallback: Look up in master pool_metadata.json → "clips" section
         try:
             pool = self._pool_read()
             clips = pool.get("clips", {})
@@ -87,6 +87,20 @@ class ClipIntelligenceStore:
             for cid, cdata in clips.items():
                 if clip_id in cid or cid in clip_id:
                     return cdata
+            # Tier 3: pool v3 real data lives in files.social_media_id
+            social = pool.get("files", {}).get("social_media_id", {})
+            for url_key, entry in social.items():
+                if not isinstance(entry, dict):
+                    continue
+                sc = str(entry.get("shortcode", ""))
+                sm = str(entry.get("social_media_id", ""))
+                if (clip_id == sc
+                        or clip_id in url_key
+                        or clip_id in sm
+                        or (sc and sc in clip_id)
+                        or url_key.rstrip("/").endswith(f"/{clip_id}")):
+                    logger.debug(f"[ClipStore] Tier-3 hit: clip_id={clip_id} matched url_key={url_key[:60]}")
+                    return entry
         except Exception:
             pass
 

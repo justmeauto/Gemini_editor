@@ -745,15 +745,28 @@ async def handle_telegram_callback(update, context):
                     intel_data = loaded_intel
             except Exception as _st_err:
                 logger.warning(f"⚠️ Could not load clip intelligence for {clip_id}: {_st_err}")
-
-        # Extract context payloads
-        v_context = intel_data.get("visual_context", {})
+        # Extract context payloads — support both ClipIntelligenceStore schema and pool v3 social entry schema
+        v_context = (intel_data.get("visual_context")
+                     or intel_data.get("visual_data", {}).get("gemini_visual_output")
+                     or intel_data.get("visual_data", {}).get("clip_intelligence") or {})
         if isinstance(v_context, dict):
-            video_context_str = v_context.get("description") or v_context.get("visual_description") or f"Reel for {creator_niche}"
+            video_context_str = (v_context.get("description") or v_context.get("visual_description")
+                                 or v_context.get("scene_context", {}).get("description", "")
+                                 or f"Reel for {creator_niche}")
         else:
             video_context_str = str(v_context) or f"Reel for {creator_niche}"
 
-        raw_meta = intel_data.get("phase1", {})
+        # Build raw_meta — start from phase1 then enrich with pool v3 social fields (additive, no overrides)
+        raw_meta = intel_data.get("phase1", {}) or {}
+        if intel_data:
+            raw_meta.setdefault("creator_handle", creator_niche)
+            raw_meta.setdefault("raw_caption", intel_data.get("caption") or (sess.get("title", "") if sess else ""))
+            raw_meta["caption"]        = intel_data.get("caption", "")
+            raw_meta["hashtags"]       = intel_data.get("hashtags", [])
+            raw_meta["taggedUsers"]    = intel_data.get("taggedUsers", [])
+            raw_meta["likesCount"]     = intel_data.get("likesCount")
+            raw_meta["videoViewCount"] = intel_data.get("videoViewCount")
+            raw_meta["shortcode"]      = intel_data.get("shortcode", "")
         if not raw_meta and sess:
             raw_meta = {"creator_handle": creator_niche, "raw_caption": sess.get("title", "")}
 
@@ -1692,9 +1705,30 @@ async def handle_telegram_incoming_msg(update, context):
             except Exception as _st_err:
                 logger.warning(f"⚠️ Could not load clip intelligence for {clip_id}: {_st_err}")
 
-        v_context = intel_data.get("visual_context", {})
-        video_context_str = v_context.get("description") if isinstance(v_context, dict) else str(v_context) or f"Reel for {creator_niche}"
-        raw_meta = intel_data.get("phase1", {}) or {"creator_handle": creator_niche, "raw_caption": user_hint_text}
+        # Extract context payloads — support both ClipIntelligenceStore schema and pool v3 social entry schema
+        v_context = (intel_data.get("visual_context")
+                     or intel_data.get("visual_data", {}).get("gemini_visual_output")
+                     or intel_data.get("visual_data", {}).get("clip_intelligence") or {})
+        if isinstance(v_context, dict):
+            video_context_str = (v_context.get("description") or v_context.get("visual_description")
+                                 or v_context.get("scene_context", {}).get("description", "")
+                                 or f"Reel for {creator_niche}")
+        else:
+            video_context_str = str(v_context) or f"Reel for {creator_niche}"
+
+        # Build raw_meta — start from phase1 then enrich with pool v3 social fields (additive, no overrides)
+        raw_meta = intel_data.get("phase1", {}) or {}
+        if intel_data:
+            raw_meta.setdefault("creator_handle", creator_niche)
+            raw_meta.setdefault("raw_caption", intel_data.get("caption") or user_hint_text)
+            raw_meta["caption"]        = intel_data.get("caption", "")
+            raw_meta["hashtags"]       = intel_data.get("hashtags", [])
+            raw_meta["taggedUsers"]    = intel_data.get("taggedUsers", [])
+            raw_meta["likesCount"]     = intel_data.get("likesCount")
+            raw_meta["videoViewCount"] = intel_data.get("videoViewCount")
+            raw_meta["shortcode"]      = intel_data.get("shortcode", "")
+        if not raw_meta:
+            raw_meta = {"creator_handle": creator_niche, "raw_caption": user_hint_text}
 
         # 3. Generate SEO content with User Hint & Affiliate Link Integration
         seo_res = {}
