@@ -382,7 +382,7 @@ BRAND/CHANNEL INFO:
 AFFILIATE & PRODUCT PROMOTION LINK:
 {affiliate_info}
 
-PRIOR GEMINI CALL CACHE (Forensic Perception, Audio, Editing Plan):
+PRIOR GEMINI CALL CACHE & SUPPLEMENTARY INTELLIGENCE (Audio DSP Math, Vibe, Extra Perception):
 {cache_context}
 
 WHISPER / SPEECH TRANSCRIPT (exact spoken words from video audio — use for lyric hooks, spoken CTAs, dialogue-driven titles):
@@ -720,14 +720,37 @@ def generate_platform_seo(
             result["platforms"] = {k: v for k, v in result["platforms"].items() if k in platforms}
         return result
 
-    # Format cache & metadata context for prompt (existing variables — untouched)
-    cache_context = json.dumps(cache, indent=2) if cache else "No cached context available"
-    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
-    aff_info_str = f"Target Link: {clean_aff_link}\nInclude commercial CTA and mandatory affiliate disclosure (#ad #affiliate)" if clean_aff_link else "None provided"
-
-    # ── Pool v3 enrichment fields (additive — do not touch variables above) ─────
+    # ── Pool v3 enrichment fields ──────────────────────────────────────────────
     _aud_block = (cache or {}).get("audio_data", {}) if isinstance((cache or {}).get("audio_data"), dict) else {}
     _vis_block = (cache or {}).get("visual_data", {}) if isinstance((cache or {}).get("visual_data"), dict) else {}
+
+    # Format cache & metadata context for prompt.
+    # Prune cache_context to exclude sections that have dedicated prompt slots (CBM, editing plan,
+    # whisper, captions, tags, analytics) and technical plumbing (hashes, telegram IDs, logs)
+    # while preserving supplementary audio DSP math, vibe, and forensic perception tags.
+    pruned_cache = {}
+    if cache and isinstance(cache, dict):
+        _aud_math = _aud_block.get("audio_math")
+        _aud_gemini = _aud_block.get("gemini_audio_output") or _aud_block.get("context")
+        _supp_audio = {}
+        if _aud_math:
+            _supp_audio["audio_math"] = _aud_math
+        if _aud_gemini:
+            _supp_audio["audio_context"] = _aud_gemini
+        if _supp_audio:
+            pruned_cache["supplementary_audio"] = _supp_audio
+
+        _vis_intel = _vis_block.get("clip_intelligence") or cache.get("visual_context")
+        if _vis_intel:
+            pruned_cache["supplementary_visual_intel"] = _vis_intel
+
+        for k in ("detected_entities", "intent", "tone", "vibe", "dominant_emotion"):
+            if k in cache and cache[k]:
+                pruned_cache[k] = cache[k]
+
+    cache_context = json.dumps(pruned_cache, indent=2) if pruned_cache else "Supplementary intelligence integrated in dedicated sections above."
+    raw_metadata = json.dumps(metadata, indent=2) if metadata else f"Caption: {extracted['raw_caption']}"
+    aff_info_str = f"Target Link: {clean_aff_link}\nInclude commercial CTA and mandatory affiliate disclosure (#ad #affiliate)" if clean_aff_link else "None provided"
 
     # Whisper transcript
     _whisper = _aud_block.get("whisper_transcript", {})
