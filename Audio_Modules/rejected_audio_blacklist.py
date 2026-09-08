@@ -138,7 +138,8 @@ def sync_blacklist_to_vault() -> Optional[str]:
                 indexer = TelegramVaultIndexer()
                 indexer.vault_index["rejected_audio_blacklist_file_id"] = doc_id
                 indexer._save_local_index()
-                logger.info("✅ [BLACKLIST VAULT BACKUP] Uploaded rejected_audio_blacklist.json to Telegram Storage Group (file_id: %s)", doc_id[:15])
+                indexer.upload_and_pin_vault_index_sync()
+                logger.info("✅ [BLACKLIST VAULT BACKUP] Uploaded & PINNED rejected_audio_blacklist.json in Telegram Storage Group (file_id: %s)", doc_id[:15])
                 return doc_id
     except Exception as _e:
         logger.warning("⚠️ Notice triggering blacklist vault sync: %s", _e)

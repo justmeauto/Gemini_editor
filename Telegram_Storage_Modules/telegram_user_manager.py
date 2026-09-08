@@ -83,15 +83,27 @@ def load_all_users() -> Dict[str, Dict]:
 
 
 def _upload_file_to_telegram_storage(file_path: str, caption: str = "") -> Optional[str]:
-    """Uploads a file to TELEGRAM_STORAGE_GROUP_ID using urllib multipart payload."""
-    import uuid
-    import urllib.request
+    """Uploads a file to TELEGRAM_STORAGE_GROUP_ID using telegram_http sender (with fallback)."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
     if not bot_token or not storage_group_id or not os.path.exists(file_path):
         return None
     
+    # Primary sender: Telegram_Storage_Modules.telegram_http
     try:
+        from Telegram_Storage_Modules.telegram_http import send_document, extract_file_id
+        res = send_document(local_path=file_path, chat_id=str(storage_group_id), caption=caption)
+        if res:
+            doc_id = extract_file_id(res) if isinstance(res, dict) else None
+            if doc_id:
+                return doc_id
+    except Exception as e:
+        logger.warning("Notice uploading %s via telegram_http: %s", file_path, e)
+
+    # Fallback to direct urllib multipart upload
+    try:
+        import uuid
+        import urllib.request
         boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
         body = bytearray()
         
@@ -127,7 +139,7 @@ def _upload_file_to_telegram_storage(file_path: str, caption: str = "") -> Optio
             if data.get("ok"):
                 return data.get("result", {}).get("document", {}).get("file_id")
     except Exception as e:
-        logger.warning("Notice uploading %s to Telegram Vault: %s", file_path, e)
+        logger.warning("Notice uploading %s to Telegram Vault fallback: %s", file_path, e)
     return None
 
 

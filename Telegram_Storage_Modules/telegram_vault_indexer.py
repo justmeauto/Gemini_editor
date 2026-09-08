@@ -172,15 +172,19 @@ class TelegramVaultIndexer:
         self.vault_index = self._load_local_index()
 
     def _load_local_index(self) -> Dict[str, Any]:
+        default_index = _empty_vault_index()
         if os.path.exists(self.index_file):
             try:
                 with open(self.index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if isinstance(data, dict) and ("version" in data or "pool_metadata_file_id" in data):
+                        for k, v in default_index.items():
+                            if k not in data:
+                                data[k] = v
                         return data
             except Exception as e:
                 logger.warning(f"⚠️ Could not load local vault index: {e}")
-        return _empty_vault_index()
+        return default_index
 
     def _save_local_index(self):
         with _SAVE_LOCK:
@@ -274,7 +278,7 @@ class TelegramVaultIndexer:
                                 local_users[uid] = udata
                             else:
                                 for k, v in udata.items():
-                                    if v and not local_users[uid].get(k):
+                                    if v:
                                         local_users[uid][k] = v
                         save_all_users(local_users, sync_to_vault=False)
                         results["telegram_users"] = True
@@ -510,12 +514,18 @@ class TelegramVaultIndexer:
     def upload_and_pin_vault_index_sync(self, upload_fn=None):
         """Uploads master_vault_index.json to TELEGRAM_STORAGE_GROUP_ID and pins it."""
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
-        if not storage_group_id or not upload_fn or not os.path.exists(self.index_file):
+        if not storage_group_id or not os.path.exists(self.index_file):
             return
 
         try:
             caption = f"📌 **[VAULT MASTER INDEX]** Auto-Synced\n🕒 `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
-            res = upload_fn("sendDocument", storage_group_id, "document", self.index_file, caption=caption)
+            res = None
+            if upload_fn:
+                res = upload_fn("sendDocument", storage_group_id, "document", self.index_file, caption=caption)
+            else:
+                from Telegram_Storage_Modules.telegram_http import send_document
+                res = send_document(local_path=self.index_file, caption=caption, chat_id=str(storage_group_id))
+
             if res and isinstance(res, dict):
                 msg_id = res.get("message_id")
                 if msg_id:

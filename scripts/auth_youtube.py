@@ -207,10 +207,18 @@ def _try_device_flow(client_id, client_secret, tg_token, tg_admin, token_path):
                     "scopes":        SCOPES,
                 }
                 os.makedirs(os.path.dirname(token_path) or ".", exist_ok=True)
-                with open(token_path, "w", encoding="utf-8") as f:
-                    json.dump(token_json, f, indent=2)
                 print(f"✅ Authorized! Token saved to {token_path}")
-                sync_token_to_github_secret(token_path, json.dumps(token_json, indent=2))
+                token_json_str = json.dumps(token_json, indent=2)
+                sync_token_to_github_secret(token_path, token_json_str)
+
+                if tg_admin:
+                    try:
+                        from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_token
+                        set_user_youtube_token(str(tg_admin), token_json_str)
+                        print(f"✅ User {tg_admin} youtube_token_json updated in telegram_users.json & synced to Telegram Storage Group Vault")
+                    except Exception as _ute:
+                        print(f"⚠️ Could not update telegram_users.json: {_ute}")
+
                 if tg_token and tg_admin:
                     _send_telegram(
                         "✅ <b>YouTube Authorized!</b>\n\nToken saved. Uploads will resume automatically.",
@@ -328,6 +336,15 @@ def _fallback_url_flow(secret_path, token_path, tg_token, tg_admin):
 
                     # Sync to GitHub Secrets using GitHub PAT
                     synced = sync_token_to_github_secret(token_path, token_json_str)
+
+                    # Update telegram_users.json and sync to Telegram Storage Group Vault
+                    if tg_admin:
+                        try:
+                            from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_token
+                            set_user_youtube_token(str(tg_admin), token_json_str)
+                            print(f"✅ User {tg_admin} youtube_token_json updated in telegram_users.json & synced to Telegram Storage Group Vault")
+                        except Exception as _ute:
+                            print(f"⚠️ Could not update telegram_users.json: {_ute}")
 
                     if tg_token and tg_admin:
                         _send_telegram(
