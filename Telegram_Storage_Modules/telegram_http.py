@@ -53,10 +53,123 @@ def _api_url(method: str) -> str:
 
 # ── UPLOAD ────────────────────────────────────────────────────────────────────
 
+def upload_file_with_pyrogram(
+    local_path: str,
+    chat_id: Optional[str] = None,
+    caption: str = "",
+    file_name: Optional[str] = None,
+    as_video: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    MTProto upload fallback using Pyrogram for files > 20MB / 50MB (up to 2GB).
+    Bypasses Telegram Bot API HTTP 413 (50MB) upload limits with TgCrypto acceleration.
+    Returns a dict with {"ok": True, "result": {"message_id": ..., "video": {...}, "document": {...}}}
+    matching standard Telegram Bot API response structure.
+    """
+    chat_id = chat_id or _group_id()
+    if not os.path.exists(local_path):
+        logger.error("[telegram_http] upload_file_with_pyrogram: file not found: %s", local_path)
+        return None
+
+    filename = file_name or os.path.basename(local_path)
+    file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+    logger.info("[telegram_http] Initiating Pyrogram MTProto upload for %s (size: %.1f MB) -> chat %s...",
+                filename, file_size_mb, chat_id)
+
+    try:
+        import asyncio
+        import concurrent.futures
+        from pyrogram import Client
+
+        token = _token()
+        api_id = os.getenv("TELEGRAM_API_ID") or 6
+        api_hash = os.getenv("TELEGRAM_API_HASH") or "eb6e06484e316e2d0be2d4177051c2b1"
+
+        async def _async_upload():
+            async with Client(
+                "vault_pyrogram_session",
+                api_id=int(api_id),
+                api_hash=api_hash,
+                bot_token=token,
+                in_memory=True
+            ) as app:
+                target_chat = int(chat_id) if (isinstance(chat_id, int) or (isinstance(chat_id, str) and chat_id.lstrip("-").isdigit())) else chat_id
+                
+                ext = os.path.splitext(filename)[1].lower()
+                is_video = as_video and ext in [".mp4", ".mkv", ".mov", ".webm", ".avi"]
+
+                if is_video:
+                    msg = await app.send_video(
+                        chat_id=target_chat,
+                        video=local_path,
+                        caption=caption[:1024] if caption else None,
+                        file_name=filename,
+                        supports_streaming=True
+                    )
+                else:
+                    msg = await app.send_document(
+                        chat_id=target_chat,
+                        document=local_path,
+                        caption=caption[:1024] if caption else None,
+                        file_name=filename
+                    )
+
+                if msg:
+                    video_dict = {}
+                    doc_dict = {}
+                    if msg.video:
+                        video_dict = {
+                            "file_id": msg.video.file_id,
+                            "file_unique_id": msg.video.file_unique_id,
+                            "file_name": getattr(msg.video, "file_name", filename),
+                            "file_size": msg.video.file_size,
+                        }
+                    if msg.document:
+                        doc_dict = {
+                            "file_id": msg.document.file_id,
+                            "file_unique_id": msg.document.file_unique_id,
+                            "file_name": getattr(msg.document, "file_name", filename),
+                            "file_size": msg.document.file_size,
+                        }
+
+                    res_payload = {
+                        "message_id": msg.id,
+                        "video": video_dict,
+                        "document": doc_dict
+                    }
+                    logger.info("[telegram_http] Pyrogram MTProto upload successful for %s -> msg_id: %s", filename, msg.id)
+                    return {"ok": True, "result": res_payload}
+                return None
+
+        def _run_coro(coro):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    return loop.run_until_complete(coro)
+                except Exception:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        return executor.submit(asyncio.run, coro).result()
+            else:
+                return asyncio.run(coro)
+
+        return _run_coro(_async_upload())
+
+    except Exception as e:
+        logger.warning("[telegram_http] Pyrogram MTProto upload failed for %s: %s", filename, e)
+        return None
+
+
 def send_document(local_path: str, chat_id: Optional[str] = None, caption: str = "", max_retries: int = 3) -> Optional[Dict[str, Any]]:
     """
     Uploads local_path as a document to the Telegram storage group.
     Returns the raw Telegram message dict on success, or None on failure.
+    Automatically routes files >= 45MB to Pyrogram MTProto (up to 2GB).
     Retries up to max_retries on transient socket/connection errors.
     """
     import time
@@ -66,6 +179,14 @@ def send_document(local_path: str, chat_id: Optional[str] = None, caption: str =
         return None
 
     filename = os.path.basename(local_path)
+    file_size = os.path.getsize(local_path)
+
+    # 50MB HTTP limit proactive check: route >= 45MB to Pyrogram MTProto
+    if file_size >= 45 * 1024 * 1024:
+        logger.info("[telegram_http] File size %.1fMB >= 45MB. Delegating to Pyrogram MTProto upload directly...", file_size / (1024 * 1024))
+        pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+        if pyro_res and pyro_res.get("ok"):
+            return pyro_res.get("result")
 
     for attempt in range(1, max_retries + 1):
         boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
@@ -102,11 +223,21 @@ def send_document(local_path: str, chat_id: Optional[str] = None, caption: str =
                 logger.warning("[telegram_http] sendDocument not OK: %s", result)
                 return None
         except Exception as e:
+            # Check for HTTP 413 Request Entity Too Large -> trigger Pyrogram immediately
+            if "413" in str(e) or "Too Large" in str(e):
+                logger.warning("[telegram_http] HTTP 413 encountered for %s. Falling back to Pyrogram MTProto upload...", filename)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+                if pyro_res and pyro_res.get("ok"):
+                    return pyro_res.get("result")
+
             if attempt < max_retries:
                 logger.warning("[telegram_http] send_document attempt %d failed for %s (%s) — retrying...", attempt, filename, e)
                 time.sleep(2.0 * attempt)
             else:
-                logger.warning("[telegram_http] send_document failed after %d attempts for %s: %s", max_retries, filename, e)
+                logger.warning("[telegram_http] send_document failed after %d attempts for %s: %s. Trying Pyrogram MTProto fallback...", max_retries, filename, e)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+                if pyro_res and pyro_res.get("ok"):
+                    return pyro_res.get("result")
                 return None
 
 
@@ -135,6 +266,7 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
     logger.info("[telegram_http] Initiating Pyrogram MTProto download for large file_id=%s...", file_id[:12])
     try:
         import asyncio
+        import concurrent.futures
         from pyrogram import Client
 
         token = _token()
@@ -158,20 +290,24 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
                     return True
                 return False
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
+        def _run_coro(coro):
             try:
-                import nest_asyncio
-                nest_asyncio.apply()
-            except ImportError:
-                pass
-            return loop.run_until_complete(_async_download())
-        else:
-            return asyncio.run(_async_download())
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    return loop.run_until_complete(coro)
+                except Exception:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        return executor.submit(asyncio.run, coro).result()
+            else:
+                return asyncio.run(coro)
+
+        return _run_coro(_async_download())
 
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto download failed for file_id=%s: %s", file_id[:12], e)

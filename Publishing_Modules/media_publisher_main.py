@@ -72,7 +72,7 @@ def _resolve_user_credentials(user_id: Optional[str] = None) -> Dict[str, Any]:
         }
 
     try:
-        from Publishing_Modules.telegram_user_manager import load_all_users, _is_admin_user
+        from Telegram_Storage_Modules.telegram_user_manager import load_all_users, _is_admin_user
         users = load_all_users()
         u_rec = users.get(str(user_id), {})
         is_admin = _is_admin_user(str(user_id)) if user_id else True

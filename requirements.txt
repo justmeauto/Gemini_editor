@@ -80,6 +80,7 @@ fastapi>=0.110.0
 uvicorn>=0.27.0
 pyrogram>=2.0.106
 tgcrypto>=1.2.5
+nest_asyncio>=1.6.0
 
 # --- AUDIO ---
 audioread>=3.0.0

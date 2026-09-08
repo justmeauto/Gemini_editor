@@ -612,7 +612,7 @@ async def handle_telegram_callback(update, context):
     # ── 🔑 Assign Credentials Menu ──────────────────────────────────────────
     if data == "menu_credentials":
         try:
-            from Publishing_Modules.telegram_user_manager import format_user_credentials_summary
+            from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
             summary_text = format_user_credentials_summary(str(chat_id))
             back_kbd = build_back_button_keyboard()
             await query.edit_message_text(
@@ -1127,7 +1127,7 @@ async def cmd_ytcode(update, context):
     raw = " ".join(context.args).strip()
     if raw.startswith("{") and raw.endswith("}"):
         try:
-            from Publishing_Modules.telegram_user_manager import set_user_youtube_token
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_token
             set_user_youtube_token(str(update.effective_chat.id), raw)
             await msg.reply_text("✅ YouTube OAuth Token Synced as your secret")
             return
@@ -1174,7 +1174,7 @@ async def _check_and_notify_busy_state(msg, user_id_str: str):
     """If another job is actively rendering and user has no personal API key, prompt them to add key for high speed."""
     if len(ACTIVE_PIPELINE_JOBS) > 0:
         try:
-            from Publishing_Modules.telegram_user_manager import get_user_apify_token, get_user_gemini_key
+            from Telegram_Storage_Modules.telegram_user_manager import get_user_apify_token, get_user_gemini_key
             has_apify = bool(get_user_apify_token(user_id_str))
             has_gemini = bool(get_user_gemini_key(user_id_str))
             if not has_apify and not has_gemini:
@@ -1511,7 +1511,7 @@ async def _wizard_credentials_step(msg, chat_id: int, text: str):
     if step == 1 and text.startswith("/setapify "):
         token = text.replace("/setapify ", "").strip()
         try:
-            from Publishing_Modules.telegram_user_manager import set_user_apify_token
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_apify_token
             set_user_apify_token(str(chat_id), token)
         except Exception as _e:
             logger.debug(f"setapify wizard: {_e}")
@@ -1529,7 +1529,7 @@ async def _wizard_credentials_step(msg, chat_id: int, text: str):
     if step == 2 and text.startswith("/setgemini "):
         key = text.replace("/setgemini ", "").strip()
         try:
-            from Publishing_Modules.telegram_user_manager import set_user_gemini_key
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_gemini_key
             set_user_gemini_key(str(chat_id), key)
         except Exception as _e:
             logger.debug(f"setgemini wizard: {_e}")
@@ -2505,7 +2505,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setapify YOUR_APIFY_TOKEN`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_apify_token
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_apify_token
                 set_user_apify_token(str(update.effective_chat.id), args_text)
             except Exception as _e:
                 logger.debug(f"setapify: {_e}")
@@ -2516,7 +2516,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setgemini YOUR_GEMINI_KEY`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_gemini_key
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_gemini_key
                 set_user_gemini_key(str(update.effective_chat.id), args_text)
             except Exception as _e:
                 logger.debug(f"setgemini: {_e}")
@@ -2530,7 +2530,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setbranding your_brand_watermark`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_branding
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_branding
                 set_user_branding(str(update.effective_chat.id), args_text)
                 await update.message.reply_text(f"🏷️ **Personal branding watermark updated to:** `{args_text}`\nPersonal Branding Watermark Synced as your secret")
             except Exception as _e:
@@ -2542,7 +2542,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setgroup YOUR_PUBLIC_GROUP_ID` (e.g., -1001234567890)")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_public_group_id
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_public_group_id
                 ok = set_user_public_group_id(str(update.effective_chat.id), args_text)
                 if ok:
                     msg = f"📢 **Public Group ID updated to:** `{args_text}`\nPublic Group ID Synced as your secret"
@@ -2558,7 +2558,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setschedule HH:MM,HH:MM` (e.g., `/setschedule 06:00,19:00`)")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_schedule_times
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_schedule_times
                 set_user_schedule_times(str(update.effective_chat.id), args_text)
                 await update.message.reply_text(f"⏰ **Schedule times updated to:** `{args_text}`\nSchedule Times Synced as your secret")
             except Exception as _e:
@@ -2570,7 +2570,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/setytclient YOUR_CLIENT_SECRET_JSON`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_youtube_client_secret
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_youtube_client_secret
                 set_user_youtube_client_secret(str(update.effective_chat.id), args_text)
                 await update.message.reply_text("🔐 **YouTube Client Secret Synced as your secret**")
             except Exception as _e:
@@ -2582,7 +2582,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/instagramtoken YOUR_INSTAGRAM_ACCESS_TOKEN`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_instagram_token
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_instagram_token
                 set_user_instagram_token(str(update.effective_chat.id), args_text)
                 await update.message.reply_text("📸 **Instagram Access Token Synced as your secret**")
             except Exception as _e:
@@ -2594,7 +2594,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/instagramid YOUR_INSTAGRAM_BUSINESS_ACCOUNT_ID`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_instagram_id
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_instagram_id
                 set_user_instagram_id(str(update.effective_chat.id), args_text)
                 await update.message.reply_text(f"🆔 **Instagram Business Account ID updated to:** `{args_text}`\nInstagram Business Account ID Synced as your secret")
             except Exception as _e:
@@ -2606,7 +2606,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/facebookid YOUR_FACEBOOK_PAGE_ID`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_facebook_id
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_facebook_id
                 set_user_facebook_id(str(update.effective_chat.id), args_text)
                 await update.message.reply_text(f"📘 **Facebook Page ID updated to:** `{args_text}`\nFacebook Page ID Synced as your secret")
             except Exception as _e:
@@ -2618,7 +2618,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/facebooktoken YOUR_FACEBOOK_PAGE_ACCESS_TOKEN`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_facebook_token
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_facebook_token
                 set_user_facebook_token(str(update.effective_chat.id), args_text)
                 await update.message.reply_text("🔑 **Facebook Page Access Token Synced as your secret**")
             except Exception as _e:
@@ -2630,7 +2630,7 @@ def start_telegram_bot_service():
                 await update.message.reply_text("Usage: `/tiktoktoken YOUR_TIKTOK_ACCESS_TOKEN`")
                 return
             try:
-                from Publishing_Modules.telegram_user_manager import set_user_tiktok_token
+                from Telegram_Storage_Modules.telegram_user_manager import set_user_tiktok_token
                 set_user_tiktok_token(str(update.effective_chat.id), args_text)
                 await update.message.reply_text("🎵 **TikTok Access Token Synced as your secret**")
             except Exception as _e:
@@ -2638,7 +2638,7 @@ def start_telegram_bot_service():
 
         async def _cmd_myconfig(update, context):
             try:
-                from Publishing_Modules.telegram_user_manager import format_user_credentials_summary
+                from Telegram_Storage_Modules.telegram_user_manager import format_user_credentials_summary
                 summary_text = format_user_credentials_summary(str(update.effective_chat.id))
                 await update.message.reply_text(summary_text)
             except Exception as _e:

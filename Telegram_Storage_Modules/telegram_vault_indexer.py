@@ -56,10 +56,37 @@ def _empty_vault_index() -> Dict[str, Any]:
     }
 
 
-def _send_telegram_file_sync(method: str, chat_id: str, file_key: str, file_path: str, caption: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _send_telegram_file_sync(
+    method: str,
+    chat_id: str,
+    file_key: str,
+    file_path: str,
+    caption: Optional[str] = None,
+    custom_filename: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not bot_token or not chat_id or not os.path.exists(file_path):
         return None
+
+    filename = custom_filename or os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+
+    # Telegram Bot API HTTP limit is 50MB. Proactively route files >= 45MB via Pyrogram MTProto
+    if file_size >= 45 * 1024 * 1024:
+        logger.info(f"🚀 File '{filename}' is {file_size / (1024*1024):.1f}MB (>=45MB). Using Pyrogram MTProto upload directly...")
+        try:
+            from Telegram_Storage_Modules.telegram_http import upload_file_with_pyrogram
+            res = upload_file_with_pyrogram(
+                local_path=file_path,
+                chat_id=chat_id,
+                caption=caption or "",
+                file_name=filename,
+                as_video=(method == "sendVideo" or file_key == "video")
+            )
+            if res and res.get("ok"):
+                return res
+        except Exception as _pyro_err:
+            logger.warning(f"⚠️ Pyrogram direct upload error for {filename}: {_pyro_err}")
 
     boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
@@ -75,7 +102,6 @@ def _send_telegram_file_sync(method: str, chat_id: str, file_key: str, file_path
     if caption:
         add_field("caption", caption)
 
-    filename = os.path.basename(file_path)
     body.extend(f"--{boundary}\r\n".encode("utf-8"))
     body.extend(f'Content-Disposition: form-data; name="{file_key}"; filename="{filename}"\r\n'.encode("utf-8"))
     body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
@@ -93,7 +119,22 @@ def _send_telegram_file_sync(method: str, chat_id: str, file_key: str, file_path
         with urllib.request.urlopen(req, timeout=180) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as err:
-        logger.warning(f"⚠️ Telegram file upload failed for {filename}: {err}")
+        logger.warning(f"⚠️ Telegram HTTP file upload failed for {filename}: {err}")
+        # Automatic fallback to Pyrogram MTProto upload (handles HTTP 413, socket drops, etc.)
+        try:
+            from Telegram_Storage_Modules.telegram_http import upload_file_with_pyrogram
+            logger.info(f"🔄 Attempting Pyrogram MTProto upload fallback for {filename}...")
+            res = upload_file_with_pyrogram(
+                local_path=file_path,
+                chat_id=chat_id,
+                caption=caption or "",
+                file_name=filename,
+                as_video=(method == "sendVideo" or file_key == "video")
+            )
+            if res and res.get("ok"):
+                return res
+        except Exception as _pyro_fallback_err:
+            logger.warning(f"⚠️ Pyrogram fallback also failed for {filename}: {_pyro_fallback_err}")
         return None
 
 
@@ -1198,12 +1239,26 @@ class TelegramVaultIndexer:
             return None
 
         try:
-            filename = os.path.basename(clean_video_path)
-            caption = f"🎬 [CLEAN INPAINTED SOURCE] `{filename}`\n🆔 `{clip_folder_name}`"
+            clean_display_name = f"{clip_folder_name}.mp4" if not clip_folder_name.endswith(".mp4") else clip_folder_name
+            caption = f"🎬 [CLEAN INPAINTED SOURCE] `{clean_display_name}`\n🆔 `{clip_folder_name}`"
 
-            upload_res = _send_telegram_file_sync("sendVideo", storage_group_id, "video", clean_video_path, caption=caption)
+            upload_res = _send_telegram_file_sync(
+                "sendVideo",
+                storage_group_id,
+                "video",
+                clean_video_path,
+                caption=caption,
+                custom_filename=clean_display_name
+            )
             if not upload_res or not isinstance(upload_res, dict) or not upload_res.get("ok"):
-                upload_res = _send_telegram_file_sync("sendDocument", storage_group_id, "document", clean_video_path, caption=caption)
+                upload_res = _send_telegram_file_sync(
+                    "sendDocument",
+                    storage_group_id,
+                    "document",
+                    clean_video_path,
+                    caption=caption,
+                    custom_filename=clean_display_name
+                )
 
             clean_file_id = None
             if upload_res and isinstance(upload_res, dict) and upload_res.get("ok"):
