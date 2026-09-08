@@ -1,4 +1,19 @@
 {
   "version": 1,
-  "entries": {}
+  "entries": {
+    "vault_bgm_dc8lppidjss.wav": {
+      "filename": "vault_bgm_dc8lppidjss.wav",
+      "shortcode": "dc8lppidjss",
+      "telegram_file_id": "BQACAgUAAyEGAATgPI-iAAIghGqeXcX_r-DarLRAfh86reoVvbrwAAINJgACjhD4VHfx90nz-QJuPQQ",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788895883.9186606
+    },
+    "dc8lppidjss": {
+      "filename": "vault_bgm_dc8lppidjss.wav",
+      "shortcode": "dc8lppidjss",
+      "telegram_file_id": "BQACAgUAAyEGAATgPI-iAAIghGqeXcX_r-DarLRAfh86reoVvbrwAAINJgACjhD4VHfx90nz-QJuPQQ",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788895883.9186606
+    }
+  }
 }
