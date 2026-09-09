@@ -526,9 +526,9 @@ async def handle_telegram_callback(update, context):
                 "⚙️ **Auto Input Setup — Step 1/6: Source Account IDs**\n\n"
                 "Send the platform handles you want to scrape.\n\n"
                 "📌 **Format** (one per line or all together):\n"
-                "  `/instagram @creator_handle`\n"
-                "  `/youtube @ChannelName`\n"
-                "  `/tiktok @tiktokuser`\n\n"
+                "  `instagram @creator_handle`\n"
+                "  `youtube @ChannelName`\n"
+                "  `tiktok @tiktokuser`\n\n"
                 "You can add up to **2 accounts total** across any mix of platforms.\n"
                 "Send them now 👇"
             ),
@@ -1363,10 +1363,20 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
             await msg.reply_text(
                 "⚠️ Could not parse any account IDs.\n\n"
                 "Please use the format:\n"
-                "`/instagram @handle`  or  `/youtube @handle`  or  `/tiktok @handle`"
+                "`instagram @creator_handle`  or  `youtube @ChannelName`  or  `tiktok @tiktokuser`"
             )
             return True
         data["accounts"] = added[:2]  # max 2
+
+        # Immediately write source accounts to source_accounts.json & sync to Telegram Storage Group Vault!
+        try:
+            from Downloader_Modules.scheduled_scraper_manager import add_source_account
+            for acc in data["accounts"]:
+                add_source_account(acc["handle"], acc["platform"])
+            logger.info("⚙️ [AUTO SETUP] Chat %s Step 1: Immediately saved %d account(s) to source_accounts.json & synced to Telegram Vault: %s", chat_id, len(data["accounts"]), [a["handle"] for a in data["accounts"]])
+        except Exception as _sa_err:
+            logger.warning("⚠️ add_source_account Step 1 immediate save notice: %s", _sa_err)
+
         acc_summary = "\n".join([f"• `{a['platform'].title()}`: `@{a['handle']}`" for a in data["accounts"]])
         sess["step"] = 2
         await msg.reply_text(
@@ -1383,6 +1393,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         raw_parts = text.strip().split(",")
         norm_parts = [normalize_time_slot(p) or p.strip() for p in raw_parts if p.strip()]
         data["scrape_times"] = ",".join(norm_parts) or text.strip()
+        logger.info("⚙️ [AUTO SETUP] Chat %s Step 2: Scraping times set to: %s", chat_id, data["scrape_times"])
         sess["step"] = 3
         await msg.reply_text(
             f"✅ **Scraping times set**: `{data['scrape_times']}`\n\n"
@@ -1398,6 +1409,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         raw_parts = text.strip().split(",")
         norm_parts = [normalize_time_slot(p) or p.strip() for p in raw_parts if p.strip()]
         data["publish_times"] = ",".join(norm_parts) or text.strip()
+        logger.info("⚙️ [AUTO SETUP] Chat %s Step 3: Publishing times set to: %s", chat_id, data["publish_times"])
         sess["step"] = 4
         await msg.reply_text(
             f"✅ **Publishing times set**: `{data['publish_times']}`\n\n"
@@ -1414,6 +1426,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         except ValueError:
             clips = 5
         data["clips_per_account"] = clips
+        logger.info("⚙️ [AUTO SETUP] Chat %s Step 4: Clips per account set to: %d", chat_id, clips)
         sess["step"] = 5
         await msg.reply_text(
             f"✅ **Clips per account**: `{clips}` clips per run\n\n"
@@ -1430,6 +1443,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         except ValueError:
             pub_limit = 2
         data["max_publish_per_day"] = pub_limit
+        logger.info("⚙️ [AUTO SETUP] Chat %s Step 5: Daily publish limit set to: %d", chat_id, pub_limit)
         sess["step"] = 6
         await msg.reply_text(
             f"✅ **Daily publish limit**: `{pub_limit}` reels/day\n\n"
@@ -1446,6 +1460,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         except ValueError:
             days = 7
         data["days_per_week"] = days
+        logger.info("⚙️ [AUTO SETUP] Chat %s Step 6: Active days per week set to: %d. Committing full configuration...", chat_id, days)
         # Save everything
         env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
         try:
@@ -2590,9 +2605,13 @@ def start_telegram_bot_service():
             sess.update({"wizard": "auto_setup", "step": 1, "data": {}})
             await update.message.reply_text(
                 "⚙️ **Auto Input Setup — Step 1/6: Source Account IDs**\n\n"
-                "Send your platform handles (one per line or all together):\n"
-                "`/instagram @handle`\n`/youtube @handle`\n`/tiktok @handle`\n\n"
-                "You can add up to 2 accounts total.",
+                "Send the platform handles you want to scrape.\n\n"
+                "📌 **Format** (one per line or all together):\n"
+                "  `instagram @creator_handle`\n"
+                "  `youtube @ChannelName`\n"
+                "  `tiktok @tiktokuser`\n\n"
+                "You can add up to **2 accounts total** across any mix of platforms.\n"
+                "Send them now 👇",
                 reply_markup=build_back_button_keyboard()
             )
         async def _cmd_addaccount(update, context):
@@ -2828,6 +2847,20 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("rejet", _cmd_reject))
         app.add_handler(CommandHandler("cancel", _cmd_cancel))
         app.add_handler(CommandHandler("back", _cmd_cancel))
+        app.add_handler(CommandHandler("setstoragechat", handle_telegram_incoming_msg))
+        app.add_handler(CommandHandler("metagraphapi", handle_telegram_incoming_msg))
+
+        async def _cmd_unknown(update, context):
+            if update.message:
+                cmd = update.message.text.split()[0] if update.message.text else "command"
+                uid = update.effective_user.id if update.effective_user else "unknown"
+                logger.warning(f"🛡️ [SECURITY GUARD] Unknown command '{cmd}' blocked from User {uid}")
+                await update.message.reply_text(
+                    f"⚠️ **Unknown command:** `{cmd}`\n\n"
+                    f"Send `/start` to view the platform menu, or `/help` for assistance."
+                )
+
+        app.add_handler(MessageHandler(filters.COMMAND, _cmd_unknown))
         app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
