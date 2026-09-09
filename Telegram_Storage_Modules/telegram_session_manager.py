@@ -169,6 +169,16 @@ class TelegramSessionManager:
             return True
         return False
 
+    def revert_awaiting_title(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Reverts session status from AWAITING_TITLE back to AWAITING_REVIEW."""
+        if session_id in self.sessions:
+            self.sessions[session_id]["status"] = "AWAITING_REVIEW"
+            self.sessions[session_id]["updated_at"] = time.time()
+            self._save_sessions()
+            logger.info(f"↩️ Session {session_id} reverted from AWAITING_TITLE back to AWAITING_REVIEW.")
+            return self.sessions[session_id]
+        return None
+
     def set_approved_title(self, session_id: str, custom_title: str) -> Optional[Dict[str, Any]]:
         """Sets custom title, marks session APPROVED, and returns session data."""
         if session_id in self.sessions:
@@ -231,14 +241,19 @@ class TelegramSessionManager:
 
         return (True, 1)
 
-    def get_pending_title_session(self) -> Optional[Dict[str, Any]]:
-        """Returns the most recent session waiting for a custom title."""
+    def get_pending_title_session(self, chat_id: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+        """Returns the most recent session waiting for a custom title, optionally filtered by chat_id."""
         awaiting = [
             s for s in self.sessions.values()
             if s.get("status") == "AWAITING_TITLE"
         ]
         if awaiting:
             awaiting.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+            if chat_id is not None:
+                chat_str = str(chat_id).strip()
+                for s in awaiting:
+                    if str(s.get("requestor_chat_id", "")).strip() == chat_str:
+                        return s
             return awaiting[0]
         return None
 

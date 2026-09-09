@@ -443,6 +443,24 @@ def build_telegram_session_keyboard(session_id: str, shortcode: Optional[str] = 
         return None
 
 
+def build_awaiting_title_keyboard(session_id: str):
+    """
+    Builds 2-Button Inline Keyboard for Approved Reel Awaiting Custom Title:
+      Row 1: [↩️ Back]  [🗑️ Reject & Discard]
+    """
+    try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [
+            [
+                InlineKeyboardButton("↩️ Back", callback_data=f"back_review_{session_id}"),
+                InlineKeyboardButton("🗑️ Reject & Discard", callback_data=f"reject_{session_id}"),
+            ]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+    except Exception:
+        return None
+
+
 # ── Telegram Callback Handlers ───────────────────────────────────────────────
 
 async def handle_telegram_callback(update, context):
@@ -703,18 +721,57 @@ async def handle_telegram_callback(update, context):
             f"*(Example: `My Product Review https://amzn.to/example`)*\n\n"
             f"⚠️ *Note: Direct links alone are strictly rejected! A user title is compulsory.*"
         )
+        awaiting_kbd = build_awaiting_title_keyboard(session_id)
 
         try:
             if query.message.video or query.message.document or query.message.photo:
-                await query.edit_message_caption(caption=new_text)
+                await query.edit_message_caption(caption=new_text, reply_markup=awaiting_kbd)
             else:
-                await query.edit_message_text(text=new_text)
+                await query.edit_message_text(text=new_text, reply_markup=awaiting_kbd)
         except Exception as _ce:
             logger.warning(f"⚠️ Callback caption edit warning: {_ce}")
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text=new_text
+                text=new_text,
+                reply_markup=awaiting_kbd
             )
+        return
+
+    if data.startswith("back_review_"):
+        session_id = data.replace("back_review_", "").strip()
+        sess = session_manager.revert_awaiting_title(session_id)
+        if not sess:
+            sess = session_manager.get_session(session_id)
+            if sess:
+                sess["status"] = "AWAITING_REVIEW"
+                session_manager._save_sessions()
+
+        clip_id = sess.get("clip_id") if sess else None
+        video_path = sess.get("video_path") if sess else ""
+        bname = os.path.basename(video_path) if video_path else "reel"
+
+        orig_text = query.message.caption or query.message.text or f"📁 `{bname}`"
+        if "✅ **Approved!**" in orig_text:
+            orig_text = orig_text.split("✅ **Approved!**")[0].rstrip()
+        if not orig_text.strip():
+            orig_text = f"🎉 **AI Master Edit Complete!**\n📁 `{bname}`\n🆔 `Session: {session_id}`"
+
+        review_keyboard = build_telegram_session_keyboard(session_id=session_id, shortcode=clip_id)
+
+        try:
+            if query.message.video or query.message.document or query.message.photo:
+                await query.edit_message_caption(caption=orig_text, reply_markup=review_keyboard)
+            else:
+                await query.edit_message_text(text=orig_text, reply_markup=review_keyboard)
+            await query.answer("↩️ Returned to review options.", show_alert=False)
+        except Exception as _b_err:
+            logger.warning(f"⚠️ Callback back_review edit warning: {_b_err}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"↩️ **Returned to Review Options for `{bname}`:**",
+                reply_markup=review_keyboard
+            )
+        return
 
     elif data.startswith("approve_post_"):
         session_id = data.replace("approve_post_", "").strip()
@@ -1653,32 +1710,62 @@ async def handle_telegram_incoming_msg(update, context):
         return
 
     # Check if we are waiting for a custom title / hint / affiliate URL from user
-    pending_sess = session_manager.get_pending_title_session()
-    if pending_sess and msg.text and not msg.text.startswith("/"):
+    pending_sess = session_manager.get_pending_title_session(chat_id)
+    if pending_sess and msg.text:
         user_input_raw = msg.text.strip()
-        sess_id = pending_sess["session_id"]
-        sess = session_manager.get_session(sess_id)
+        cmd_check = user_input_raw.lower()
 
-        # 1. Detect and extract optional affiliate URL from user input format <User Title> <url>
-        affiliate_url = None
-        url_match = re.search(r'https?://[^\s<>"]+', user_input_raw)
-        if url_match:
-            affiliate_url = url_match.group(0).strip()
-            # Clean title hint by stripping out the URL
-            user_hint_text = user_input_raw.replace(affiliate_url, "").strip()
-        else:
-            user_hint_text = user_input_raw
-
-        # 🛑 COMPULSORY RULE: Direct links alone are strictly forbidden! User title is compulsory.
-        if not user_hint_text or len(user_hint_text) < 2:
-            await msg.reply_text(
-                "❌ **Bare link alone is NOT allowed!**\n\n"
-                "You MUST provide a **User Title** before the link.\n\n"
-                "📌 **Compulsory Format**: `<User Title> <Link>` (or just `<User Title>`)\n"
-                "💡 *Example*: `My Product Review https://amzn.to/example`\n\n"
-                "Please send your title and link again in the correct format 👇"
-            )
+        # Handle explicit rejection or cancellation in text
+        if cmd_check in ("/reject", "reject", "/rejet", "rejet"):
+            sess_id = pending_sess["session_id"]
+            sess = session_manager.set_rejected(sess_id)
+            if sess:
+                from Core_Modules import purge_full_clip_and_assets
+                purge_res = purge_full_clip_and_assets(
+                    clip_id=sess.get("clip_id"),
+                    video_path=sess.get("video_path"),
+                    attempt_history=sess.get("attempt_history", []),
+                    selected_audio=sess.get("selected_audio")
+                )
+                logger.info(f"🗑️ Purged assets for session {sess_id} via text reject: {purge_res.get('purged_count')} items removed")
+            await msg.reply_text("🗑️ **REJECTED & DISCARDED BY ADMIN.**\nAll audio, video assets, and metadata pool index purged!")
             return
+
+        if cmd_check in ("/cancel", "cancel", "/back", "back"):
+            sess_id = pending_sess["session_id"]
+            session_manager.revert_awaiting_title(sess_id)
+            sess = session_manager.get_session(sess_id)
+            clip_id = sess.get("clip_id") if sess else None
+            review_kbd = build_telegram_session_keyboard(session_id=sess_id, shortcode=clip_id)
+            await msg.reply_text("↩️ **Cancelled title input.** Returned reel to review options.", reply_markup=review_kbd)
+            return
+
+        if not user_input_raw.startswith("/"):
+            sess_id = pending_sess["session_id"]
+            sess = session_manager.get_session(sess_id)
+
+            # 1. Detect and extract optional affiliate URL from user input format <User Title> <url>
+            affiliate_url = None
+            url_match = re.search(r'https?://[^\s<>"]+', user_input_raw)
+            if url_match:
+                affiliate_url = url_match.group(0).strip()
+                # Clean title hint by stripping out the URL
+                user_hint_text = user_input_raw.replace(affiliate_url, "").strip()
+            else:
+                user_hint_text = user_input_raw
+
+            # 🛑 COMPULSORY RULE: Direct links alone are strictly forbidden! User title is compulsory.
+            if not user_hint_text or len(user_hint_text) < 2:
+                cancel_kbd = build_awaiting_title_keyboard(sess_id)
+                await msg.reply_text(
+                    "❌ **Bare link alone is NOT allowed!**\n\n"
+                    "You MUST provide a **User Title** before the link.\n\n"
+                    "📌 **Compulsory Format**: `<User Title> <Link>` (or just `<User Title>`)\n"
+                    "💡 *Example*: `My Product Review https://amzn.to/example`\n\n"
+                    "Please send your title and link again in the correct format 👇",
+                    reply_markup=cancel_kbd
+                )
+                return
 
         video_path = sess.get("video_path") if sess else None
         clip_id = sess.get("clip_id") if sess else (os.path.basename(os.path.dirname(video_path)) if video_path else sess_id)
@@ -2448,6 +2535,8 @@ def start_telegram_bot_service():
                         BotCommand("addaccount", "Add Instagram/YouTube handle to scrape"),
                         BotCommand("removeaccount", "Remove a handle from scraping list"),
                         BotCommand("listaccounts", "List active source handles"),
+                        BotCommand("reject", "Reject & discard current reel"),
+                        BotCommand("cancel", "Cancel title input or active wizard"),
                     ]
                     await application.bot.set_my_commands(commands)
                     logger.info("📋 Registered Telegram Bot Command Menu with Telegram API")
@@ -2678,6 +2767,46 @@ def start_telegram_bot_service():
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Error fetching config: {_e}")
 
+        async def _cmd_reject(update, context):
+            chat_id = update.effective_chat.id
+            pending_sess = session_manager.get_pending_title_session(chat_id)
+            if not pending_sess:
+                for s in reversed(list(session_manager.sessions.values())):
+                    if s.get("status") in ("AWAITING_REVIEW", "AWAITING_TITLE"):
+                        if not s.get("requestor_chat_id") or str(s.get("requestor_chat_id")) == str(chat_id):
+                            pending_sess = s
+                            break
+            if pending_sess:
+                sess_id = pending_sess["session_id"]
+                sess = session_manager.set_rejected(sess_id)
+                if sess:
+                    from Core_Modules import purge_full_clip_and_assets
+                    purge_res = purge_full_clip_and_assets(
+                        clip_id=sess.get("clip_id"),
+                        video_path=sess.get("video_path"),
+                        attempt_history=sess.get("attempt_history", []),
+                        selected_audio=sess.get("selected_audio")
+                    )
+                    logger.info(f"🗑️ Purged assets for session {sess_id} via /reject: {purge_res.get('purged_count')} items removed")
+                await update.message.reply_text("🗑️ **REJECTED & DISCARDED BY ADMIN.**\nAll audio, video assets, and metadata pool index purged!")
+            else:
+                await update.message.reply_text("ℹ️ No active review or pending title session found to reject.")
+
+        async def _cmd_cancel(update, context):
+            chat_id = update.effective_chat.id
+            pending_sess = session_manager.get_pending_title_session(chat_id)
+            if pending_sess and pending_sess.get("status") == "AWAITING_TITLE":
+                sess_id = pending_sess["session_id"]
+                session_manager.revert_awaiting_title(sess_id)
+                sess = session_manager.get_session(sess_id)
+                clip_id = sess.get("clip_id") if sess else None
+                review_kbd = build_telegram_session_keyboard(session_id=sess_id, shortcode=clip_id)
+                await update.message.reply_text("↩️ **Cancelled title input.** Returned reel to review options.", reply_markup=review_kbd)
+            else:
+                _wizard_sessions.pop(chat_id, None)
+                user_pending_reedit_session.pop(chat_id, None)
+                await update.message.reply_text("↩️ Cancelled active operation.")
+
         app.add_handler(CommandHandler("autosetup", _cmd_auto_setup))
         app.add_handler(CommandHandler("addaccount", _cmd_addaccount))
         app.add_handler(CommandHandler("removeaccount", _cmd_removeaccount))
@@ -2695,6 +2824,10 @@ def start_telegram_bot_service():
         app.add_handler(CommandHandler("facebooktoken", _cmd_facebooktoken))
         app.add_handler(CommandHandler("tiktoktoken", _cmd_tiktoktoken))
         app.add_handler(CommandHandler("myconfig", _cmd_myconfig))
+        app.add_handler(CommandHandler("reject", _cmd_reject))
+        app.add_handler(CommandHandler("rejet", _cmd_reject))
+        app.add_handler(CommandHandler("cancel", _cmd_cancel))
+        app.add_handler(CommandHandler("back", _cmd_cancel))
         app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
