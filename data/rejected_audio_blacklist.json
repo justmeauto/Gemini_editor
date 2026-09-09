@@ -1,4 +1,19 @@
 {
   "version": 1,
-  "entries": {}
+  "entries": {
+    "extracted_ddby8ojj2ax.wav": {
+      "filename": "extracted_ddby8ojj2ax.wav",
+      "shortcode": "ddby8ojj2ax",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788989869.6837757
+    },
+    "ddby8ojj2ax": {
+      "filename": "extracted_ddby8ojj2ax.wav",
+      "shortcode": "ddby8ojj2ax",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788989869.6837757
+    }
+  }
 }
