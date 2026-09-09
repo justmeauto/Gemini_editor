@@ -1199,8 +1199,10 @@ class FFmpegCommandGenerator:
         elif has_src:
             filter_parts.append(f"[ac]volume={max(0.70, video_volume):.2f}[aout]")
         elif self._has_audio_stream(input_path):
-            # Fallback to source video's continuous audio stream if not sliced into [ac]
-            filter_parts.append(f"[0:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume=1.00[aout]")
+            # Source has audio but preserve_original_audio=False (mute directive active).
+            # NEVER leak raw source audio here — emit silence to honour the mute.
+            logger.info("🔇 [AUDIO DIRECTIVE] Source audio stream detected but mute directive active → emitting silence (anullsrc).")
+            filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_visual_dur:.4f}[aout]")
         else:
             # Absolute last resort: video is genuinely silent (0 audio streams, no BGM, no VO)
             filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_visual_dur:.4f}[aout]")
@@ -2401,8 +2403,13 @@ class GeminiFFmpegEngine:
         f_intent = forensic.get("intent", "")
         if "preserve_original_audio" not in extra_inputs:
             if not audio_path or not os.path.exists(audio_path):
-                extra_inputs["preserve_original_audio"] = True
-                logger.info("🎙️ [SPEECH INTEL] No external BGM track provided -> preserve_original_audio=True to prevent silent output.")
+                # MUTE DIRECTIVE: No BGM → source clip stays SILENT.
+                # We do NOT flip preserve_original_audio=True here — that was the sticky-audio
+                # escape hatch. If no BGM was selected, the output is intentionally silent
+                # (the filtergraph will emit anullsrc). Only talking-head / voice-preserve
+                # modes may override this below.
+                extra_inputs["preserve_original_audio"] = False
+                logger.info("🔇 [AUDIO DIRECTIVE] No external BGM track provided → source clip will be MUTED (preserve_original_audio=False).")
             elif audio_path and (
                 rec_action == "audio_replace_full_bgm" or
                 speech_mode in ("silent_broll", "music_broll", "lip_sync_dub") or

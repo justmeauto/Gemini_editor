@@ -1181,13 +1181,13 @@ def select_best_audio_for_clip(
 
     top_candidates = (tier1[:7] + tier2[:2] + tier3[:1]) if tier1 else (tier2[:8] + tier3[:1])
 
-    fresh_candidates = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
-    if fresh_candidates:
-        best_math_candidate = fresh_candidates[0][1]
-        best_math_fid = fresh_candidates[0][3]
-        best_math_score = float(fresh_candidates[0][0])
+    non_disqualified_top = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
+    if non_disqualified_top:
+        best_math_candidate = non_disqualified_top[0][1]
+        best_math_fid = non_disqualified_top[0][3]
+        best_math_score = float(non_disqualified_top[0][0])
     else:
-        best_math_candidate = top_candidates[0][1] if top_candidates else available_candidates[0]
+        best_math_candidate = top_candidates[0][1] if top_candidates else (available_candidates[0] if available_candidates else "")
         best_math_fid = top_candidates[0][3] if top_candidates else ""
         best_math_score = float(top_candidates[0][0]) if top_candidates else 0.85
 
@@ -1257,7 +1257,14 @@ Return ONLY valid JSON:
                 data = json.loads(_clean_json(raw_response))
                 win_track = data.get("selected_audio_track")
                 win_fid = data.get("telegram_file_id")
-                if win_track and any(c.lower() == win_track.lower() for c in available_candidates) and win_track.lower() not in effective_disqualified:
+                # Validate Gemini's pick against ALL valid pools:
+                # available_candidates (outer), top_candidates list, and all_candidates (pre-cooldown)
+                all_valid_names = (
+                    set(c.lower() for c in available_candidates)
+                    | set(c[1].lower() for c in top_candidates)
+                    | set(c.lower() for c in all_candidates)
+                )
+                if win_track and win_track.lower() in all_valid_names and win_track.lower() not in effective_disqualified:
                     selected_track = win_track
                     reasoning = data.get("reasoning", reasoning)
                     alignment_score = float(data.get("alignment_score", 0.90))
