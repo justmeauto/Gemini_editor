@@ -67,14 +67,48 @@ def prepare_proxy_clip(video_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def get_clip_duration(video_path: str) -> float:
+    """Returns video duration in seconds via cv2 or ffprobe."""
+    if not video_path or not os.path.exists(video_path):
+        return 0.0
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            if fps and fps > 0:
+                return round(float(frames / fps), 2)
+    except Exception:
+        pass
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return round(float(result.stdout.strip()), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Step 2: Bounding Box Overlap & Watermark Alignment Audit
 # ─────────────────────────────────────────────────────────────────────────────
 
 def normalize_box(box: Any) -> Optional[Dict[str, float]]:
-    """Converts various box representation schemas to standard dict {'x', 'y', 'w', 'h'}."""
+    """Converts various box representation schemas (including Gemini box_2d) to standard dict {'x', 'y', 'w', 'h'}."""
     if not box:
         return None
     if isinstance(box, dict):
+        if "box_2d" in box and isinstance(box["box_2d"], (list, tuple)) and len(box["box_2d"]) == 4:
+            ymin, xmin, ymax, xmax = [float(v) for v in box["box_2d"]]
+            return {"x": xmin, "y": ymin, "w": max(0.0, xmax - xmin), "h": max(0.0, ymax - ymin)}
         if all(k in box for k in ("x", "y", "w", "h")):
             return {"x": float(box["x"]), "y": float(box["y"]), "w": float(box["w"]), "h": float(box["h"])}
         if all(k in box for k in ("xmin", "ymin", "xmax", "ymax")):
@@ -85,7 +119,11 @@ def normalize_box(box: Any) -> Optional[Dict[str, float]]:
                 "h": float(box["ymax"]) - float(box["ymin"])
             }
     elif isinstance(box, (list, tuple)) and len(box) == 4:
-        return {"x": float(box[0]), "y": float(box[1]), "w": float(box[2]), "h": float(box[3])}
+        b = [float(v) for v in box]
+        # Detect [ymin, xmin, ymax, xmax] standard Gemini Vision schema
+        if b[2] > b[0] and b[3] > b[1]:
+            return {"x": b[1], "y": b[0], "w": b[3] - b[1], "h": b[2] - b[0]}
+        return {"x": b[0], "y": b[1], "w": b[2], "h": b[3]}
     return None
 
 
@@ -123,11 +161,13 @@ def compute_box_coverage(inpaint_box: Dict[str, float], brand_box: Dict[str, flo
 def audit_watermark_brand_alignment(
     inpainted_boxes: Optional[List[Any]] = None,
     brand_boxes: Optional[List[Any]] = None,
+    brand_name: str = "",
     frame_image: Any = None
 ) -> Dict[str, Any]:
     """
     Verifies that our custom brand watermark position accurately matches and covers
     the inpainted region so no original watermark ghosting or artifacts are exposed.
+    Uses spatial bounding box coordinates only (NO raw watermark text strings to avoid LLM bias).
     """
     norm_inpaints = [normalize_box(b) for b in (inpainted_boxes or []) if normalize_box(b)]
     norm_brands = [normalize_box(b) for b in (brand_boxes or []) if normalize_box(b)]
@@ -141,24 +181,25 @@ def audit_watermark_brand_alignment(
             "details": "No inpainted watermark bounding box detected in source video."
         }
 
-    # Default brand box if unprovided (bottom-center / top-center typical watermark location)
+    # Default brand box if unprovided (centered over first inpaint box)
     if not norm_brands:
-        # Default fallback brand overlay position
         norm_brands = [{"x": norm_inpaints[0]["x"] - 5, "y": norm_inpaints[0]["y"] - 5,
                         "w": norm_inpaints[0]["w"] + 10, "h": norm_inpaints[0]["h"] + 10}]
 
     coverage_pct, is_covered = compute_box_coverage(norm_inpaints[0], norm_brands[0])
-
     gemini_verdict = "CONFIRMED_COVERAGE" if is_covered else "MISALIGNED_OVERLAY"
 
-    # Optional Gemini Vision visual verification if frame_image is available
+    # Gemini Vision spatial verification if frame_image is available
     if frame_image and gemini_router:
         try:
+            brand_label = f"our designated brand watermark text '{brand_name}'" if brand_name else "our brand watermark"
             prompt = (
-                "Analyze this video frame. We applied an OpenCV inpaint mask over an original watermark "
-                "and overlaid our brand watermark text over it. "
-                "Inspect carefully: Is the original watermark completely covered? "
-                "Are there any leftover ghost artifacts, unmasked text, or blur stains exposed? "
+                f"Analyze this video frame. We inpainted the region at spatial coordinates {norm_inpaints[0]} "
+                f"and overlaid {brand_label} directly over it. "
+                "Inspect this specific spatial bounding box area with maximum precision: "
+                "1. Is ONLY our designated brand watermark visible in this coordinate zone? "
+                "2. Are there any leftover ghost artifacts, original watermark remnants, or blur stains exposed? "
+                "Do NOT search for, mention, or generate any external account handles. "
                 "Return ONLY a JSON response: {\"is_clean\": true/false, \"verdict\": \"EXACT_COVERAGE\"|\"ARTIFACT_EXPOSED\", \"notes\": \"...\"}"
             )
             raw = gemini_router.generate(
@@ -191,11 +232,14 @@ def audit_watermark_brand_alignment(
 def audit_human_engagement(
     proxy_video_path: str,
     creator_name: str = "General",
-    niche: str = "fashion_lifestyle"
+    niche: str = "fashion_lifestyle",
+    audio_intel: Optional[Dict[str, Any]] = None,
+    visual_intel: Optional[Dict[str, Any]] = None,
+    editing_plan: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Submits keyframes / proxy clip to Gemini Vision for a brutal human engagement
-    and dopamine retention audit.
+    and dopamine retention audit, enriched with audio and visual intelligence.
     """
     _default = {
         "hook_score": 85,
@@ -220,10 +264,27 @@ def audit_human_engagement(
     if not sampled_images or not gemini_router:
         return _default
 
+    context_notes = []
+    if audio_intel and isinstance(audio_intel, dict):
+        mood = audio_intel.get("mood") or audio_intel.get("vibe")
+        bpm = audio_intel.get("bpm")
+        if mood or bpm:
+            context_notes.append(f"Selected Audio: {mood or 'Dynamic'} (BPM: {bpm or 'N/A'})")
+    if visual_intel and isinstance(visual_intel, dict):
+        v_mood = visual_intel.get("aesthetic") or visual_intel.get("lighting") or visual_intel.get("intent")
+        if v_mood:
+            context_notes.append(f"Visual Scene: {v_mood}")
+    if editing_plan and isinstance(editing_plan, dict):
+        pace = editing_plan.get("pacing") or editing_plan.get("style")
+        if pace:
+            context_notes.append(f"Editing Plan Pacing: {pace}")
+
+    intel_context_str = f"\nINTEL CONTEXT: {'; '.join(context_notes)}" if context_notes else ""
+
     prompt = f"""You are a brutally honest viral social media content inspector and algorithm auditor.
 Analyze these 6 sequential keyframes from a short reel intended for Instagram Reels / YouTube Shorts / TikTok.
 
-CREATOR / NICHE: "{creator_name}" ({niche})
+CREATOR / NICHE: "{creator_name}" ({niche}){intel_context_str}
 
 Perform a BRUTAL AUDIT for human brain retention and viral algorithm feed injection:
 
@@ -360,64 +421,136 @@ def run_clip_audit_and_seo(
     niche: str = "fashion_lifestyle",
     title_hint: str = "",
     cache: Optional[Dict[str, Any]] = None,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    pool_entry: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Executes full clip audit & SEO pipeline:
-      1. Reuses proxy_encoder.py for 480p proxy.
-      2. Audits watermark vs brand bounding box alignment.
-      3. Audits human brain engagement & dopamine retention.
-      4. Generates viral feed-injection SEO metadata.
+      1. Enforces duration check (duration >= 5.0 seconds).
+      2. Reuses proxy_encoder.py for 480p proxy.
+      3. Audits watermark vs brand bounding box spatial alignment.
+      4. Audits human brain engagement & dopamine retention with pool metadata context.
+      5. Generates viral feed-injection SEO metadata.
+      6. Returns audit_passed: bool and rejection_reason if any gate fails.
     """
     start_t = time.time()
     logger.info(f"\n{'='*70}\n🔍 [GEMINI CLIP AUDITOR] Auditing master clip: {os.path.basename(video_path)}\n{'='*70}")
 
-    # 1. Obtain proxy clip using existing proxy_encoder.py
-    proxy_path = prepare_proxy_clip(video_path)
+    if not video_path or not os.path.exists(video_path):
+        logger.warning(f"⚠️ [CLIP AUDITOR] Video file does not exist: {video_path}")
+        return {
+            "audit_passed": False,
+            "rejection_reason": f"Video file not found: {video_path}",
+            "duration": 0.0,
+            "video_path": video_path,
+            "proxy_path": "",
+            "watermark_brand_alignment": {},
+            "engagement_audit": {},
+            "seo_metadata": {},
+            "audit_duration_sec": 0.0
+        }
 
-    # 2. Watermark Alignment Audit
-    alignment_res = audit_watermark_brand_alignment(
-        inpainted_boxes=inpainted_boxes,
-        brand_boxes=brand_boxes
+    entry = pool_entry or cache or {}
+    audio_data = entry.get("audio_data", {}) if isinstance(entry.get("audio_data"), dict) else {}
+    audio_intel = audio_data.get("gemini_audio_output") or audio_data.get("context") or {}
+
+    visual_data = entry.get("visual_data", {}) if isinstance(entry.get("visual_data"), dict) else {}
+    visual_intel = visual_data.get("gemini_visual_output") or entry.get("visual_context") or {}
+
+    editing_plan = entry.get("video_editing_plan") or entry.get("editing_plan") or {}
+    brand_name = (
+        editing_plan.get("brand_name")
+        or editing_plan.get("watermark_text")
+        or os.getenv("BRAND_WATERMARK_TEXT", "")
     )
 
-    # 3. Human Engagement & Retention Audit
+    # Watermark spatial coordinates extraction if not passed directly
+    if not inpainted_boxes:
+        wm_meta = visual_data.get("gemini_watermark_output", {})
+        inpainted_boxes = (
+            wm_meta.get("bounding_boxes")
+            or [item.get("box_2d") for item in wm_meta.get("items", []) if item.get("box_2d")]
+            or visual_data.get("vectors", [])
+        )
+
+    # 1. Enforce minimum duration check (>= 5.0 seconds)
+    duration = get_clip_duration(video_path)
+    audit_passed = True
+    rejection_reasons = []
+
+    if duration > 0 and duration < 5.0:
+        audit_passed = False
+        rejection_reasons.append(f"Clip duration ({duration:.1f}s) is below the minimum required 5.0 seconds")
+
+    # 2. Obtain proxy clip using existing proxy_encoder.py
+    proxy_path = prepare_proxy_clip(video_path)
+
+    # 3. Watermark Alignment Audit (spatial coordinates & brand coverage)
+    alignment_res = audit_watermark_brand_alignment(
+        inpainted_boxes=inpainted_boxes,
+        brand_boxes=brand_boxes,
+        brand_name=brand_name
+    )
+    if not alignment_res.get("is_brand_covering_inpaint", True) or alignment_res.get("verdict") == "ARTIFACT_EXPOSED":
+        audit_passed = False
+        rejection_reasons.append(f"Watermark inpaint alignment failed: {alignment_res.get('verdict')}")
+
+    # 4. Human Engagement & Retention Audit with audio/visual/editing context
     video_context_str = f"Clip: {os.path.basename(video_path)}, Creator: {creator_name}, Niche: {niche}"
     engagement_res = audit_human_engagement(
         proxy_video_path=proxy_path,
         creator_name=creator_name,
-        niche=niche
+        niche=niche,
+        audio_intel=audio_intel,
+        visual_intel=visual_intel,
+        editing_plan=editing_plan
     )
+
+    hook_score = int(engagement_res.get("hook_score", 85))
+    pacing_score = int(engagement_res.get("dopamine_pacing_score", 88))
+    feed_ready = bool(engagement_res.get("feed_inject_readiness", True))
+
+    if hook_score < 60 or pacing_score < 60 or not feed_ready:
+        audit_passed = False
+        rejection_reasons.append(f"Low engagement metrics: Hook {hook_score}/100, Pacing {pacing_score}/100, Feed Ready: {feed_ready}")
 
     # Discovered hero subject / celebrity
     discovered_subject = engagement_res.get("main_subject") or ""
-    if not discovered_subject and cache:
-        discovered_subject = cache.get("visual_context", {}).get("main_subject") or cache.get("visual_context", {}).get("person_name") or ""
+    if not discovered_subject:
+        discovered_subject = (
+            visual_intel.get("main_subject")
+            or visual_intel.get("person_name")
+            or entry.get("ownerFullName")
+            or ""
+        )
     if engagement_res.get("visual_summary"):
         video_context_str += f". Visual event: {engagement_res.get('visual_summary')}"
 
-    # 4. Viral Feed-Injection SEO Metadata
+    # 5. Viral Feed-Injection SEO Metadata
     seo_res = generate_viral_feed_seo(
         video_context=video_context_str,
         creator_name=creator_name,
         niche=niche,
         title_hint=title_hint,
-        cache=cache,
+        cache=entry,
         metadata=metadata,
         discovered_subject=discovered_subject
     )
 
     elapsed = round(time.time() - start_t, 2)
-    audit_passed = alignment_res.get("is_brand_covering_inpaint", True) and engagement_res.get("feed_inject_readiness", True)
+    rejection_reason = " | ".join(rejection_reasons) if rejection_reasons else ""
 
     logger.info(
-        f"✅ [GEMINI CLIP AUDITOR COMPLETE] Audit Passed: {audit_passed} | "
-        f"Hook: {engagement_res.get('hook_score')}/100 | "
-        f"Title: '{seo_res.get('viral_seo_title')}' ({elapsed}s)\n"
+        f"✅ [GEMINI CLIP AUDITOR COMPLETE] Audit Passed: {audit_passed} | Duration: {duration}s | "
+        f"Hook: {hook_score}/100 | Title: '{seo_res.get('viral_seo_title')}' ({elapsed}s)\n"
     )
+    if not audit_passed:
+        logger.warning(f"⛔ [AUDITOR REJECTION REASON] {rejection_reason}")
 
     return {
         "audit_passed": audit_passed,
+        "rejection_reason": rejection_reason,
+        "duration": duration,
         "video_path": video_path,
         "proxy_path": proxy_path,
         "watermark_brand_alignment": alignment_res,

@@ -1,0 +1,17 @@
+{
+  "platform": "instagram",
+  "source_accounts": [
+    "glitz.in",
+    "mobile_multiplex",
+    "papsdesk",
+    "justbollywood.in"
+  ],
+  "account_added_timestamps": {
+    "glitz.in": 1788983359.1223013,
+    "mobile_multiplex": 1788983359.1223013,
+    "papsdesk": 1788983359.1223013,
+    "justbollywood.in": 1788983359.1223013
+  },
+  "account_last_scraped": {},
+  "account_last_scraped_iso": {}
+}
