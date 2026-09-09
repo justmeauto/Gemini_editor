@@ -396,28 +396,6 @@ class TelegramVaultIndexer:
             logger.info("⚡ [LOCAL POOL CACHE HIT] BGM track '%s' found in active pool — skipping Telegram download.", filename)
             return active_path
 
-        if not resolved_file_id:
-            track_stem = os.path.splitext(filename.lower())[0].replace("vault_bgm_", "").replace("bgm_", "")
-            c2_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
-            for sess_id, entry in c2_sess.items():
-                if entry.get("extracted_audio_file_id"):
-                    s_id = str(sess_id).lower()
-                    u_str = str(entry.get("social_media_id", "")).lower()
-                    sc_str = str(entry.get("shortcode", "")).lower()
-                    if track_stem in s_id or track_stem in u_str or (sc_str and track_stem in sc_str) or filename.lower() in u_str:
-                        resolved_file_id = entry["extracted_audio_file_id"]
-                        break
-
-            if not resolved_file_id:
-                c2_soc = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
-                for _url, entry in c2_soc.items():
-                    if entry.get("extracted_audio_file_id"):
-                        s_id = str(entry.get("session_id", "")).lower()
-                        u_str = str(entry.get("social_media_id", "")).lower()
-                        sc_str = str(entry.get("shortcode", "")).lower()
-                        if track_stem in s_id or track_stem in u_str or (sc_str and track_stem in sc_str) or filename.lower() in u_str:
-                            resolved_file_id = entry["extracted_audio_file_id"]
-                            break
 
         if resolved_file_id:
             logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, resolved_file_id[:15])
@@ -427,67 +405,13 @@ class TelegramVaultIndexer:
 
         return None
 
+
     def get_vault_audio_pool(self, current_clip_id: Optional[str] = None) -> Dict[str, Any]:
-        """Returns dictionary of all audio track metadata indexed in Column 2 & Column 1 of master_vault_index.json."""
+        """Returns audio track metadata from pool_metadata.json only.
+        master_vault_index.json stores only JSON file_id pointers — clip data lives in pool_metadata.json.
+        """
         pool = {}
         clip_stem = current_clip_id.lower().strip() if current_clip_id else ""
-
-        c2 = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
-        for _url, entry in c2.items():
-            file_id = entry.get("extracted_audio_file_id")
-            if not file_id:
-                continue
-
-            sess_id = entry.get("session_id", "audio_track")
-            social_id = str(entry.get("social_media_id", "")).lower()
-
-            # ── PERMANENT REJECTION BLACKLIST CHECK ───────────────────────────────
-            shortcode_val_early = entry.get("shortcode") or ""
-            if not shortcode_val_early and "/" in social_id:
-                _parts = [p for p in social_id.split("/") if p and not p.startswith("?")]
-                shortcode_val_early = _parts[-1].split("?")[0] if _parts else ""
-            _fname_early = f"vault_bgm_{shortcode_val_early}.wav" if shortcode_val_early else ""
-            try:
-                from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl_v
-                if _is_bl_v(audio_filename=_fname_early, audio_shortcode=shortcode_val_early, telegram_file_id=file_id):
-                    logger.info(f"🚫 [VAULT POOL] Skipping admin-rejected (blacklisted) vault audio: shortcode='{shortcode_val_early}' file_id='{file_id}'")
-                    continue
-            except Exception as _vbl_err:
-                logger.debug(f"[VAULT POOL] Blacklist check notice: {_vbl_err}")
-            # ─────────────────────────────────────────────────────────────────────
-
-            if clip_stem and (
-                clip_stem in sess_id.lower()
-                or clip_stem in social_id
-                or sess_id.lower().endswith(f"_{clip_stem}")
-            ):
-                continue
-
-            shortcode_val = entry.get("shortcode") or ""
-            if not shortcode_val and "/" in social_id:
-                parts = [p for p in social_id.split("/") if p and not p.startswith("?")]
-                shortcode_val = parts[-1].split("?")[0] if parts else ""
-            clean_tag = shortcode_val or sess_id.replace("sess_", "").strip() or "track"
-            fname = f"vault_bgm_{clean_tag}.wav"
-
-            audio_math = entry.get("audio_math") or {}
-            dur_val = audio_math.get("duration") or audio_math.get("duration_sec") or 0.0
-
-            pool[fname] = {
-                "file_id": file_id,
-                "session_id": sess_id,
-                "shortcode": shortcode_val,
-                "tempo_bpm": audio_math.get("tempo_bpm", 120.0),
-                "dominant_emotion": audio_math.get("dominant_emotion", "hype"),
-                "energy_profile": audio_math.get("energy_profile", "medium"),
-                "has_vocals": audio_math.get("has_vocals", False),
-                "language": audio_math.get("language", "unknown"),
-                "duration": dur_val,
-                "duration_sec": dur_val,
-                "last_used": entry.get("timestamp", 0),
-                "usage_count": 0,
-                "is_source_extract": True,
-            }
 
         pm_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
         if os.path.exists(pm_path):
@@ -504,8 +428,6 @@ class TelegramVaultIndexer:
                                     pool[k].update(v)
                                 else:
                                     pool[k] = v
-
-
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)
 
@@ -620,39 +542,7 @@ class TelegramVaultIndexer:
                 found_entry.get("raw_file_id")
             )
 
-        # 2. Check master_vault_index.json -> column_2_downloaded_sources
-        vault_entry = None
-        try:
-            c2_by_url = self.vault_index.get("column_2_downloaded_sources", {}).get("by_social_media_id", {})
-            for k in search_keys:
-                if k in c2_by_url:
-                    vault_entry = c2_by_url[k]
-                    break
-
-            if not vault_entry:
-                for stored_url, entry in c2_by_url.items():
-                    entry_sc = str(entry.get("shortcode", "")).strip().lower()
-                    for k in search_keys:
-                        kl = k.lower()
-                        if (
-                            (entry_sc and (entry_sc == kl or entry_sc == kl.replace("manual_", ""))) or
-                            (kl and (kl in stored_url.lower() or kl.replace("manual_", "") in stored_url.lower()))
-                        ):
-                            vault_entry = entry
-                            break
-                    if vault_entry:
-                        break
-
-            if not vault_entry:
-                c2_by_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
-                for k in search_keys:
-                    if k in c2_by_sess:
-                        vault_entry = c2_by_sess[k]
-                        break
-        except Exception as e:
-            logger.debug("Notice on find_entry_by_shortcode master_vault_index: %s", e)
-
-        # 3. Check TelegramSessionManager
+        # 2. Check TelegramSessionManager (master_vault_index.json holds only JSON file_id pointers, not clip data)
         sess_entry = None
         try:
             from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
@@ -673,11 +563,9 @@ class TelegramVaultIndexer:
         except Exception:
             pass
 
-        # Resolve best raw_file_id from all sources
+        # Resolve best raw_file_id from pool_metadata.json and sessions
         best_raw_fid = (
             entry_raw_fid
-            or (vault_entry.get("media_file_ids", {}).get("raw_video_file_id") if vault_entry else None)
-            or (vault_entry.get("raw_video_file_id") if vault_entry else None)
             or (sess_entry.get("raw_video_file_id") if sess_entry else None)
         )
 
@@ -686,12 +574,6 @@ class TelegramVaultIndexer:
                 found_entry.setdefault("media_file_ids", {})["raw_video_file_id"] = best_raw_fid
                 found_entry["raw_video_file_id"] = best_raw_fid
             return found_entry
-
-        if vault_entry:
-            if best_raw_fid:
-                vault_entry.setdefault("media_file_ids", {})["raw_video_file_id"] = best_raw_fid
-                vault_entry["raw_video_file_id"] = best_raw_fid
-            return vault_entry
 
         return sess_entry
 
@@ -1260,13 +1142,6 @@ class TelegramVaultIndexer:
         except Exception as _pool_err:
             logger.warning("⚠️ Could not save/upload metadata_pool.json: %s", _pool_err)
 
-        session_id = f"sess_{int(time.time())}"
-        c2 = self.vault_index.setdefault("column_2_downloaded_sources", {})
-        c2.setdefault("by_social_media_id", {})[social_url] = clip_entry
-        c2.setdefault("by_session_id", {})[session_id] = clip_entry
-        if user_id:
-            c2.setdefault("by_user_id", {}).setdefault(user_id, {})[session_id] = clip_entry
-
         self._save_local_index()
 
         return {
@@ -1436,35 +1311,9 @@ class TelegramVaultIndexer:
         except Exception as _pe:
             logger.debug("Notice on record_downloaded_source pool_metadata save: %s", _pe)
 
-        # Index into master_vault_index.json -> column_2_downloaded_sources
-        try:
-            c2 = self.vault_index.setdefault("column_2_downloaded_sources", {})
-            c2_url = c2.setdefault("by_social_media_id", {})
-            c2_sess = c2.setdefault("by_session_id", {})
-            c2_entry = {
-                "social_media_id": social_url,
-                "shortcode": sc_val,
-                "session_id": session_id,
-                "raw_video_file_id": raw_file_id,
-                "extracted_audio_file_id": audio_file_id,
-                "file_name": os.path.basename(raw_video_path) if raw_video_path else "video.mp4",
-                "media_file_ids": {
-                    "raw_video_file_id": raw_file_id,
-                    "extracted_audio_file_id": audio_file_id
-                },
-                "user_id": user_id,
-                "timestamp": time.time()
-            }
-            if social_url:
-                c2_url[social_url] = c2_entry
-            if sc_val:
-                c2_url[sc_val] = c2_entry
-                c2_url[f"manual_{sc_val}"] = c2_entry
-            if session_id:
-                c2_sess[session_id] = c2_entry
-            self._save_local_index()
-        except Exception as _vi_err:
-            logger.debug("Notice on updating master_vault_index column_2: %s", _vi_err)
+        # NOTE: Clip data (raw_video_file_id, extracted_audio_file_id, etc.) is stored ONLY in
+        # pool_metadata.json and telegram_sessions.json.
+        # master_vault_index.json stores ONLY JSON file_id pointers (pool_metadata_file_id, etc.).
 
         # Update TelegramSessionManager with raw_video_file_id
         if raw_file_id:
@@ -1704,38 +1553,8 @@ class TelegramVaultIndexer:
             audio_sc = audio_sc.strip()
 
         purged_vault_items = []
-
-        # Column 2 by_social_media_id
-        c2 = self.vault_index.setdefault("column_2_downloaded_sources", {}).setdefault("by_social_media_id", {})
-        for url_key, entry in list(c2.items()):
-            if not isinstance(entry, dict):
-                continue
-            sc_val = str(entry.get("shortcode", "")).lower()
-            sm_val = str(entry.get("social_media_id", "")).lower()
-            u_l = str(url_key).lower()
-
-            is_match = False
-            if proc_sc and (proc_sc == sc_val or proc_sc in u_l or proc_sc in sm_val):
-                is_match = True
-            elif reel_id_clean and (reel_id_clean in u_l or reel_id_clean in sm_val):
-                is_match = True
-            elif audio_sc and (audio_sc == sc_val or audio_sc in u_l or audio_sc in sm_val):
-                is_match = True
-
-            if is_match:
-                del c2[url_key]
-                purged_vault_items.append(f"Vault source: {url_key}")
-                logger.info(f"🗑️ [VAULT PURGE] Removed from master_vault_index: {url_key}")
-
-        # Column 2 by_session_id
-        by_sess = self.vault_index.setdefault("column_2_downloaded_sources", {}).setdefault("by_session_id", {})
-        for sess_key, entry in list(by_sess.items()):
-            sk_l = str(sess_key).lower()
-            if (proc_sc and proc_sc in sk_l) or (audio_sc and audio_sc in sk_l) or (reel_id_clean and reel_id_clean in sk_l):
-                del by_sess[sess_key]
-                purged_vault_items.append(f"Vault session: {sess_key}")
-                logger.info(f"🗑️ [VAULT PURGE] Removed session from master_vault_index: {sess_key}")
-
+        # NOTE: Clip data is stored in pool_metadata.json and telegram_sessions.json, not in
+        # master_vault_index.json. Purge removes data from those files via AudioPoolManager/SessionManager.
         self._save_local_index()
 
         # Cloud sync / pin to Telegram Storage Group
