@@ -821,16 +821,16 @@ class FFmpegCommandGenerator:
         dt_op = next((op for op in ops if op.get("operation_type") in ("drawtext", "brand_watermark")), None)
         mix_op = next((op for op in ops if op.get("operation_type") in ("bgm_mix", "audio_ducking_mix", "audio_mix")), None)
 
-        # CRITICAL: If no external BGM track is present, source video audio is preserved by default
-        # (either as the main audio, or ducked under voiceover if voiceover is present)
-        if extra_inputs and "preserve_original_audio" in extra_inputs:
-            is_preserve_input = bool(extra_inputs.get("preserve_original_audio"))
-        elif bgm_idx is None:
+        # AUDIO MUTE DIRECTIVE: Source clip audio is ALWAYS muted (video_volume = 0.00).
+        # The ONLY exception is when speech intelligence explicitly requests voice preservation
+        # (talking_head / preserve_voice_duck_bgm). Never preserve raw dialogue across jump cuts.
+        if extra_inputs and extra_inputs.get("preserve_original_audio"):
             is_preserve_input = True
         else:
             is_preserve_input = False
 
-        video_volume = 0.80 if is_preserve_input else 0.00
+        # video_volume: 0.00 by default (muted). Only 1.00 for genuine talking-head voice preservation.
+        video_volume = 1.00 if is_preserve_input else 0.00
         if mix_op:
             if mix_op.get("music_volume") is not None:
                 try:
@@ -845,8 +845,7 @@ class FFmpegCommandGenerator:
             elif not is_preserve_input:
                 video_volume = 0.00
 
-        if bgm_idx is None and vo_idx is None:
-            video_volume = max(0.80, video_volume)
+        # NOTE: DO NOT re-raise video_volume when no BGM — that caused sticky audio.
 
         env_brand = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()
@@ -2091,21 +2090,8 @@ class GeminiFFmpegEngine:
             elif op_type in ("audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix"):
                 vo_file = extra_inputs.get("voiceover")
                 bgm_file = extra_inputs.get("music") or extra_inputs.get("bgm")
-                # Fallback to clip's own extracted audio if bgm_file is missing
-                if not bgm_file or not os.path.exists(bgm_file):
-                    cand_dirs = [
-                        os.path.dirname(os.path.abspath(input_path)),
-                        extra_inputs.get("clip_folder", "") if extra_inputs else "",
-                    ]
-                    for cd in cand_dirs:
-                        if cd and os.path.isdir(cd):
-                            for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
-                                cand_p = os.path.join(cd, cand_name)
-                                if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
-                                    bgm_file = cand_p
-                                    break
-                        if bgm_file and os.path.exists(bgm_file):
-                            break
+                # NOTE: video_extracted.wav is NEVER adopted as BGM. If bgm_file is missing,
+                # the operation proceeds without BGM — source clip will be muted by filtergraph.
 
                 if vo_file and bgm_file and os.path.exists(vo_file) and os.path.exists(bgm_file):
                     res = self.cmd_generator.build_audio_ducking_mix_command(
@@ -2402,25 +2388,10 @@ class GeminiFFmpegEngine:
                 logger.debug("🎙️ [TTS BRIDGE] enable_voiceover=true but engagement_hook is empty — skipping TTS.")
 
 
-        # Fallback to clip's own extracted audio WAV/MP3 if audio_path was not provided or not found
-        if not audio_path or not os.path.exists(audio_path):
-            cand_dirs = [
-                os.path.dirname(os.path.abspath(input_video_path)),
-                extra_inputs.get("clip_folder", "") if extra_inputs else "",
-            ]
-            for cd in cand_dirs:
-                if cd and os.path.isdir(cd):
-                    for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
-                        cand_p = os.path.join(cd, cand_name)
-                        if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
-                            audio_path = cand_p
-                            extra_inputs["music"] = cand_p
-                            extra_inputs["bgm"] = cand_p
-                            extra_inputs["audio"] = cand_p
-                            logger.info(f"🎵 [SPEECH INTEL FALLBACK] Adopted clip extracted audio as BGM: {cand_p}")
-                            break
-                if audio_path and os.path.exists(audio_path):
-                    break
+        # NOTE: video_extracted.wav is NEVER a valid BGM fallback. If audio_path is missing,
+        # the pipeline continues with no BGM — source clip will be muted by filtergraph.
+        if not audio_path:
+            logger.info("🔇 [AUDIO DIRECTIVE] No BGM path provided — source clip will be muted (video_volume=0.00). No sticky audio.")
 
         # Auto-wire speech_intelligence / preserve_original_audio from forensic_context
         speech_intel = forensic.get("speech_intelligence") or v_ctx.get("speech_intelligence") or {}
@@ -2689,28 +2660,11 @@ class GeminiFFmpegEngine:
             if os.path.exists(candidate):
                 bgm_path = candidate
 
-        # Fallback to clip's own extracted audio WAV/MP3 if bgm_path is missing
-        if not bgm_path or not os.path.exists(bgm_path):
-            cand_dirs = [
-                os.path.dirname(os.path.abspath(input_path)),
-                extra_inputs.get("clip_folder", "") if extra_inputs else "",
-            ]
-            for cd in cand_dirs:
-                if cd and os.path.isdir(cd):
-                    for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
-                        cand_p = os.path.join(cd, cand_name)
-                        if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
-                            bgm_path = cand_p
-                            extra_inputs["music"] = cand_p
-                            extra_inputs["bgm"] = cand_p
-                            extra_inputs["audio"] = cand_p
-                            logger.info(f"🎵 [SINGLE-PASS FALLBACK] Adopted clip extracted audio as BGM: {cand_p}")
-                            break
-                if bgm_path and os.path.exists(bgm_path):
-                    break
-
+        # NOTE: video_extracted.wav is NEVER a valid BGM fallback.
+        # If bgm_path is missing, source clip is muted by filtergraph (video_volume=0.00).
+        # Do NOT set preserve_original_audio = True — that causes sticky audio across jump cuts.
         if not bgm_path:
-            extra_inputs["preserve_original_audio"] = True
+            logger.info("🔇 [AUDIO DIRECTIVE] No BGM path found — source clip will be silenced (video_volume=0.00).")
 
         brand_text    = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()

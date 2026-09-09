@@ -191,22 +191,8 @@ def synthesize_editing_plan(
         if wm_boxes:
             extra_inputs["watermark_boxes"] = wm_boxes
 
-    # ── Fallback to clip's own extracted audio if selected_bgm_path is missing ─
-    if not selected_bgm_path or not os.path.exists(selected_bgm_path):
-        v_dir = os.path.dirname(os.path.abspath(video_path))
-        for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
-            cand_path = os.path.join(v_dir, cand_name)
-            if os.path.isfile(cand_path) and os.path.getsize(cand_path) > 1024:
-                selected_bgm_path = cand_path
-                extra_inputs["audio"] = cand_path
-                extra_inputs["music"] = cand_path
-                logger.info(f"🎵 [STEP 06 FALLBACK] Adopted clip extracted audio as BGM: {cand_path}")
-                break
-
-    # If still no BGM track, ensure preserve_original_audio is explicitly True
-    if not selected_bgm_path or not os.path.exists(selected_bgm_path):
-        extra_inputs["preserve_original_audio"] = True
-        logger.info("🎙️ [STEP 06] No BGM track provided -> preserve_original_audio=True to prevent silent output.")
+    # NOTE: If no BGM track is available, the source clip is silenced by the filtergraph (video_volume=0.00).
+    # video_extracted.wav MUST NEVER be adopted as BGM. No preserve_original_audio override here.
 
     try:
         synthesis_result = engine.run_full_pipeline(

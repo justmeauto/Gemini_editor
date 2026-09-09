@@ -143,15 +143,19 @@ class TelegramSessionManager:
         return sess_id
 
     def update_raw_video_file_id(self, session_id_or_clip_id: str, raw_file_id: str):
-        """Links raw_video_file_id to active session."""
+        """Links raw_video_file_id to active session. Skips save if file_id is unchanged (prevents Telegram 429)."""
         if not raw_file_id:
             return
         sess = self.get_session(session_id_or_clip_id)
         if sess:
+            if sess.get("raw_video_file_id") == raw_file_id:
+                logger.debug(f"[SESSION] raw_video_file_id unchanged for {sess.get('session_id')} — skipping redundant cloud save.")
+                return
             sess["raw_video_file_id"] = raw_file_id
             sess["updated_at"] = time.time()
             self._save_sessions()
             logger.info(f"💾 [SESSION] Linked raw_video_file_id to session {sess.get('session_id')}")
+
 
     def update_message_id(self, session_id: str, message_id: int):
         """Links Telegram message ID to session."""

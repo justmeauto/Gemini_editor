@@ -120,17 +120,8 @@ def select_clip_bgm(
         except Exception as pool_err:
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 
-    # Fallback to clip's own extracted audio if pool is empty or returned no track
-    if (not resolved_path or not os.path.isfile(resolved_path)) and clip_folder and os.path.isdir(clip_folder):
-        for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
-            cand_path = os.path.join(clip_folder, cand_name)
-            if os.path.isfile(cand_path) and os.path.getsize(cand_path) > 1024:
-                resolved_path = cand_path
-                selected_track_name = cand_name
-                res["selected_audio_track"] = selected_track_name
-                res["alignment_score"] = res.get("alignment_score") or 0.85
-                logger.info(f"🎵 [STEP 04 FALLBACK] No external BGM in pool. Adopted clip's extracted audio: {resolved_path}")
-                break
+    # NOTE: If no external BGM resolved, source clip will be silenced by filtergraph (video_volume=0.00).
+    # video_extracted.wav is NEVER a valid BGM fallback.
 
     res["physical_path"] = resolved_path
 
