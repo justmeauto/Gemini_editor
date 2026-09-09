@@ -298,6 +298,8 @@ def run_phase2_pipeline(
                 target_duration=15.0,
                 user_edit_directive=user_edit_directive,
             )
+            if synthesis_res is None:
+                synthesis_res = {"status": "failed", "error": "synthesize_editing_plan returned None"}
             _emit("step_06", "success", {"message": f"FFmpeg synthesis status: {synthesis_res.get('status')}."})
 
             # Step 7: Master Render Verification & QA Gate
@@ -306,6 +308,8 @@ def run_phase2_pipeline(
                 output_path=target_output,
                 synthesis_result=synthesis_res,
             )
+            if render_res is None:
+                render_res = {"success": False, "error": "verify_master_render returned None"}
 
             if render_res.get("success"):
                 out_path = render_res["output_video"]
