@@ -463,26 +463,35 @@ class TelegramVaultIndexer:
             logger.warning("⚠️ Vault index upload/pin notice: %s", _pin_err)
 
     def _normalize_search_keys(self, target: Any) -> List[str]:
-        """Generates all normalized search keys (stripping manual_, URL parsing, etc.)."""
-        raw_target = str(target).strip().strip("`")
-        if raw_target.endswith("%60"):
-            raw_target = raw_target[:-3].strip()
-        clean_target = raw_target.replace("manual_", "").strip()
+        """Generates all normalized search keys (stripping manual_, URL parsing, unquoting, markdown links, etc.)."""
+        import urllib.parse
+        raw_target = str(target).strip()
+        # Strip markdown link formatting e.g. [https://...](https://...)
+        m_md = re.match(r"\[(.*?)\]\((.*?)\)", raw_target)
+        if m_md:
+            raw_target = m_md.group(2).strip()
+
+        # Repeatedly strip trailing URL-encoded backticks (%60), backticks, quotes, whitespace
+        raw_target = re.sub(r"(?:%60)+$", "", raw_target).strip()
+        unquoted = urllib.parse.unquote(raw_target)
+        clean_target = re.sub(r"`+$", "", unquoted).strip("`\"' \r\n\t")
+        target_nomanual = clean_target.replace("manual_", "").strip()
+
         extracted = None
-        m_ig = re.search(r"/(?:p|reel|reels)/([A-Za-z0-9_-]+)", raw_target)
+        m_ig = re.search(r"/(?:p|reel|reels)/([A-Za-z0-9_-]+)", clean_target)
         if m_ig:
             extracted = m_ig.group(1)
         if not extracted:
-            m_yt = re.search(r"(?:shorts/|v=|youtu\.be/)([A-Za-z0-9_-]{11})", raw_target)
+            m_yt = re.search(r"(?:shorts/|v=|youtu\.be/)([A-Za-z0-9_-]{11})", clean_target)
             if m_yt:
                 extracted = m_yt.group(1)
         if not extracted:
-            m_tt = re.search(r"/video/(\d+)", raw_target)
+            m_tt = re.search(r"/video/(\d+)", clean_target)
             if m_tt:
                 extracted = m_tt.group(1)
 
         search_keys = []
-        for k in [raw_target, clean_target, extracted]:
+        for k in [raw_target, unquoted, clean_target, target_nomanual, extracted]:
             if not k:
                 continue
             for cand in (k, k.lower(), k.split("?")[0].rstrip("/"), k.split("?")[0].rstrip("/") + "/"):
@@ -497,26 +506,34 @@ class TelegramVaultIndexer:
 
     def find_entry_by_shortcode(self, shortcode: str) -> Optional[Dict[str, Any]]:
         """
-        Finds video metadata entry in pool_metadata.json OR master_vault_index.json by shortcode or URL.
-        Robustly extracts shortcode from URLs and handles 'manual_' prefixes.
+        Finds video metadata entry in pool_metadata.json by shortcode or URL.
+        Robustly extracts shortcode from URLs, handles 'manual_' prefixes, and merges
+        multi-candidate entries so no media_file_ids (raw, clean, audio, processed) are lost.
         """
         if not shortcode:
             return None
         search_keys = self._normalize_search_keys(shortcode)
 
-        found_entry = None
-        # 1. Search pool_metadata.json -> files -> social_media_id
+        matching_entries: List[Dict[str, Any]] = []
+        # 1. Search pool_metadata.json -> files -> social_media_id AND top-level clips
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
             clips = pm.metadata.get("files", {}).get("social_media_id", {})
-            for k in search_keys:
-                if k in clips:
-                    found_entry = clips[k]
-                    break
+            top_clips = pm.metadata.get("clips", {})
 
-            if not found_entry:
-                for stored_url, entry in clips.items():
+            # Exact key lookups first
+            for k in search_keys:
+                if k in clips and clips[k] not in matching_entries:
+                    matching_entries.append(clips[k])
+                if k in top_clips and top_clips[k] not in matching_entries:
+                    matching_entries.append(top_clips[k])
+
+            # Fuzzy/shortcode lookups across all stored entries
+            for pool_source in [clips, top_clips]:
+                for stored_url, entry in pool_source.items():
+                    if not isinstance(entry, dict) or entry in matching_entries:
+                        continue
                     entry_sc = str(entry.get("shortcode", "")).strip().lower()
                     stored_clean = stored_url.split("?")[0].rstrip("/").lower()
                     for k in search_keys:
@@ -527,22 +544,12 @@ class TelegramVaultIndexer:
                             (stored_clean and (stored_clean in kl or kl in stored_clean)) or
                             (kl and kl in str(entry.get("file_name", "")).lower())
                         ):
-                            found_entry = entry
+                            matching_entries.append(entry)
                             break
-                    if found_entry:
-                        break
         except Exception as e:
             logger.debug("Notice on find_entry_by_shortcode pool_metadata: %s", e)
 
-        entry_raw_fid = None
-        if found_entry:
-            entry_raw_fid = (
-                found_entry.get("media_file_ids", {}).get("raw_video_file_id") or
-                found_entry.get("raw_video_file_id") or
-                found_entry.get("raw_file_id")
-            )
-
-        # 2. Check TelegramSessionManager (master_vault_index.json holds only JSON file_id pointers, not clip data)
+        # 2. Check TelegramSessionManager
         sess_entry = None
         try:
             from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
@@ -563,16 +570,62 @@ class TelegramVaultIndexer:
         except Exception:
             pass
 
-        # Resolve best raw_file_id from pool_metadata.json and sessions
+        # 3. Consolidate and merge all matching candidates
+        found_entry = None
+        if matching_entries:
+            def _score_entry(e: Dict[str, Any]) -> int:
+                m = e.get("media_file_ids", {})
+                s = 0
+                if m.get("raw_video_file_id") or e.get("raw_video_file_id") or e.get("raw_file_id"):
+                    s += 10
+                if m.get("processed_output_file_id") or e.get("processed_output_file_id") or e.get("master_reel_file_id"):
+                    s += 5
+                if m.get("wm_clean_file_id") or e.get("wm_clean_file_id"):
+                    s += 5
+                if m.get("extracted_audio_file_id") or e.get("extracted_audio_file_id"):
+                    s += 5
+                if e.get("shortcode"):
+                    s += 2
+                return s
+
+            matching_entries.sort(key=_score_entry, reverse=True)
+            # Base candidate is the most complete one
+            found_entry = dict(matching_entries[0])
+            for other in matching_entries[1:]:
+                # Merge media_file_ids
+                other_m = other.get("media_file_ids", {}) if isinstance(other.get("media_file_ids"), dict) else {}
+                base_m = found_entry.setdefault("media_file_ids", {})
+                for mk, mv in other_m.items():
+                    if mv and not base_m.get(mk):
+                        base_m[mk] = mv
+                # Merge top-level fields
+                for ok, ov in other.items():
+                    if ov and not found_entry.get(ok):
+                        found_entry[ok] = ov
+
+        # Resolve best raw_file_id across pool candidates and sessions
+        entry_raw_fid = None
+        if found_entry:
+            entry_raw_fid = (
+                found_entry.get("media_file_ids", {}).get("raw_video_file_id") or
+                found_entry.get("raw_video_file_id") or
+                found_entry.get("raw_file_id")
+            )
+
         best_raw_fid = (
             entry_raw_fid
             or (sess_entry.get("raw_video_file_id") if sess_entry else None)
         )
 
         if found_entry:
-            if best_raw_fid and not entry_raw_fid:
+            if best_raw_fid:
                 found_entry.setdefault("media_file_ids", {})["raw_video_file_id"] = best_raw_fid
                 found_entry["raw_video_file_id"] = best_raw_fid
+            # Also backfill wm_clean_file_id, processed_output_file_id, extracted_audio_file_id to top level
+            m_ids = found_entry.get("media_file_ids", {})
+            for fid_key in ["wm_clean_file_id", "processed_output_file_id", "extracted_audio_file_id"]:
+                if m_ids.get(fid_key) and not found_entry.get(fid_key):
+                    found_entry[fid_key] = m_ids[fid_key]
             return found_entry
 
         return sess_entry
@@ -914,29 +967,7 @@ class TelegramVaultIndexer:
         """Lookup harvested clip entry by URL or shortcode in pool_metadata.json."""
         if not social_url:
             return None
-        clean_url = str(social_url).strip().strip("`")
-        if clean_url.endswith("%60"):
-            clean_url = clean_url[:-3].strip()
-        try:
-            from Audio_Modules.audio_pool_manager import AudioPoolManager
-            pm = AudioPoolManager()
-            clips = pm.metadata.get("files", {}).get("social_media_id", {})
-            if clean_url in clips:
-                return clips[clean_url]
-
-            import re
-            sc_match = re.search(r"/(?:reel|reels|p|shorts|v)/([A-Za-z0-9_-]{5,})", clean_url)
-            shortcode = sc_match.group(1) if sc_match else clean_url
-
-            if shortcode:
-                for stored_url, entry in clips.items():
-                    if (shortcode in stored_url or 
-                        shortcode == str(entry.get("shortcode", "")) or 
-                        shortcode in str(entry.get("file_name", ""))):
-                        return entry
-        except Exception as e:
-            logger.debug("Notice on lookup_downloaded_source: %s", e)
-        return None
+        return self.find_entry_by_shortcode(social_url)
 
     def lookup_processed_reel(self, session_id: Optional[str] = None, social_url: Optional[str] = None, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Lookup processed reel entry by session_id, social_url, or user_id in pool_metadata.json."""
@@ -1191,12 +1222,22 @@ class TelegramVaultIndexer:
             if clean_file_id:
                 try:
                     from Audio_Modules.audio_pool_manager import AudioPoolManager
-                    pm = AudioPoolManager()
                     clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
-                    for url_key, entry in clips.items():
-                        if clip_folder_name.lower() in url_key.lower() or clip_folder_name.lower() in str(entry.get("shortcode", "")).lower():
-                            m_ids = entry.setdefault("media_file_ids", {})
-                            m_ids["wm_clean_file_id"] = clean_file_id
+                    top_clips = pm.metadata.setdefault("clips", {})
+                    clean_sc = clip_folder_name.replace("manual_", "").strip().lower()
+                    for pool_dict in [clips, top_clips]:
+                        for url_key, entry in pool_dict.items():
+                            if not isinstance(entry, dict):
+                                continue
+                            entry_sc = str(entry.get("shortcode", "")).strip().lower()
+                            if (
+                                clip_folder_name.lower() in url_key.lower() or
+                                clean_sc in url_key.lower() or
+                                (clean_sc and entry_sc == clean_sc)
+                            ):
+                                m_ids = entry.setdefault("media_file_ids", {})
+                                m_ids["wm_clean_file_id"] = clean_file_id
+                                entry["wm_clean_file_id"] = clean_file_id
                     pm._save_metadata()
                 except Exception as _pe:
                     logger.debug("Notice updating clean_file_id in pool_metadata: %s", _pe)

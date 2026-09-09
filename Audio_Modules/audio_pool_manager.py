@@ -264,13 +264,26 @@ class AudioPoolManager:
                         except Exception:
                             pass
 
-                    social_url = (
-                        meta_dict.get("url") or meta_dict.get("social_media_id") or
-                        video_json_dict.get("webpage_url") or video_json_dict.get("url") or
-                        f"https://www.instagram.com/p/{clip_folder}/"
-                    )
-                    shortcode = meta_dict.get("shortcode") or video_json_dict.get("id") or clip_folder.split("_")[-1]
+                    clean_folder_sc = clip_folder.replace("manual_", "").strip()
+                    shortcode = meta_dict.get("shortcode") or video_json_dict.get("id") or clean_folder_sc
                     owner_username = meta_dict.get("ownerUsername") or video_json_dict.get("uploader") or clip_folder.split("_")[0]
+
+                    # If shortcode already exists in clips_dict, reuse its URL and entry to prevent split keys!
+                    existing = None
+                    if shortcode:
+                        for _su, _se in clips_dict.items():
+                            if str(_se.get("shortcode", "")).strip().lower() == shortcode.lower():
+                                existing = _se
+                                social_url = _su
+                                break
+
+                    if not existing:
+                        social_url = (
+                            meta_dict.get("url") or meta_dict.get("social_media_id") or
+                            video_json_dict.get("webpage_url") or video_json_dict.get("url") or
+                            f"https://www.instagram.com/reel/{clean_folder_sc}/"
+                        )
+                        existing = clips_dict.get(social_url, {})
 
                     raw_vault_id = meta_dict.get("raw_vault_file_id") or meta_dict.get("raw_video_file_id")
                     extracted_audio_id = (
@@ -280,8 +293,6 @@ class AudioPoolManager:
 
                     file_size = os.path.getsize(video_file) if os.path.exists(video_file) else 0
                     downloaded_at = os.path.getmtime(video_file) if os.path.exists(video_file) else time.time()
-
-                    existing = clips_dict.get(social_url, {})
                     gemini_audio_intel = (
                         existing.get("gemini_semantic_audio_intelligence") or
                         existing.get("gemini_semantic_intelligence") or {}
