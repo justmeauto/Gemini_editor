@@ -14,6 +14,20 @@
       "telegram_file_id": "BQACAgUAAyEGAATgPI-iAAIghGqeXcX_r-DarLRAfh86reoVvbrwAAINJgACjhD4VHfx90nz-QJuPQQ",
       "reason": "admin_rejected",
       "blacklisted_at": 1788895883.9186606
+    },
+    "vault_bgm_dcq2p9ir9qk.wav": {
+      "filename": "vault_bgm_dcq2p9ir9qk.wav",
+      "shortcode": "dcq2p9ir9qk",
+      "telegram_file_id": "BQACAgUAAyEGAATgPI-iAAIg_2qe6hu1fjBMuxUKIo3hWr5AESwcAALnKAACjhD4VD9rf-lRHdYpPQQ",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788917027.0029032
+    },
+    "dcq2p9ir9qk": {
+      "filename": "vault_bgm_dcq2p9ir9qk.wav",
+      "shortcode": "dcq2p9ir9qk",
+      "telegram_file_id": "BQACAgUAAyEGAATgPI-iAAIg_2qe6hu1fjBMuxUKIo3hWr5AESwcAALnKAACjhD4VD9rf-lRHdYpPQQ",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788917027.0029032
     }
   }
 }
