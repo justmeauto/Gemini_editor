@@ -1588,9 +1588,16 @@ class TelegramVaultIndexer:
         audio_sc = ""
         if audio_shortcode_or_track:
             ab = os.path.basename(str(audio_shortcode_or_track)).lower()
-            audio_sc = ab.replace("vault_bgm_", "").replace("bgm_", "")
-            for ext in (".wav", ".mp3", ".m4a", ".aac"):
-                audio_sc = audio_sc.replace(ext, "")
+            audio_sc = ab
+            if audio_sc.startswith("vault_bgm_"):
+                audio_sc = audio_sc[len("vault_bgm_"):]
+            elif audio_sc.startswith("bgm_"):
+                audio_sc = audio_sc[len("bgm_"):]
+            elif audio_sc.startswith("extracted_"):
+                audio_sc = audio_sc[len("extracted_"):]
+            for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4"):
+                if audio_sc.endswith(ext):
+                    audio_sc = audio_sc[:-len(ext)]
             audio_sc = audio_sc.strip()
 
         purged_vault_items = []

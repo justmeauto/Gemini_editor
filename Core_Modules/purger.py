@@ -104,6 +104,58 @@ def purge_full_clip_and_assets(
         except Exception:
             pass
 
+    if not selected_audio:
+        try:
+            from Telegram_Storage_Modules.session_manager import SessionManager
+            sm = SessionManager()
+            sess = sm.get_session(clip_id)
+            if not sess:
+                for s in sm.sessions.values():
+                    if s.get("clip_id") == clip_id or clip_id in s.get("clip_id", "") or s.get("session_id") == clip_id:
+                        sess = s
+                        break
+            if sess:
+                selected_audio = (
+                    sess.get("selected_audio")
+                    or sess.get("audio_candidate")
+                    or sess.get("audio_track")
+                    or sess.get("bgm_path")
+                )
+        except Exception:
+            pass
+
+    if not selected_audio:
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            indexer = TelegramVaultIndexer()
+            v_rec = indexer.lookup_processed_reel(session_id=clip_id) or indexer.find_entry_by_shortcode(clip_id)
+            if v_rec:
+                selected_audio = (
+                    v_rec.get("selected_audio")
+                    or v_rec.get("selected_audio_track")
+                    or v_rec.get("audio_file_id")
+                )
+        except Exception:
+            pass
+
+    if not selected_audio:
+        try:
+            from Audio_Modules.audio_pool_manager import get_pool_manager
+            apm = get_pool_manager()
+            pool_entry = apm.find_entry_by_shortcode(clip_id)
+            if pool_entry:
+                selected_audio = (
+                    pool_entry.get("audio_data", {}).get("selected_audio")
+                    or pool_entry.get("media_file_ids", {}).get("selected_audio_file_id")
+                    or pool_entry.get("media_file_ids", {}).get("extracted_audio_file_id")
+                )
+        except Exception:
+            pass
+
+    if not selected_audio:
+        clean_cid = clip_id.replace("manual_", "").strip()
+        selected_audio = f"extracted_{clean_cid}.wav"
+
     # 3. Gather paths to delete (ensuring absolute resolution via _REPO_ROOT)
     paths_to_delete = set()
 

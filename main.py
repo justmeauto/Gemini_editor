@@ -2323,6 +2323,16 @@ def run_master_pipeline(
                                     lyric_intel=lyric_intel,
                                     master_file_id=master_file_id,
                                 )
+
+                                # 3. Ephemeral Scratchpad Eraser: Wipes temporary downloads & beat cache now that
+                                # delivery & vault backups are safely completed.
+                                try:
+                                    from Core_Modules.disk_cleaner import clean_clip_artifacts
+                                    clean_clip_artifacts(real_cid)
+                                    clean_clip_artifacts(clean_cid)
+                                    logger.info(f"🧹 [ZERO-LEAK DISK CLEANER] Wiped ephemeral scratchpad artifacts for '{real_cid}'")
+                                except Exception as _cln_e:
+                                    logger.warning(f"⚠️ [ZERO-LEAK DISK CLEANER] Ephemeral wipe notice: {_cln_e}")
                             except Exception as _sg_e:
                                 if "Chat not found" in str(_sg_e) or "chat not found" in str(_sg_e).lower():
                                     logger.warning(f"⚠️ Vault storage group backup skipped: Storage group chat not found. Check TELEGRAM_STORAGE_GROUP_ID in .env")
@@ -2863,6 +2873,12 @@ def start_telegram_bot_service():
         app.add_handler(MessageHandler(filters.COMMAND, _cmd_unknown))
         app.add_handler(MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.VIDEO | filters.Document.ALL, handle_telegram_incoming_msg))
 
+        try:
+            from Core_Modules.disk_cleaner import sweep_stale_temp_artifacts
+            sweep_stale_temp_artifacts(max_age_hours=2)
+        except Exception as _sw_err:
+            logger.debug(f"Startup disk sweeper notice: {_sw_err}")
+
         logger.info("✅ Telegram Bot Active & Listening! Platform Selection Menu dispatched to admin chat.")
         app.run_polling(poll_interval=2.0, drop_pending_updates=False)
     except KeyboardInterrupt:
@@ -2930,6 +2946,13 @@ if __name__ == "__main__":
                 TelegramVaultIndexer().hydrate_all_vault_jsons_on_startup()
             except Exception as _h_err:
                 logger.warning(f"⚠️ Startup vault hydration notice: {_h_err}")
+
+            try:
+                from Core_Modules.disk_cleaner import sweep_stale_temp_artifacts
+                sweep_stale_temp_artifacts(max_age_hours=2)
+            except Exception as _sw_err:
+                logger.debug(f"Startup disk sweeper notice: {_sw_err}")
+
             run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
 
     except KeyboardInterrupt:

@@ -92,6 +92,8 @@ class AudioPoolManager:
         self._sync_root_to_active()
         # Ensure all files in active/ are registered in metadata so they are not skipped.
         self._sync_active_to_metadata()
+        # Sanitize any rogue video files mistakenly registered in files root
+        self.sanitize_pool_metadata_anomalies()
 
     @property
     def reuse_cooldown_seconds(self) -> float:
@@ -278,11 +280,12 @@ class AudioPoolManager:
                                 break
 
                     if not existing:
-                        social_url = (
+                        raw_s_url = (
                             meta_dict.get("url") or meta_dict.get("social_media_id") or
                             video_json_dict.get("webpage_url") or video_json_dict.get("url") or
                             f"https://www.instagram.com/reel/{clean_folder_sc}/"
                         )
+                        social_url = raw_s_url.split("?")[0].rstrip("/") + "/"
                         existing = clips_dict.get(social_url, {})
 
                     raw_vault_id = meta_dict.get("raw_vault_file_id") or meta_dict.get("raw_video_file_id")
@@ -316,9 +319,9 @@ class AudioPoolManager:
                         "selected_audio_file_id": existing.get("selected_audio_file_id"),
                         "processed_output_file_id": existing.get("processed_output_file_id") or existing.get("master_reel_file_id"),
                     }
-                    if raw_vault_id and not media_file_ids.get("raw_video_file_id"):
+                    if raw_vault_id:
                         media_file_ids["raw_video_file_id"] = raw_vault_id
-                    if extracted_audio_id and not media_file_ids.get("extracted_audio_file_id"):
+                    if extracted_audio_id:
                         media_file_ids["extracted_audio_file_id"] = extracted_audio_id
                     if "selected_audio_file_id" not in media_file_ids:
                         media_file_ids["selected_audio_file_id"] = existing.get("selected_audio_file_id")
@@ -335,11 +338,11 @@ class AudioPoolManager:
                         "last_used": last_used_val,
                         "usage_count": usage_count_val,
                     }
-                    if audio_analysis_dict and not audio_data.get("audio_math"):
+                    if audio_analysis_dict:
                         audio_data["audio_math"] = audio_analysis_dict
-                    if speech_dict and not audio_data.get("whisper_transcript"):
+                    if speech_dict:
                         audio_data["whisper_transcript"] = speech_dict
-                    if gemini_audio_intel and not audio_data.get("gemini_audio_output"):
+                    if gemini_audio_intel:
                         audio_data["gemini_audio_output"] = gemini_audio_intel
                     if "selected_audio" not in audio_data:
                         audio_data["selected_audio"] = existing.get("selected_audio")
@@ -354,7 +357,7 @@ class AudioPoolManager:
                         "clip_intelligence": existing.get("clip_intelligence", {}),
                         "vectors": existing.get("vectors", []),
                     }
-                    if gemini_visual_intel and not visual_data.get("gemini_visual_output"):
+                    if gemini_visual_intel:
                         visual_data["gemini_visual_output"] = gemini_visual_intel
 
                     # Build updated v3 entry
@@ -1366,6 +1369,29 @@ class AudioPoolManager:
         if count_cleaned > 0:
             logger.info(f"🧹 Audio Maintenance: Cleaned {count_cleaned} stale files from Original_audio root.")
 
+    def sanitize_pool_metadata_anomalies(self) -> int:
+        """
+        Removes illegal entries from files root (like 'video.mp4' or video files).
+        """
+        removed = 0
+        with self.lock:
+            files_dict = self.metadata.get("files", {})
+            if isinstance(files_dict, dict):
+                to_delete = [
+                    k for k in files_dict.keys()
+                    if k != "social_media_id" and (
+                        k.lower() in ("video.mp4", "raw.mp4")
+                        or any(k.lower().endswith(ext) for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm"))
+                    )
+                ]
+                for k in to_delete:
+                    del files_dict[k]
+                    removed += 1
+                    logger.info(f"🧹 [POOL SANITIZE] Removed rogue video entry from audio files index: {k}")
+            if removed > 0:
+                self._save_metadata()
+        return removed
+
     def get_files_index(self) -> Dict[str, Any]:
         """
         Return the pool_metadata["files"] dict — the unified audio track index.
@@ -1439,7 +1465,11 @@ class AudioPoolManager:
                 if "file_id" in lyric_data:
                     meta["file_id"] = lyric_data["file_id"]
                 meta["lyric_intel_merged"] = True
-                self._set_file_metadata(track_filename, meta)
+                is_video_file = any(track_filename.lower().endswith(ext) for ext in (".mp4", ".mkv", ".mov", ".avi", ".webm")) or track_filename.lower() in ("video.mp4", "raw.mp4")
+                if not is_video_file:
+                    self._set_file_metadata(track_filename, meta)
+                else:
+                    logger.debug(f"[POOL MERGE] Skipped registering video file '{track_filename}' in files index root.")
 
                 # Also search clips entries in metadata and populate gemini_semantic_audio_intelligence
                 files_dict = self.metadata.get("files", self.metadata)
@@ -1557,19 +1587,30 @@ class AudioPoolManager:
             audio_fname = ""
             if resolved_audio:
                 audio_fname = os.path.basename(str(resolved_audio)).lower()
-                # e.g. vault_bgm_dc8lppidjss.wav -> dc8lppidjss
-                audio_sc = audio_fname.replace("vault_bgm_", "").replace("bgm_", "")
-                for ext in (".wav", ".mp3", ".m4a", ".aac"):
-                    audio_sc = audio_sc.replace(ext, "")
+                audio_sc = audio_fname
+                if audio_sc.startswith("vault_bgm_"):
+                    audio_sc = audio_sc[len("vault_bgm_"):]
+                elif audio_sc.startswith("bgm_"):
+                    audio_sc = audio_sc[len("bgm_"):]
+                elif audio_sc.startswith("extracted_"):
+                    audio_sc = audio_sc[len("extracted_"):]
+                for ext in (".wav", ".mp3", ".m4a", ".aac", ".mp4"):
+                    if audio_sc.endswith(ext):
+                        audio_sc = audio_sc[:-len(ext)]
                 audio_sc = audio_sc.strip()
+            elif reel_identifier:
+                # If no external BGM track was selected, the rejected audio was the reel's ambient/extracted audio
+                audio_sc = processed_sc or str(reel_identifier).lower()
+                audio_fname = f"extracted_{audio_sc}.wav"
 
-                # ── BLACKLIST WRITE: permanent ban before any deletion ────────────────
-                # This runs regardless of whether audio_sc matches anything in the pool,
-                # guaranteeing the audio can never be re-selected even after vault resyncs.
+            # ── BLACKLIST WRITE: permanent ban before any deletion ────────────────
+            # This runs regardless of whether audio_sc matches anything in the pool,
+            # guaranteeing the audio can never be re-selected even after vault resyncs.
+            if audio_fname or audio_sc:
                 try:
-                    from Audio_Modules.rejected_audio_blacklist import add as _bl_add
+                    from Audio_Modules.rejected_audio_blacklist import add as _bl_add, sync_blacklist_to_vault
                     _bl_add(
-                        audio_filename=audio_fname,
+                        audio_filename=audio_fname or f"{audio_sc}.mp3",
                         audio_shortcode=audio_sc or None,
                         telegram_file_id=(
                             files_root.get(audio_fname, {}).get("file_id")
@@ -1577,9 +1618,10 @@ class AudioPoolManager:
                         ),
                         reason="admin_rejected",
                     )
+                    sync_blacklist_to_vault()
                 except Exception as _bl_err:
                     logger.warning(f"⚠️ [POOL PURGE] Blacklist write failed (non-fatal): {_bl_err}")
-                # ─────────────────────────────────────────────────────────────────────
+            # ─────────────────────────────────────────────────────────────────────
 
                 if audio_sc:
                     for url_key, entry in list(social_dict.items()):
@@ -1589,7 +1631,10 @@ class AudioPoolManager:
                         sm_val = str(entry.get("social_media_id", "")).lower()
                         u_key_l = str(url_key).lower()
 
-                        if audio_sc == sc_val or audio_sc in u_key_l or audio_sc in sm_val:
+                        if (
+                            (audio_sc and (audio_sc == sc_val or audio_sc in u_key_l or audio_sc in sm_val))
+                            or (audio_fname and audio_fname in u_key_l)
+                        ):
                             # DELETE ENTIRE OBJECT for selected audio harvest source!
                             del social_dict[url_key]
                             purged_items.append(f"Audio source harvest section: {url_key}")

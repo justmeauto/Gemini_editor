@@ -837,9 +837,11 @@ def analyze_music(audio_path: str) -> Dict[str, Any]:
             logger.info(f"[LYRIC_ALIGNER] 💾 Persisted lyric intelligence to disk: {cache_json_path}")
             try:
                 from Audio_Modules.audio_pool_manager import AudioPoolManager
-                AudioPoolManager().merge_lyric_into_pool(
-                    audio_path, report
-                )
+                _ext = os.path.splitext(str(audio_path))[1].lower()
+                if _ext not in (".mp4", ".mkv", ".mov", ".avi", ".webm") and os.path.basename(str(audio_path)).lower() not in ("video.mp4", "raw.mp4"):
+                    AudioPoolManager().merge_lyric_into_pool(
+                        audio_path, report
+                    )
             except Exception as _pm:
                 logger.debug(f"[LYRIC_ALIGNER] pool merge (gemini_path): {_pm}")
         except Exception as _swe:

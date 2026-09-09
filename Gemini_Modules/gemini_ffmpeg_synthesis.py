@@ -840,14 +840,7 @@ class FFmpegCommandGenerator:
             brand_text = env_brand or None
 
         # Check if input video has an audio stream AND whether we explicitly preserve original audio
-        preserve_orig = False
-        if is_preserve_input:
-            preserve_orig = True
-        elif not bgm_path:
-            preserve_orig = True
-        else:
-            preserve_orig = False
-
+        preserve_orig = bool(is_preserve_input)
         has_input_audio = self._has_audio_stream(input_path) and preserve_orig
 
         # ── Step A: Probe real source video duration and trim segments ───────────
@@ -1162,6 +1155,9 @@ class FFmpegCommandGenerator:
             filter_parts.append(f"[ac]volume={video_volume:.2f}[aout]")
         elif has_input_audio:
             filter_parts.append(f"[ac]volume=0.00[aout]")
+        else:
+            filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_visual_dur:.4f}[aout]")
+            has_audio = True
 
         # ── Assemble full filtergraph ─────────────────────────────────────────────
         filtergraph = ";".join(filter_parts)
@@ -2350,7 +2346,7 @@ class GeminiFFmpegEngine:
                 extra_inputs["preserve_original_audio"] = True
                 logger.info(f"🎙️ [SPEECH INTEL] Speech mode '{speech_mode}' detected -> Enabling preserve_original_audio (static_audio_blend).")
             else:
-                extra_inputs["preserve_original_audio"] = False if audio_path else True
+                extra_inputs["preserve_original_audio"] = False
 
         # Automatically inject BGM mix step if external audio track was provided but plan missing audio operation
         if audio_path and os.path.exists(audio_path):
