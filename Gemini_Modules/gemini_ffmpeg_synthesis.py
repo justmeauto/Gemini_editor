@@ -796,10 +796,20 @@ class FFmpegCommandGenerator:
         Encodes to H.264 EXACTLY ONCE — zero generational quality loss.
         """
         cmd = [self.ffmpeg_path, "-y", "-i", input_path]
+        cmd_input_count = 1
+
         bgm_idx = None
         if bgm_path and os.path.exists(bgm_path):
             cmd.extend(["-i", bgm_path])
-            bgm_idx = 1
+            bgm_idx = cmd_input_count
+            cmd_input_count += 1
+
+        vo_path = (extra_inputs or {}).get("voiceover")
+        vo_idx = None
+        if vo_path and os.path.exists(vo_path):
+            cmd.extend(["-i", vo_path])
+            vo_idx = cmd_input_count
+            cmd_input_count += 1
 
         filter_parts: List[str] = []
         shot_labels: List[str] = []
@@ -811,7 +821,15 @@ class FFmpegCommandGenerator:
         dt_op = next((op for op in ops if op.get("operation_type") in ("drawtext", "brand_watermark")), None)
         mix_op = next((op for op in ops if op.get("operation_type") in ("bgm_mix", "audio_ducking_mix", "audio_mix")), None)
 
-        is_preserve_input = bool(extra_inputs and extra_inputs.get("preserve_original_audio"))
+        # CRITICAL: If no external BGM track is present, source video audio is preserved by default
+        # (either as the main audio, or ducked under voiceover if voiceover is present)
+        if extra_inputs and "preserve_original_audio" in extra_inputs:
+            is_preserve_input = bool(extra_inputs.get("preserve_original_audio"))
+        elif bgm_idx is None:
+            is_preserve_input = True
+        else:
+            is_preserve_input = False
+
         video_volume = 0.80 if is_preserve_input else 0.00
         if mix_op:
             if mix_op.get("music_volume") is not None:
@@ -826,6 +844,9 @@ class FFmpegCommandGenerator:
                     pass
             elif not is_preserve_input:
                 video_volume = 0.00
+
+        if bgm_idx is None and vo_idx is None:
+            video_volume = max(0.80, video_volume)
 
         env_brand = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()
@@ -1139,9 +1160,24 @@ class FFmpegCommandGenerator:
 
         # ── Step F: Audio Assembly ────────────────────────────────────────────────
         has_bgm = bgm_idx is not None
-        has_audio = has_bgm or (has_input_audio and video_volume > 0.01)
+        has_vo = vo_idx is not None
+        has_src = has_input_audio
+        has_audio = True
 
-        if has_bgm and has_input_audio and video_volume > 0.01:
+        if has_bgm and has_vo and has_src:
+            filter_parts.append(
+                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"[ac]volume=0.20[ac_v];"
+                f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
+                f"[bgm_v][ac_v][vo_v]amix=inputs=3:duration=first:dropout_transition=2[aout]"
+            )
+        elif has_bgm and has_vo:
+            filter_parts.append(
+                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
+                f"[bgm_v][vo_v]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
+        elif has_bgm and has_src and video_volume > 0.01:
             filter_parts.append(
                 f"[ac]volume={video_volume:.2f}[ac_v];"
                 f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[bgm_v];"
@@ -1151,13 +1187,24 @@ class FFmpegCommandGenerator:
             filter_parts.append(
                 f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[aout]"
             )
-        elif has_input_audio and video_volume > 0.01:
-            filter_parts.append(f"[ac]volume={video_volume:.2f}[aout]")
-        elif has_input_audio:
-            filter_parts.append(f"[ac]volume=0.00[aout]")
+        elif has_vo and has_src:
+            filter_parts.append(
+                f"[ac]volume=0.25[ac_v];"
+                f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
+                f"[ac_v][vo_v]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
+        elif has_vo:
+            filter_parts.append(
+                f"[{vo_idx}:a]apad=whole_dur={total_visual_dur:.4f},atrim=duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume=1.00[aout]"
+            )
+        elif has_src:
+            filter_parts.append(f"[ac]volume={max(0.70, video_volume):.2f}[aout]")
+        elif self._has_audio_stream(input_path):
+            # Fallback to source video's continuous audio stream if not sliced into [ac]
+            filter_parts.append(f"[0:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume=1.00[aout]")
         else:
+            # Absolute last resort: video is genuinely silent (0 audio streams, no BGM, no VO)
             filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={total_visual_dur:.4f}[aout]")
-            has_audio = True
 
         # ── Assemble full filtergraph ─────────────────────────────────────────────
         filtergraph = ";".join(filter_parts)
@@ -2044,6 +2091,22 @@ class GeminiFFmpegEngine:
             elif op_type in ("audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix"):
                 vo_file = extra_inputs.get("voiceover")
                 bgm_file = extra_inputs.get("music") or extra_inputs.get("bgm")
+                # Fallback to clip's own extracted audio if bgm_file is missing
+                if not bgm_file or not os.path.exists(bgm_file):
+                    cand_dirs = [
+                        os.path.dirname(os.path.abspath(input_path)),
+                        extra_inputs.get("clip_folder", "") if extra_inputs else "",
+                    ]
+                    for cd in cand_dirs:
+                        if cd and os.path.isdir(cd):
+                            for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
+                                cand_p = os.path.join(cd, cand_name)
+                                if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
+                                    bgm_file = cand_p
+                                    break
+                        if bgm_file and os.path.exists(bgm_file):
+                            break
+
                 if vo_file and bgm_file and os.path.exists(vo_file) and os.path.exists(bgm_file):
                     res = self.cmd_generator.build_audio_ducking_mix_command(
                         current_input, vo_file, bgm_file, step_output,
@@ -2063,8 +2126,19 @@ class GeminiFFmpegEngine:
                         video_volume=v_vol,
                         encoding_cfg=encoding_cfg)
                     command_steps.append(res)
+                elif vo_file and os.path.exists(vo_file):
+                    # Voiceover exists without external BGM -> mix voiceover over video!
+                    has_v_audio = self.cmd_generator._has_audio_stream(current_input)
+                    v_vol = 0.25 if has_v_audio else 0.0
+                    res = self.cmd_generator.build_bgm_mix_command(
+                        current_input, vo_file, step_output,
+                        music_volume=1.0,
+                        video_volume=v_vol,
+                        encoding_cfg=encoding_cfg)
+                    command_steps.append(res)
+                    logger.info(f"🎙️ [MULTI-PASS] Mixed voiceover into video without external BGM (video_vol={v_vol}, vo_vol=1.0)")
                 else:
-                    logger.warning("Audio mix requested by Gemini but external BGM track not found. Skipping audio mix step.")
+                    logger.warning("Audio mix requested by Gemini but neither BGM track nor voiceover found. Skipping audio mix step.")
                     continue
             elif op_type == "subtitle_burnin":
                 sub_file = op.get("subtitle_file") or extra_inputs.get("subtitle", "subtitles.ass")
@@ -2328,6 +2402,26 @@ class GeminiFFmpegEngine:
                 logger.debug("🎙️ [TTS BRIDGE] enable_voiceover=true but engagement_hook is empty — skipping TTS.")
 
 
+        # Fallback to clip's own extracted audio WAV/MP3 if audio_path was not provided or not found
+        if not audio_path or not os.path.exists(audio_path):
+            cand_dirs = [
+                os.path.dirname(os.path.abspath(input_video_path)),
+                extra_inputs.get("clip_folder", "") if extra_inputs else "",
+            ]
+            for cd in cand_dirs:
+                if cd and os.path.isdir(cd):
+                    for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
+                        cand_p = os.path.join(cd, cand_name)
+                        if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
+                            audio_path = cand_p
+                            extra_inputs["music"] = cand_p
+                            extra_inputs["bgm"] = cand_p
+                            extra_inputs["audio"] = cand_p
+                            logger.info(f"🎵 [SPEECH INTEL FALLBACK] Adopted clip extracted audio as BGM: {cand_p}")
+                            break
+                if audio_path and os.path.exists(audio_path):
+                    break
+
         # Auto-wire speech_intelligence / preserve_original_audio from forensic_context
         speech_intel = forensic.get("speech_intelligence") or v_ctx.get("speech_intelligence") or {}
         rec_action = speech_intel.get("recommended_audio_action")
@@ -2335,7 +2429,10 @@ class GeminiFFmpegEngine:
 
         f_intent = forensic.get("intent", "")
         if "preserve_original_audio" not in extra_inputs:
-            if audio_path and (
+            if not audio_path or not os.path.exists(audio_path):
+                extra_inputs["preserve_original_audio"] = True
+                logger.info("🎙️ [SPEECH INTEL] No external BGM track provided -> preserve_original_audio=True to prevent silent output.")
+            elif audio_path and (
                 rec_action == "audio_replace_full_bgm" or
                 speech_mode in ("silent_broll", "music_broll", "lip_sync_dub") or
                 f_intent in ("bollywood_dance_performance", "dance", "fashion", "visual_broll")
@@ -2591,6 +2688,29 @@ class GeminiFFmpegEngine:
             candidate = os.path.join(_repo, "Original_audio", "active", os.path.basename(bgm_path))
             if os.path.exists(candidate):
                 bgm_path = candidate
+
+        # Fallback to clip's own extracted audio WAV/MP3 if bgm_path is missing
+        if not bgm_path or not os.path.exists(bgm_path):
+            cand_dirs = [
+                os.path.dirname(os.path.abspath(input_path)),
+                extra_inputs.get("clip_folder", "") if extra_inputs else "",
+            ]
+            for cd in cand_dirs:
+                if cd and os.path.isdir(cd):
+                    for cand_name in ("video_extracted.wav", "video_extracted.mp3"):
+                        cand_p = os.path.join(cd, cand_name)
+                        if os.path.isfile(cand_p) and os.path.getsize(cand_p) > 1024:
+                            bgm_path = cand_p
+                            extra_inputs["music"] = cand_p
+                            extra_inputs["bgm"] = cand_p
+                            extra_inputs["audio"] = cand_p
+                            logger.info(f"🎵 [SINGLE-PASS FALLBACK] Adopted clip extracted audio as BGM: {cand_p}")
+                            break
+                if bgm_path and os.path.exists(bgm_path):
+                    break
+
+        if not bgm_path:
+            extra_inputs["preserve_original_audio"] = True
 
         brand_text    = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()
