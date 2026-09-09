@@ -516,7 +516,7 @@ def set_user_youtube_client_secret(user_id_str: str, client_secret_str: str) -> 
 
 
 def set_user_instagram_token(user_id_str: str, token: str) -> bool:
-    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN in GitHub Secrets."""
+    """Saves user Instagram/Meta Access Token and syncs to IG_BUSINESS_TOKEN and META_PAGE_TOKEN in GitHub Secrets."""
     users = load_all_users()
     user_id_str = str(user_id_str)
     clean_tok = token.strip()
@@ -526,7 +526,8 @@ def set_user_instagram_token(user_id_str: str, token: str) -> bool:
         u_rec["meta_page_token"] = clean_tok
         save_all_users(users)
         sync_user_secret_to_github(user_id_str, "IG_BUSINESS_TOKEN", clean_tok)
-        logger.info("📸 [TELEGRAM USER MANAGER] Instagram Access Token saved for User ID %s", user_id_str)
+        sync_user_secret_to_github(user_id_str, "META_PAGE_TOKEN", clean_tok)
+        logger.info("📸 [TELEGRAM USER MANAGER] Instagram/Meta Access Token saved for User ID %s", user_id_str)
         return True
     return False
 
