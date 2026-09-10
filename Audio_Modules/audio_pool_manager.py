@@ -266,17 +266,27 @@ class AudioPoolManager:
                         except Exception:
                             pass
 
-                    clean_folder_sc = clip_folder.replace("manual_", "").strip()
+                    from Telegram_Storage_Modules.telegram_vault_indexer import canonicalize_social_url, extract_clean_shortcode
+
+                    clean_folder_sc = extract_clean_shortcode(clip_folder) or clip_folder.replace("manual_", "").strip()
                     shortcode = meta_dict.get("shortcode") or video_json_dict.get("id") or clean_folder_sc
+                    shortcode = extract_clean_shortcode(shortcode) or shortcode
                     owner_username = meta_dict.get("ownerUsername") or video_json_dict.get("uploader") or clip_folder.split("_")[0]
 
-                    # If shortcode already exists in clips_dict, reuse its URL and entry to prevent split keys!
+                    # Canonicalize URL from shortcode
+                    canonical_social_url = canonicalize_social_url(shortcode) if shortcode else ""
+
+                    # If shortcode already exists in clips_dict, reuse its entry and migrate key if dirty!
                     existing = None
+                    existing_key = None
                     if shortcode:
-                        for _su, _se in clips_dict.items():
-                            if str(_se.get("shortcode", "")).strip().lower() == shortcode.lower():
+                        for _su, _se in list(clips_dict.items()):
+                            if not isinstance(_se, dict):
+                                continue
+                            _sc_val = _se.get("shortcode") or extract_clean_shortcode(_su)
+                            if _sc_val and _sc_val.lower() == shortcode.lower():
                                 existing = _se
-                                social_url = _su
+                                existing_key = _su
                                 break
 
                     if not existing:
@@ -285,8 +295,13 @@ class AudioPoolManager:
                             video_json_dict.get("webpage_url") or video_json_dict.get("url") or
                             f"https://www.instagram.com/reel/{clean_folder_sc}/"
                         )
-                        social_url = raw_s_url.split("?")[0].rstrip("/") + "/"
-                        existing = clips_dict.get(social_url, {})
+                        canonical_social_url = canonicalize_social_url(raw_s_url) or canonical_social_url
+                        existing = clips_dict.get(canonical_social_url, {})
+
+                    social_url = canonical_social_url or (existing_key if existing else f"https://www.instagram.com/reel/{clean_folder_sc}/")
+                    if existing_key and existing_key != social_url:
+                        clips_dict.pop(existing_key, None)
+                        changed = True
 
                     raw_vault_id = meta_dict.get("raw_vault_file_id") or meta_dict.get("raw_video_file_id")
                     extracted_audio_id = (
@@ -1369,9 +1384,96 @@ class AudioPoolManager:
         if count_cleaned > 0:
             logger.info(f"🧹 Audio Maintenance: Cleaned {count_cleaned} stale files from Original_audio root.")
 
+    def deduplicate_and_merge_pool_entries(self) -> int:
+        """
+        Scans files['social_media_id'] and groups entries by clean shortcode.
+        If multiple keys exist for the same shortcode (e.g. clean URL, query-param dirty URL,
+        markdown backticks), merges them into a single canonical entry with zero data loss.
+        Removes all dirty duplicate keys from the dictionary.
+        Returns the count of purged duplicate keys.
+        """
+        import re
+        from Telegram_Storage_Modules.telegram_vault_indexer import (
+            extract_clean_shortcode,
+            canonicalize_social_url,
+            deep_merge_records,
+        )
+
+        with self.lock:
+            files_root = self.metadata.get("files", {})
+            if not isinstance(files_root, dict):
+                return 0
+            social_dict = files_root.get("social_media_id", {})
+            if not isinstance(social_dict, dict) or not social_dict:
+                return 0
+
+            grouped: Dict[str, list] = {}
+            for url_key, entry in list(social_dict.items()):
+                if not isinstance(entry, dict):
+                    continue
+                sc = (
+                    entry.get("shortcode")
+                    or extract_clean_shortcode(url_key)
+                    or extract_clean_shortcode(entry.get("social_media_id"))
+                )
+                if not sc:
+                    sc = url_key
+                grouped.setdefault(sc, []).append((url_key, entry))
+
+            purged_count = 0
+            changes_made = False
+
+            for sc, entries in grouped.items():
+                canonical_key = canonicalize_social_url(sc) if (sc and re.fullmatch(r"[A-Za-z0-9_-]{5,}", sc)) else entries[0][0]
+                if not canonical_key:
+                    canonical_key = entries[0][0]
+
+                has_duplicates = len(entries) > 1
+                has_dirty_key = any(orig_key != canonical_key for orig_key, _ in entries)
+
+                if has_duplicates or has_dirty_key:
+                    merged_entry: Dict[str, Any] = {}
+                    for orig_key, entry_data in entries:
+                        merged_entry = deep_merge_records(merged_entry, entry_data)
+                        if orig_key != canonical_key and orig_key in social_dict:
+                            social_dict.pop(orig_key, None)
+                            purged_count += 1
+                            changes_made = True
+
+                    merged_entry["shortcode"] = sc
+                    merged_entry["social_media_id"] = canonical_key
+
+                    # Sync media_file_ids and top-level fields
+                    m_ids = merged_entry.setdefault("media_file_ids", {})
+                    for field in (
+                        "raw_video_file_id",
+                        "extracted_audio_file_id",
+                        "processed_output_file_id",
+                        "wm_clean_file_id",
+                    ):
+                        if merged_entry.get(field) and not m_ids.get(field):
+                            m_ids[field] = merged_entry[field]
+                        elif m_ids.get(field) and not merged_entry.get(field):
+                            merged_entry[field] = m_ids[field]
+
+                    social_dict[canonical_key] = merged_entry
+                    changes_made = True
+                    logger.info(
+                        f"🧹 [POOL DEDUP] Merged {len(entries)} duplicate entries for shortcode '{sc}' -> '{canonical_key}'"
+                    )
+
+            if changes_made:
+                self._save_metadata(sync_to_vault=True)
+                logger.info(
+                    f"✅ [POOL DEDUP COMPLETED] Purged {purged_count} duplicate keys; pool_metadata.json cleaned and synced."
+                )
+
+            return purged_count
+
     def sanitize_pool_metadata_anomalies(self) -> int:
         """
-        Removes illegal entries from files root (like 'video.mp4' or video files).
+        Removes illegal entries from files root (like 'video.mp4' or video files)
+        and deduplicates all social_media_id entries.
         """
         removed = 0
         with self.lock:
@@ -1390,7 +1492,9 @@ class AudioPoolManager:
                     logger.info(f"🧹 [POOL SANITIZE] Removed rogue video entry from audio files index: {k}")
             if removed > 0:
                 self._save_metadata()
-        return removed
+
+        dedup_purged = self.deduplicate_and_merge_pool_entries()
+        return removed + dedup_purged
 
     def get_files_index(self) -> Dict[str, Any]:
         """

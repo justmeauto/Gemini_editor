@@ -178,6 +178,9 @@ def synthesize_editing_plan(
     extra_inputs = {}
     if micro_shots:
         extra_inputs["micro_shots"] = micro_shots
+        extra_inputs["rtb_timeline"] = micro_shots
+    if forensic_context and forensic_context.get("lyric_intel"):
+        extra_inputs["lyric_intel"] = forensic_context["lyric_intel"]
 
     if forensic_context:
         # IMPORTANT: forensic_context["watermarks"] is an INTEGER COUNT (e.g. 1, 2).
@@ -191,8 +194,13 @@ def synthesize_editing_plan(
         if wm_boxes:
             extra_inputs["watermark_boxes"] = wm_boxes
 
-    # NOTE: If no BGM track is available, the source clip is silenced by the filtergraph (video_volume=0.00).
-    # video_extracted.wav MUST NEVER be adopted as BGM. No preserve_original_audio override here.
+    # If no external BGM track is available, adopt clip's clean continuous extracted audio
+    if not selected_bgm_path or not os.path.exists(selected_bgm_path):
+        clip_dir = os.path.dirname(video_path)
+        extracted_wav = os.path.join(clip_dir, "video_extracted.wav")
+        if os.path.isfile(extracted_wav):
+            selected_bgm_path = extracted_wav
+            logger.info(f"🎙️ [STEP 06] Using clean continuous extracted audio as track: {extracted_wav}")
 
     try:
         synthesis_result = engine.run_full_pipeline(

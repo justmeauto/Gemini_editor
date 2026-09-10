@@ -665,23 +665,35 @@ class FFmpegCommandGenerator:
         return {"cmd_list": cmd, "terminal_command": self.cmd_list_to_string(cmd), "operation": "audio_ducking_mix",
                 "video_input": video_input, "voiceover_input": voiceover_input, "music_input": music_input, "output": output_path}
 
-    def build_bgm_mix_command(self, video_input: str, music_input: str, output_path: str, music_volume: float = 0.5, video_volume: float = 0.3, encoding_cfg=None):
+    def build_bgm_mix_command(
+        self,
+        video_input: str,
+        music_input: str,
+        output_path: str,
+        music_volume: float = 0.5,
+        video_volume: float = 0.3,
+        audio_start_time: float = 0.0,
+        audio_offset: float = 0.0,
+        encoding_cfg=None
+    ):
         """
         Mixes external BGM audio track with video audio.
         If video has audio, blends BGM and original audio. If video has no audio, plays BGM directly.
+        Supports cued playback at audio_start_time via atrim=start=.
         Always includes -shortest to prevent final frame freezing on duration mismatch.
         """
         has_video_audio = self._has_audio_stream(video_input)
+        bgm_filter = f"atrim=start={audio_start_time:.4f},asetpts=PTS-STARTPTS,volume={music_volume}" if audio_start_time > 0.0 else f"volume={music_volume}"
         if has_video_audio:
             filter_complex = (
                 f"[0:a]volume={video_volume}[aorig];"
-                f"[1:a]volume={music_volume}[abgm];"
+                f"[1:a]{bgm_filter}[abgm];"
                 f"[aorig][abgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
             cmd = [self.ffmpeg_path, "-y", "-i", video_input, "-i", music_input,
                    "-filter_complex", filter_complex, "-map", "0:v", "-map", "[aout]", "-shortest"]
         else:
-            filter_complex = f"[1:a]volume={music_volume}[aout]"
+            filter_complex = f"[1:a]{bgm_filter}[aout]"
             cmd = [self.ffmpeg_path, "-y", "-i", video_input, "-i", music_input,
                    "-filter_complex", filter_complex, "-map", "0:v", "-map", "[aout]", "-shortest"]
         cmd.extend(self._get_encoder_flags(encoding_cfg=encoding_cfg))
@@ -783,6 +795,7 @@ class FFmpegCommandGenerator:
         brand_fontcolor: str = "white@0.85",
         brand_fontfile: Optional[str] = None,
         music_volume: float = 0.5,
+        audio_start_time: float = 0.0,
         encoding_cfg: Optional[Dict[str, Any]] = None,
         gemini_operations: Optional[List[Dict[str, Any]]] = None,
         extra_inputs: Optional[Dict[str, Any]] = None,
@@ -844,6 +857,16 @@ class FFmpegCommandGenerator:
                     pass
             elif not is_preserve_input:
                 video_volume = 0.00
+            if mix_op.get("audio_start_time") is not None:
+                try:
+                    audio_start_time = max(0.0, float(mix_op.get("audio_start_time")))
+                except (TypeError, ValueError):
+                    pass
+        elif extra_inputs and extra_inputs.get("audio_start_time") is not None:
+            try:
+                audio_start_time = max(0.0, float(extra_inputs.get("audio_start_time")))
+            except (TypeError, ValueError):
+                pass
 
         # NOTE: DO NOT re-raise video_volume when no BGM — that caused sticky audio.
 
@@ -1163,28 +1186,31 @@ class FFmpegCommandGenerator:
         has_src = has_input_audio
         has_audio = True
 
+        if has_bgm:
+            logger.info(f"🎵 [SINGLE-PASS AUDIO] BGM atrim: start={audio_start_time:.2f}s, dur={total_visual_dur:.2f}s, vol={music_volume:.2f}")
+
         if has_bgm and has_vo and has_src:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
                 f"[ac]volume=0.20[ac_v];"
                 f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
                 f"[bgm_v][ac_v][vo_v]amix=inputs=3:duration=first:dropout_transition=2[aout]"
             )
         elif has_bgm and has_vo:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
                 f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
                 f"[bgm_v][vo_v]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
         elif has_bgm and has_src and video_volume > 0.01:
             filter_parts.append(
                 f"[ac]volume={video_volume:.2f}[ac_v];"
-                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[bgm_v];"
+                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[bgm_v];"
                 f"[ac_v][bgm_v]amix=inputs=2:duration=first[aout]"
             )
         elif has_bgm:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start=0:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[aout]"
+                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[aout]"
             )
         elif has_vo and has_src:
             filter_parts.append(
@@ -1253,6 +1279,7 @@ RULES:
 6. DURATION LOCK — CRITICAL: Any operation that changes video length (trim, speed_change, speed_ramp) MUST appear in the operations array BEFORE any audio-mixing operation (bgm_mix, audio_ducking_mix, audio_mix). The final rendered video's audio track must never exceed the final video track's duration — this causes the last frame to freeze while audio continues. If you select a BGM track longer than the target visual duration, that is expected and correct: it will be truncated to match, not the other way around.
 7. LEAD CREATIVE DIRECTOR & DYNAMIC TRIMMING: You are the Lead Creative Director. You decide the cut list, dynamic pacing, speed ramps, and scene rhythm to match the audio beat grid. You are NOT an aspect-ratio converter; you are creating a compelling, viral edit. If the raw footage has dead space, slow pauses, or multiple takes, select and assemble the BEST moments (e.g., Hook scene -> Build-up -> Climax / Beat Drop). Output MULTIPLE 'trim' operations to create dynamic scene cuts, followed by a 'concat' operation to join them in sequence, or a single tailored trim if the footage is already a single tight continuous scene.
 8. CREATIVE DURATION FREEDOM — CRITICAL: As a master human editor, evaluate the source video duration, visual rhythm, motion, narrative flow, and audio beat grid to determine the optimal output reel duration. You have complete creative freedom: do NOT artificially cap your edits to any fixed upper limit. Whether the input is a short clip or a long-form video, choose the best edit length (e.g., 6s, 15s, 45s, 90s, or full source length). The ONLY strict constraint is that the total output video duration MUST BE AT LEAST 5.0 SECONDS (>= 5.0s).
+9. BGM SECTION ALIGNMENT & AUDIO_START_TIME: When using 'bgm_mix' or 'audio_ducking_mix', do NOT blindly start the BGM from 0.0s! Examine the Audio Lyric & Rhythm Context (sections, emotional peaks, drop moments). Professional editors match the visual hook to the musical hook or beat drop. Specify 'audio_start_time' (in seconds, e.g. 15.2, 28.0) and optional 'audio_offset' in the 'bgm_mix' operation to cue the music at its best section (chorus, drop, or energetic build) so the reel opens with peak engagement.
 
 FEW-SHOT EXAMPLE:
 {
@@ -1266,7 +1293,7 @@ FEW-SHOT EXAMPLE:
     {"operation_type": "trim", "start_time": 11.20, "end_time": 14.24},
     {"operation_type": "concat"},
     {"operation_type": "speed_change", "speed_factor": 1.15},
-    {"operation_type": "bgm_mix", "music_volume": 0.50, "video_volume": 0.20}
+    {"operation_type": "bgm_mix", "audio_start_time": 11.20, "music_volume": 0.50, "video_volume": 0.20}
   ],
   "global_encoding": {"codec": "libx264", "preset": "veryfast", "crf": 18}
 }
@@ -1311,6 +1338,9 @@ GEMINI_FFMPEG_SCHEMA = {
                     "h": {"type": "integer", "minimum": 1},
                     "music_volume": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     "ducking_threshold": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "video_volume": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "audio_start_time": {"type": "number", "minimum": 0.0},
+                    "audio_offset": {"type": "number", "minimum": 0.0},
                     "subtitle_file": {"type": "string"},
                     "text": {"type": "string"},
                     "fontcolor": {"type": "string"},
@@ -1570,6 +1600,11 @@ class GeminiFFmpegEngine:
         creative_script: Optional[Dict[str, Any]] = None,
         extra_inputs: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        if not audio_path and video_path:
+            clip_extracted = os.path.join(os.path.dirname(video_path), "video_extracted.wav")
+            if os.path.isfile(clip_extracted):
+                audio_path = clip_extracted
+
         if video_context is None and forensic_context and video_path:
             video_context = self.context_extractor.extract_from_forensic(video_path, forensic_context, audio_path=audio_path)
         elif video_context is None and video_path:
@@ -1580,6 +1615,8 @@ class GeminiFFmpegEngine:
         # Attempt to load persistent lyric intelligence cache or forensic_context if not provided explicitly
         if not lyric_intel and forensic_context and forensic_context.get("lyric_intel"):
             lyric_intel = forensic_context["lyric_intel"]
+        if not lyric_intel and extra_inputs and extra_inputs.get("lyric_intel"):
+            lyric_intel = extra_inputs["lyric_intel"]
 
         if audio_path and os.path.exists(audio_path) and not lyric_intel:
             try:
@@ -1589,6 +1626,9 @@ class GeminiFFmpegEngine:
                 if os.path.exists(beats_cache):
                     with open(beats_cache, "r", encoding="utf-8") as bf:
                         lyric_intel = json.load(bf)
+                else:
+                    from Gemini_Modules.lyric_rhythm_aligner import analyze_music
+                    lyric_intel = analyze_music(audio_path)
             except Exception as _lce:
                 logger.debug(f"[GeminiFFmpegEngine] Lyric cache load fallback: {_lce}")
 
@@ -1628,7 +1668,7 @@ class GeminiFFmpegEngine:
             clean_forensic = {k: v for k, v in forensic_context.items() if k not in ("watermarks", "watermark_detected")}
             prompt_parts.append(f"### Forensic Context (Scene & Visual Intelligence)\n{json.dumps(clean_forensic, indent=2, default=str)}\n")
 
-        if lyric_intel and isinstance(lyric_intel, dict) and lyric_intel.get("_source") != "fallback":
+        if lyric_intel and isinstance(lyric_intel, dict):
             lyric_summary = {
                 "dominant_emotion": lyric_intel.get("dominant_emotion"),
                 "language": lyric_intel.get("language"),
@@ -1639,16 +1679,25 @@ class GeminiFFmpegEngine:
                 "shot_directives": lyric_intel.get("shot_directives", []),
                 "lyrics_sample": lyric_intel.get("lyrics", [])[:6]
             }
-            prompt_parts.append(f"### Audio Lyric & Rhythm Context (Hivemind Sync)\n{json.dumps(lyric_summary, indent=2, default=str)}\n")
+            prompt_parts.append(
+                f"### Audio Lyric & Rhythm Context (Musical Sections & Energy Grid)\n"
+                f"{json.dumps(lyric_summary, indent=2, default=str)}\n"
+                f"AUDIO INTELLIGENCE DIRECTIVE (AUDIO START SELECTION):\n"
+                f"- Examine the musical sections (e.g. intro, verse, chorus, drop) and emotional peak moments above.\n"
+                f"- Professional editors do NOT start every song from 0.0s! Choose the highest energy musical section (such as the chorus or drop point, e.g. at 12.0s, 15.5s, 24.0s) to match the visual hook.\n"
+                f"- You MUST specify 'audio_start_time' in your 'bgm_mix' operation to cue the audio at that exact timestamp.\n\n"
+            )
 
         # ── RTB Mathematical Audio Rhythm & Beat-Snapped Grid ────────────────────
-        rtb_timeline = (extra_inputs or {}).get("rtb_timeline")
+        rtb_timeline = (extra_inputs or {}).get("rtb_timeline") or (extra_inputs or {}).get("micro_shots")
         if rtb_timeline and isinstance(rtb_timeline, list):
             prompt_parts.append(
                 f"### RTB Mathematical Audio Rhythm & Beat-Snapped Grid (Advisory Reference)\n"
                 f"{json.dumps(rtb_timeline, indent=2, default=str)}\n"
-                f"DIRECTOR DIRECTIVE: The above timeline slices represent mathematically snapped musical beat boundaries (calculated from the BGM tempo and energy peaks). "
-                f"Use this beat grid as your rhythmic ruler: snap your scene cuts, hook transitions, and speed ramps to these beat drop points while exercising creative freedom over visual composition.\n"
+                f"DIRECTOR DIRECTIVE (RHYTHMIC SNAPPING & AUDIO START CUE):\n"
+                f"1. The above timeline slices represent mathematically snapped musical beat boundaries (calculated from BGM tempo and energy peaks).\n"
+                f"2. Use this beat grid as your rhythmic ruler: snap your scene cuts, hook transitions, and speed ramps to these beat drop points while exercising creative freedom over visual composition.\n"
+                f"3. AUDIO SYNCHRONIZATION: Cross-reference this rhythm timeline with the audio sections above to determine the optimal 'audio_start_time' for your 'bgm_mix' operation.\n\n"
             )
 
         # ── Director Story Blueprint Cuts from Creative Script ───────────────────
@@ -1800,16 +1849,29 @@ class GeminiFFmpegEngine:
 
         # Audio Strategy Mandate for Director
         preserve_audio_flag = bool((extra_inputs or {}).get("preserve_original_audio", False))
+        is_extracted_audio = audio_path and "video_extracted.wav" in str(audio_path)
         if audio_path and not preserve_audio_flag:
-            prompt_parts.append(
-                "### 🎵 AUDIO DIRECTIVE — CLEAN BGM REPLACEMENT (NO STICKY AUDIO MIXING)\n"
-                "An external BGM audio track is provided for this reel.\n"
-                "The source clip has NO spoken dialogue to preserve (visual/dance/b-roll performance).\n"
-                "RULES:\n"
-                "  1. The selected BGM track COMPLETELY REPLACES the original video audio.\n"
-                "  2. Do NOT output any operation that keeps or mixes original video audio (video_volume MUST be 0.00).\n"
-                "  3. Any bgm_mix operation MUST set: \"music_volume\": 0.80 to 1.00, \"video_volume\": 0.00.\n"
-            )
+            if is_extracted_audio:
+                prompt_parts.append(
+                    "### 🎵 AUDIO DIRECTIVE — CLEAN CONTINUOUS AUDIO TRACK (NO STICKY AUDIO CHOPPING)\n"
+                    "The clip's clean continuous extracted audio track (video_extracted.wav) is provided as the master soundtrack.\n"
+                    "RULES:\n"
+                    "  1. The video slices' internal audio is MUTED (video_volume: 0.00) so that visual trims and jump cuts do NOT chop or distort the audio.\n"
+                    "  2. The extracted audio track plays CONTINUOUSLY across your assembled visual reel.\n"
+                    "  3. In your 'bgm_mix' operation, specify 'audio_start_time' to cue the audio at the best section, hook, or musical drop!\n"
+                    "  4. Set 'music_volume': 0.90 to 1.00, 'video_volume': 0.00.\n"
+                )
+            else:
+                prompt_parts.append(
+                    "### 🎵 AUDIO DIRECTIVE — CLEAN BGM REPLACEMENT (NO STICKY AUDIO MIXING)\n"
+                    "An external BGM audio track is provided for this reel.\n"
+                    "The source clip has NO spoken dialogue to preserve (visual/dance/b-roll performance).\n"
+                    "RULES:\n"
+                    "  1. The selected BGM track COMPLETELY REPLACES the original video audio.\n"
+                    "  2. Do NOT output any operation that keeps or mixes original video audio (video_volume MUST be 0.00).\n"
+                    "  3. Any bgm_mix operation MUST set: \"music_volume\": 0.80 to 1.00, \"video_volume\": 0.00.\n"
+                    "  4. Specify 'audio_start_time' to cue the BGM at its best drop/chorus.\n"
+                )
         elif audio_path and preserve_audio_flag:
             prompt_parts.append(
                 "### 🎙️ AUDIO DIRECTIVE — VOICE PRESERVATION & BGM DUCKING\n"
@@ -1911,7 +1973,7 @@ class GeminiFFmpegEngine:
         non_trim_ops = [op for op in standard_ops if op.get("operation_type") != "trim"]
 
         # Auto-inject multi_trim slicing ONLY if Gemini did not provide any trim operations
-        micro_shots = extra_inputs.get("micro_shots", [])
+        micro_shots = extra_inputs.get("micro_shots") or extra_inputs.get("rtb_timeline") or []
         if not trim_ops and micro_shots:
             trim_ops = [
                 {"operation_type": "trim", "start_time": s["start"], "end_time": s["end"]}
@@ -2107,11 +2169,14 @@ class GeminiFFmpegEngine:
                         m_vol = 0.20
                     else:
                         v_vol = op.get("video_volume", 0.0)
-                        m_vol = op.get("music_volume", 0.50)
+                    audio_st = float(op.get("audio_start_time") or extra_inputs.get("audio_start_time", 0.0) or 0.0)
+                    audio_off = float(op.get("audio_offset", 0.0) or 0.0)
                     res = self.cmd_generator.build_bgm_mix_command(
                         current_input, bgm_file, step_output,
                         music_volume=m_vol,
                         video_volume=v_vol,
+                        audio_start_time=audio_st,
+                        audio_offset=audio_off,
                         encoding_cfg=encoding_cfg)
                     command_steps.append(res)
                 elif vo_file and os.path.exists(vo_file):
@@ -2390,10 +2455,14 @@ class GeminiFFmpegEngine:
                 logger.debug("🎙️ [TTS BRIDGE] enable_voiceover=true but engagement_hook is empty — skipping TTS.")
 
 
-        # NOTE: video_extracted.wav is NEVER a valid BGM fallback. If audio_path is missing,
-        # the pipeline continues with no BGM — source clip will be muted by filtergraph.
-        if not audio_path:
-            logger.info("🔇 [AUDIO DIRECTIVE] No BGM path provided — source clip will be muted (video_volume=0.00). No sticky audio.")
+        # Adopt clip's clean continuous extracted audio if external audio_path is missing
+        if not audio_path or not os.path.exists(audio_path):
+            clip_extracted = os.path.join(os.path.dirname(input_video_path), "video_extracted.wav")
+            if os.path.isfile(clip_extracted):
+                audio_path = clip_extracted
+                logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] Adopted clip's clean extracted audio as track: {audio_path}")
+            else:
+                logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be muted (video_volume=0.00).")
 
         # Auto-wire speech_intelligence / preserve_original_audio from forensic_context
         speech_intel = forensic.get("speech_intelligence") or v_ctx.get("speech_intelligence") or {}
@@ -2403,13 +2472,8 @@ class GeminiFFmpegEngine:
         f_intent = forensic.get("intent", "")
         if "preserve_original_audio" not in extra_inputs:
             if not audio_path or not os.path.exists(audio_path):
-                # MUTE DIRECTIVE: No BGM → source clip stays SILENT.
-                # We do NOT flip preserve_original_audio=True here — that was the sticky-audio
-                # escape hatch. If no BGM was selected, the output is intentionally silent
-                # (the filtergraph will emit anullsrc). Only talking-head / voice-preserve
-                # modes may override this below.
                 extra_inputs["preserve_original_audio"] = False
-                logger.info("🔇 [AUDIO DIRECTIVE] No external BGM track provided → source clip will be MUTED (preserve_original_audio=False).")
+                logger.info("🔇 [AUDIO DIRECTIVE] No audio track available → source clip will be MUTED (preserve_original_audio=False).")
             elif audio_path and (
                 rec_action == "audio_replace_full_bgm" or
                 speech_mode in ("silent_broll", "music_broll", "lip_sync_dub") or
@@ -2658,7 +2722,7 @@ class GeminiFFmpegEngine:
 
         # ── 🏆 SINGLE-PASS PRIMARY PATH ──────────────────────────────────────────
         # Attempt to collapse all operations into ONE ffmpeg -filter_complex call.
-        micro_shots   = extra_inputs.get("micro_shots") or []
+        micro_shots   = extra_inputs.get("micro_shots") or extra_inputs.get("rtb_timeline") or []
         wm_boxes      = extra_inputs.get("watermark_boxes") or []
         bgm_path      = extra_inputs.get("music") or extra_inputs.get("bgm") or extra_inputs.get("audio") or ""
         if bgm_path and not os.path.exists(bgm_path):
@@ -2667,11 +2731,13 @@ class GeminiFFmpegEngine:
             if os.path.exists(candidate):
                 bgm_path = candidate
 
-        # NOTE: video_extracted.wav is NEVER a valid BGM fallback.
-        # If bgm_path is missing, source clip is muted by filtergraph (video_volume=0.00).
-        # Do NOT set preserve_original_audio = True — that causes sticky audio across jump cuts.
-        if not bgm_path:
-            logger.info("🔇 [AUDIO DIRECTIVE] No BGM path found — source clip will be silenced (video_volume=0.00).")
+        if not bgm_path or not os.path.exists(bgm_path):
+            clip_extracted = os.path.join(os.path.dirname(input_path), "video_extracted.wav")
+            if os.path.isfile(clip_extracted):
+                bgm_path = clip_extracted
+                logger.info(f"🎙️ [SINGLE-PASS] Adopted clip's clean continuous extracted audio: {bgm_path}")
+            else:
+                logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be silenced (video_volume=0.00).")
 
         brand_text    = (
             os.getenv("BRAND_WATERMARK_TEXT", "").strip()

@@ -57,6 +57,70 @@ def _empty_vault_index() -> Dict[str, Any]:
     }
 
 
+def extract_clean_shortcode(val: Optional[str]) -> str:
+    """Extract clean shortcode from URL or string, stripping query params, fragments, and markdown artifacts."""
+    if not val or not isinstance(val, str):
+        return ""
+    import urllib.parse
+    cleaned = urllib.parse.unquote(val).strip("`'\"\t\r\n ").split("?")[0].split("#")[0].rstrip("/")
+    m = re.search(r"/(?:reel|reels|p|tv|shorts|v)/([A-Za-z0-9_-]{5,})", cleaned, re.IGNORECASE)
+    if m:
+        return m.group(1).strip("`'\"\t\r\n ")
+    m_yt = re.search(r"youtu\.be/([A-Za-z0-9_-]{5,})", cleaned, re.IGNORECASE)
+    if m_yt:
+        return m_yt.group(1).strip("`'\"\t\r\n ")
+    sc_clean = cleaned.replace("manual_", "").strip("`'\"\t\r\n ")
+    if re.fullmatch(r"[A-Za-z0-9_-]{5,}", sc_clean):
+        return sc_clean
+    return ""
+
+
+def canonicalize_social_url(url: Optional[str]) -> str:
+    """
+    Normalizes any social media URL or shortcode into a clean, canonical format:
+    e.g. 'https://www.instagram.com/reel/<shortcode>/'
+    Strips query parameters, tracking tokens, markdown formatting backticks, etc.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    import urllib.parse
+    sc = extract_clean_shortcode(url)
+    if sc:
+        url_lower = url.lower()
+        if "youtube" in url_lower or "youtu.be" in url_lower:
+            return f"https://www.youtube.com/shorts/{sc}/"
+        return f"https://www.instagram.com/reel/{sc}/"
+    cleaned = urllib.parse.unquote(url).strip("`'\"\t\r\n ").split("?")[0].split("#")[0].rstrip("/")
+    return (cleaned + "/") if cleaned else ""
+
+
+def is_empty_value(val: Any) -> bool:
+    if val is None or val == "" or val == "null":
+        return True
+    if isinstance(val, (dict, list)) and len(val) == 0:
+        return True
+    return False
+
+
+def deep_merge_records(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merges source into target, preserving non-empty data and preferring non-null."""
+    for k, v in source.items():
+        if k not in target or is_empty_value(target[k]):
+            target[k] = v
+        elif isinstance(target[k], dict) and isinstance(v, dict):
+            target[k] = deep_merge_records(target[k], v)
+        elif is_empty_value(v):
+            continue
+        else:
+            if isinstance(target[k], list) and isinstance(v, list):
+                for item in v:
+                    if item not in target[k]:
+                        target[k].append(item)
+            else:
+                target[k] = v
+    return target
+
+
 def _send_telegram_file_sync(
     method: str,
     chat_id: str,
@@ -491,6 +555,9 @@ class TelegramVaultIndexer:
                 extracted = m_tt.group(1)
 
         search_keys = []
+        canon = canonicalize_social_url(raw_target)
+        if canon:
+            search_keys.append(canon)
         for k in [raw_target, unquoted, clean_target, target_nomanual, extracted]:
             if not k:
                 continue
@@ -1128,12 +1195,12 @@ class TelegramVaultIndexer:
             except Exception as _up_err:
                 logger.warning("⚠️ Storage Group upload warning: %s", _up_err)
 
-        import re
-        sc_m = re.search(r"/(?:reel|reels|p|shorts|v)/([A-Za-z0-9_-]{5,})", social_url)
-        shortcode_val = sc_m.group(1) if sc_m else ""
+        canonical_url = canonicalize_social_url(social_url)
+        shortcode_val = extract_clean_shortcode(social_url)
+        target_key = canonical_url or social_url
 
         clip_entry = {
-            "social_media_id": social_url,
+            "social_media_id": target_key,
             "shortcode": shortcode_val,
             "raw_video_file_id": raw_file_id,
             "extracted_audio_file_id": extracted_audio_file_id,
@@ -1151,7 +1218,7 @@ class TelegramVaultIndexer:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
             csm = pm.metadata.setdefault("clip_source_math", {})
-            csm[social_url] = clip_entry
+            csm[target_key] = clip_entry
             pm._save_metadata()
 
             if storage_group_id and upload_fn and os.path.exists(pm.meta_path):
@@ -1271,19 +1338,19 @@ class TelegramVaultIndexer:
 
     async def record_downloaded_source(
         self,
-        bot,
-        social_url: str,
-        session_id: str,
+        bot=None,
+        social_url: str = "",
+        session_id: str = "",
         raw_video_path: Optional[str] = None,
         audio_path: Optional[str] = None,
         beat_math: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         pin_now: bool = True,
+        raw_file_id: Optional[str] = None,
+        audio_file_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record downloaded raw video and audio into Telegram Storage Group & pool_metadata.json."""
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
-        raw_file_id = None
-        audio_file_id = None
 
         if storage_group_id and bot:
             try:
@@ -1317,23 +1384,39 @@ class TelegramVaultIndexer:
             except Exception as e:
                 logger.warning(f"⚠️ Vault raw source upload warning: {e}")
 
-        import re
-        sc_val = ""
-        if social_url:
-            sc_m = re.search(r"/(?:reel|reels|p|shorts|v)/([A-Za-z0-9_-]{5,})", social_url)
-            if sc_m:
-                sc_val = sc_m.group(1)
+        canonical_url = canonicalize_social_url(social_url)
+        sc_val = extract_clean_shortcode(social_url)
         if not sc_val and raw_video_path:
             parent_name = os.path.basename(os.path.dirname(raw_video_path))
-            sc_val = parent_name.replace("manual_", "").strip()
+            sc_val = extract_clean_shortcode(parent_name)
+        if not canonical_url and sc_val:
+            canonical_url = canonicalize_social_url(sc_val)
+        target_key = canonical_url or social_url
 
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
             clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
-            entry = clips.get(social_url) or {"social_media_id": social_url}
-            if sc_val and not entry.get("shortcode"):
+            
+            # Shortcode-first lookup across existing keys to prevent split duplicate entries
+            existing_key = None
+            entry = None
+            if sc_val:
+                for k, v in list(clips.items()):
+                    if not isinstance(v, dict):
+                        continue
+                    v_sc = v.get("shortcode") or extract_clean_shortcode(k) or extract_clean_shortcode(v.get("social_media_id"))
+                    if (v_sc and v_sc.lower() == sc_val.lower()) or (sc_val.lower() in k.lower()):
+                        existing_key = k
+                        entry = v
+                        break
+
+            if entry is None:
+                entry = clips.get(target_key) or clips.get(social_url) or {"social_media_id": target_key}
+
+            if sc_val:
                 entry["shortcode"] = sc_val
+            entry["social_media_id"] = target_key
             if raw_video_path and not entry.get("file_name"):
                 entry["file_name"] = os.path.basename(raw_video_path)
             m_ids = entry.setdefault("media_file_ids", {})
@@ -1347,7 +1430,14 @@ class TelegramVaultIndexer:
                 entry.setdefault("audio_data", {})["audio_math"] = beat_math
             if user_id:
                 entry["user_id"] = user_id
-            clips[social_url] = entry
+
+            # Remove old dirty/duplicate key if it differed from canonical key
+            if existing_key and existing_key != target_key:
+                clips.pop(existing_key, None)
+            if social_url and social_url != target_key:
+                clips.pop(social_url, None)
+
+            clips[target_key] = entry
             pm._save_metadata()
         except Exception as _pe:
             logger.debug("Notice on record_downloaded_source pool_metadata save: %s", _pe)
@@ -1370,7 +1460,7 @@ class TelegramVaultIndexer:
                 logger.debug("Notice on update_raw_video_file_id in session_manager: %s", _sm_err)
 
         return {
-            "social_media_id": social_url,
+            "social_media_id": target_key,
             "session_id": session_id,
             "raw_video_file_id": raw_file_id,
             "extracted_audio_file_id": audio_file_id,
@@ -1408,12 +1498,35 @@ class TelegramVaultIndexer:
             except Exception as _mv_err:
                 logger.warning("⚠️ Could not upload processed video reel to Telegram Storage Group: %s", _mv_err)
 
-        key_url = social_url or session_id or f"direct_upload_{int(time.time())}"
+        canonical_url = canonicalize_social_url(social_url)
+        sc_val = extract_clean_shortcode(social_url) or extract_clean_shortcode(session_id)
+        if not canonical_url and sc_val:
+            canonical_url = canonicalize_social_url(sc_val)
+        target_key = canonical_url or social_url or session_id or f"direct_upload_{int(time.time())}"
+
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
             pm = AudioPoolManager()
             clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
-            entry = clips.get(key_url) or {"social_media_id": key_url}
+            
+            # Shortcode / session_id first lookup to prevent duplicate split entries
+            existing_key = None
+            entry = None
+            for k, v in list(clips.items()):
+                if not isinstance(v, dict):
+                    continue
+                v_sc = v.get("shortcode") or extract_clean_shortcode(k) or extract_clean_shortcode(v.get("social_media_id"))
+                if (sc_val and v_sc and v_sc.lower() == sc_val.lower()) or (session_id and session_id in k):
+                    existing_key = k
+                    entry = v
+                    break
+
+            if entry is None:
+                entry = clips.get(target_key) or {"social_media_id": target_key}
+
+            if sc_val:
+                entry["shortcode"] = sc_val
+            entry["social_media_id"] = target_key
             m_ids = entry.setdefault("media_file_ids", {})
             if master_file_id:
                 m_ids["processed_output_file_id"] = master_file_id
@@ -1433,14 +1546,21 @@ class TelegramVaultIndexer:
                 a_data["gemini_audio_output"] = lyric_intel
             if user_id:
                 entry["user_id"] = user_id
-            clips[key_url] = entry
+
+            # Remove old dirty/duplicate key if it differed from canonical key
+            if existing_key and existing_key != target_key:
+                clips.pop(existing_key, None)
+            if social_url and social_url != target_key:
+                clips.pop(social_url, None)
+
+            clips[target_key] = entry
             pm._save_metadata()
         except Exception as _pe:
             logger.debug("Notice on record_processed_reel pool_metadata save: %s", _pe)
 
         return {
             "session_id": session_id,
-            "social_media_id": key_url,
+            "social_media_id": target_key,
             "processed_output_file_id": master_file_id,
             "user_id": user_id,
         }
@@ -1601,8 +1721,8 @@ class TelegramVaultIndexer:
             audio_sc = audio_sc.strip()
 
         purged_vault_items = []
-        # NOTE: Clip data is stored in pool_metadata.json and telegram_sessions.json, not in
-        # master_vault_index.json. Purge removes data from those files via AudioPoolManager/SessionManager.
+        # Clip data is stored ONLY in pool_metadata.json and telegram_sessions.json.
+        # master_vault_index.json stores ONLY JSON file_id pointers.
         self._save_local_index()
 
         # Cloud sync / pin to Telegram Storage Group

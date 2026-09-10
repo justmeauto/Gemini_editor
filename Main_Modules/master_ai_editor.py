@@ -361,21 +361,35 @@ class MasterAIEditor:
             # ── STEP 4.5: Rhythm Timeline Construction (Human-Scale Takes 2.0s-3.5s) ──
             logger.info("🥁 [Step 4.5/6] Rhythm Timeline Engine: Building micro-shot timeline...")
             micro_shots = []
+            rtb_timeline = []
             try:
                 v_dur = self.rhythm_timeline_builder._get_duration(video_path)
                 if v_dur > 6.0:
                     self.rhythm_timeline_builder.min_duration = 2.0
                     self.rhythm_timeline_builder.max_duration = 3.5
-                    raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur}]
+                    raw_scenes = [{"clip_id": 0, "start": 0.0, "end": v_dur, "score": 0.85}]
                     mi_info = {
                         "bar_duration_sec": 60.0 / (bpm or 120.0),
-                        "sections": [{"start": 0.0, "end": v_dur, "type": "verse"}]
+                        "sections": lyric_intel.get("sections", [{"start": 0.0, "end": v_dur, "type": "verse"}]),
+                        "vibe": route_params.get("recommended_editing_mode", "hype")
                     }
                     all_shots = self.rhythm_timeline_builder._extract_micro_shots(
                         scenes=raw_scenes,
                         vibe=route_params.get("recommended_editing_mode", "hype"),
                         music_intelligence=mi_info
                     )
+                    try:
+                        target_hint = min(target_duration, v_dur) if v_dur > 0 else target_duration
+                        rtb_timeline = self.rhythm_timeline_builder.build_timeline(
+                            scenes=raw_scenes,
+                            beat_grid=beat_grid,
+                            vibe=route_params.get("recommended_editing_mode", "hype"),
+                            music_intelligence=lyric_intel if lyric_intel else mi_info,
+                            target_duration_hint=target_hint,
+                        )
+                    except Exception as _tb_err:
+                        logger.debug(f"build_timeline fallback: {_tb_err}")
+
                     # Human-Scale Jump-Cutting: Select 2.0s-3.5s takes (Hook, Action, Climax)
                     if len(all_shots) >= 4:
                         selected = [all_shots[0]]
@@ -402,17 +416,32 @@ class MasterAIEditor:
                 f"transition '{route_params['transition_type']}'. "
                 f"Target duration: {target_duration}s."
             )
-            # Pass selected BGM from mathematical audio router (preferred), then pool/bgm_path, then None
+            # Pass selected BGM from mathematical audio router (preferred), then pool/bgm_path, then clip's clean extracted audio
             _final_bgm = route_params.get("selected_audio_path") or selected_bgm_path or bgm_path
+            if not _final_bgm or not os.path.exists(_final_bgm):
+                clip_extracted = os.path.join(os.path.dirname(video_path), "video_extracted.wav")
+                if os.path.isfile(clip_extracted):
+                    _final_bgm = clip_extracted
+                    logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] No external pool BGM — adopting clip's clean extracted audio: {os.path.basename(_final_bgm)}")
+                elif _phase1_audio and _phase1_audio.get("wav_path") and os.path.isfile(_phase1_audio["wav_path"]):
+                    _final_bgm = _phase1_audio["wav_path"]
+                    logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] Using Phase 1 extracted wav: {os.path.basename(_final_bgm)}")
+
             if _final_bgm and os.path.exists(_final_bgm):
-                logger.info(f"🎶 [BGM SELECTION VERIFIED] Using mathematical audio winner: {os.path.basename(_final_bgm)}")
+                logger.info(f"🎶 [AUDIO TRACK VERIFIED] Using continuous audio: {os.path.basename(_final_bgm)}")
+            extra_inputs = {
+                "micro_shots": micro_shots,
+                "rtb_timeline": rtb_timeline if rtb_timeline else micro_shots,
+            }
+            if lyric_intel:
+                extra_inputs["lyric_intel"] = lyric_intel
             synthesis_result = self.ffmpeg_engine.run_full_pipeline(
                 user_request=user_req,
                 input_video_path=video_path,
                 output_video_path=output_path,
                 audio_path=_final_bgm,
                 forensic_context=forensic_context,
-                extra_inputs={"micro_shots": micro_shots}
+                extra_inputs=extra_inputs
             )
 
             elapsed = time.time() - start_time
