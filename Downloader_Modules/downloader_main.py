@@ -204,20 +204,35 @@ def run_phase1_ingestion(
                         _indexer.find_entry_by_shortcode(url) or
                         _indexer.lookup_downloaded_source(url)
                     )
-                    _raw_fid = None
+                    _has_vault_candidate = False
                     if _v_hit:
+                        _clean_fid = (
+                            _v_hit.get("media_file_ids", {}).get("wm_clean_file_id") or
+                            _v_hit.get("wm_clean_file_id")
+                        )
                         _raw_fid = (
                             _v_hit.get("media_file_ids", {}).get("raw_video_file_id") or
                             _v_hit.get("raw_video_file_id") or
                             _v_hit.get("raw_file_id")
                         )
-                    if _raw_fid:
-                        _hydrated = _indexer.hydrate_raw_video_from_vault(_clean_sc, clip_dir)
+                        _has_vault_candidate = bool(_clean_fid or _raw_fid)
+
+                    # Check for watermark-cleaned clip FIRST, falling back to raw source video
+                    if _has_vault_candidate or _clean_sc or url:
+                        _hydrated = _indexer.hydrate_raw_video_from_vault(_clean_sc, clip_dir, check_clean_first=True)
                         if not _hydrated:
-                            _hydrated = _indexer.hydrate_raw_video_from_vault(url, clip_dir)
+                            _hydrated = _indexer.hydrate_raw_video_from_vault(url, clip_dir, check_clean_first=True)
                         if _hydrated and os.path.exists(_hydrated) and os.path.getsize(_hydrated) > 1024:
                             out_file = _hydrated
-                            logger.info(f"   ✅ [VAULT SOURCE CACHE HIT] Hydrated raw source from Telegram Vault — skipping yt-dlp download")
+                            _std_vid = os.path.join(clip_dir, "video.mp4")
+                            if not os.path.exists(_std_vid) and os.path.exists(_hydrated):
+                                try:
+                                    import shutil
+                                    shutil.copy2(_hydrated, _std_vid)
+                                except Exception:
+                                    pass
+                            _kind = "watermark-cleaned" if "clean" in os.path.basename(_hydrated).lower() else "raw source"
+                            logger.info(f"   ✅ [VAULT SOURCE CACHE HIT] Hydrated {_kind} from Telegram Vault — skipping yt-dlp download")
                 except Exception as _v_err:
                     logger.debug(f"[WORKER 2] Vault hydration check notice: {_v_err}")
 

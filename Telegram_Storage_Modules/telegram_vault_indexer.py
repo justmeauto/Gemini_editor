@@ -697,29 +697,50 @@ class TelegramVaultIndexer:
 
         return sess_entry
 
-    def hydrate_raw_video_from_vault(self, identifier: str, dest_dir: Optional[str] = None) -> Optional[str]:
+    def hydrate_raw_video_from_vault(self, identifier: str, dest_dir: Optional[str] = None, check_clean_first: bool = True) -> Optional[str]:
         """
-        Downloads already-stored raw source video from Telegram Storage Group.
+        Downloads already-stored source video from Telegram Storage Group.
+        Checks for watermark-cleaned clip (video_inpainted_clean.mp4 / wm_clean_file_id) FIRST.
+        If watermark-cleaned clip is not found, falls back to raw source video (raw_video_file_id).
         Accepts social_url, shortcode, clip_id, or session_id.
-        Resolves raw_video_file_id from pool_metadata.json, master_vault_index.json, or sessions.
         """
         if not identifier:
             return None
 
+        # 0. Check for watermark-cleaned clip first if enabled
+        if check_clean_first:
+            try:
+                clean_vid = self.hydrate_clean_video_from_vault(identifier, dest_dir=dest_dir)
+                if clean_vid and os.path.exists(clean_vid) and os.path.getsize(clean_vid) > 1024:
+                    logger.info(f"✨ [VAULT HYDRATE] Watermark-cleaned clip found first -> {clean_vid}")
+                    return clean_vid
+            except Exception as _ce:
+                logger.debug(f"[VAULT HYDRATE] Clean video check notice: {_ce}")
+
         search_keys = self._normalize_search_keys(identifier)
         entry = self.find_entry_by_shortcode(identifier) or self.lookup_downloaded_source(identifier)
-        shortcode = (entry.get("shortcode") if entry else None) or identifier.replace("manual_", "")
 
-        # 1. Check if already exists on local disk
+        # Safe shortcode extraction
+        shortcode = None
+        if entry and entry.get("shortcode"):
+            shortcode = str(entry["shortcode"]).strip()
+        if not shortcode:
+            for k in search_keys:
+                if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
+                    shortcode = k.replace("manual_", "").strip()
+                    break
+        if not shortcode:
+            shortcode = "clip"
+
+        # 1. Check if already exists on local disk (prioritize cleaned over raw)
         candidate_dirs = [
             dest_dir,
-            os.path.join(_REPO_ROOT, "downloads", identifier),
-            os.path.join(_REPO_ROOT, "downloads", shortcode),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
-        candidate_filenames = ["video.mp4", f"{shortcode}.mp4", f"manual_{shortcode}.mp4"]
+        candidate_filenames = ["video_inpainted_clean.mp4", "video.mp4", f"{shortcode}.mp4", f"manual_{shortcode}.mp4"]
         if entry and entry.get("file_name"):
-            candidate_filenames.insert(0, entry["file_name"])
+            candidate_filenames.insert(1, entry["file_name"])
 
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
@@ -760,7 +781,7 @@ class TelegramVaultIndexer:
 
         # 3. Download via vault file downloader
         if not dest_dir:
-            dest_dir = os.path.join(_REPO_ROOT, "downloads", shortcode)
+            dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
         os.makedirs(dest_dir, exist_ok=True)
         out_path = os.path.join(dest_dir, "video.mp4")
 
@@ -837,19 +858,49 @@ class TelegramVaultIndexer:
         if not identifier:
             return None
 
+        search_keys = self._normalize_search_keys(identifier)
         entry = self.find_entry_by_shortcode(identifier) or self.lookup_downloaded_source(identifier)
-        shortcode = (entry.get("shortcode") if entry else None) or identifier
 
-        if not dest_dir:
-            dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
-            if not os.path.exists(dest_dir):
-                dest_dir = os.path.join(_REPO_ROOT, "downloads", shortcode)
-        os.makedirs(dest_dir, exist_ok=True)
-        clean_path = os.path.join(dest_dir, "video_inpainted_clean.mp4")
+        # Safe shortcode extraction
+        shortcode = None
+        if entry and entry.get("shortcode"):
+            shortcode = str(entry["shortcode"]).strip()
+        if not shortcode:
+            for k in search_keys:
+                if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
+                    shortcode = k.replace("manual_", "").strip()
+                    break
+        if not shortcode:
+            shortcode = "clip"
 
-        # 1. Local disk check
-        if os.path.exists(clean_path) and os.path.getsize(clean_path) > 1024:
-            return clean_path
+        # 1. Local disk check across candidate directories
+        candidate_dirs = [
+            dest_dir,
+            os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", shortcode),
+        ]
+        for c_dir in candidate_dirs:
+            if c_dir and os.path.exists(c_dir):
+                c_clean = os.path.join(c_dir, "video_inpainted_clean.mp4")
+                if os.path.exists(c_clean) and os.path.getsize(c_clean) > 1024:
+                    logger.info(f"⚡ [VAULT CLEAN HYDRATE] Local clean video found -> {c_clean}")
+                    return c_clean
+
+        # Check TelegramSessionManager for clean video path
+        sess = None
+        try:
+            from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+            sm = TelegramSessionManager()
+            for k in search_keys:
+                sess = sm.get_session(k)
+                if sess:
+                    for s_k in ["clean_video_path", "clean_raw_path", "video_path"]:
+                        sp = sess.get(s_k)
+                        if sp and "clean" in os.path.basename(sp).lower() and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                            return sp
+                    break
+        except Exception:
+            pass
 
         # 2. Vault download via wm_clean_file_id
         clean_file_id = None
@@ -858,8 +909,16 @@ class TelegramVaultIndexer:
                 entry.get("media_file_ids", {}).get("wm_clean_file_id") or
                 entry.get("wm_clean_file_id")
             )
+        if not clean_file_id and sess:
+            clean_file_id = (
+                sess.get("media_file_ids", {}).get("wm_clean_file_id") if isinstance(sess.get("media_file_ids"), dict) else None
+            ) or sess.get("wm_clean_file_id")
 
         if clean_file_id:
+            if not dest_dir:
+                dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
+            os.makedirs(dest_dir, exist_ok=True)
+            clean_path = os.path.join(dest_dir, "video_inpainted_clean.mp4")
             logger.info(f"⚡ [VAULT CLEAN HYDRATE] Downloading watermark-cleaned video for '{shortcode}' from Telegram Vault...")
             if self.download_vault_file_by_id(clean_file_id, clean_path):
                 if os.path.exists(clean_path) and os.path.getsize(clean_path) > 1024:

@@ -40,12 +40,19 @@ def download_stream(
     try:
         from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
         vault = TelegramVaultIndexer()
-        vault_video = vault.hydrate_raw_video_from_vault(url, destination_dir)
+        vault_video = vault.hydrate_raw_video_from_vault(url, destination_dir, check_clean_first=True)
         if vault_video and os.path.exists(vault_video) and os.path.getsize(vault_video) > 1024:
+            if not os.path.exists(out_video_path):
+                try:
+                    import shutil
+                    shutil.copy2(vault_video, out_video_path)
+                except Exception:
+                    pass
             if metadata:
                 with open(meta_path, "w", encoding="utf-8") as mf:
                     json.dump(metadata, mf, indent=2, ensure_ascii=False)
-            logger.info(f"📥 [STEP 04 - PRIMARY] Hydrated raw source video directly from Telegram Storage Group Vault: {os.path.basename(destination_dir)}/video.mp4")
+            _kind = "watermark-cleaned" if "clean" in os.path.basename(vault_video).lower() else "raw source"
+            logger.info(f"📥 [STEP 04 - PRIMARY] Hydrated {_kind} video directly from Telegram Storage Group Vault: {os.path.basename(destination_dir)}")
             res = {
                 "step": "step_04",
                 "status": "success",
@@ -56,7 +63,7 @@ def download_stream(
             }
             if callback:
                 callback("step_04", "success", {
-                    "message": "Raw video hydrated directly from Telegram Storage Group Vault in ~1s.",
+                    "message": f"{_kind.capitalize()} video hydrated directly from Telegram Storage Group Vault in ~1s.",
                     "video_path": vault_video
                 })
             return res

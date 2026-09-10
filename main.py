@@ -2093,18 +2093,30 @@ def run_master_pipeline(
         try:
             v_entry = vault_indexer.find_entry_by_shortcode(url) or vault_indexer.lookup_downloaded_source(url)
             if v_entry:
+                clean_fid = (
+                    v_entry.get("media_file_ids", {}).get("wm_clean_file_id") or
+                    v_entry.get("wm_clean_file_id")
+                )
                 raw_fid = (
                     v_entry.get("media_file_ids", {}).get("raw_video_file_id") or
                     v_entry.get("raw_video_file_id") or
                     v_entry.get("raw_file_id")
                 )
-                if raw_fid:
+                if clean_fid or raw_fid:
                     sc = v_entry.get("shortcode") or "vault_clip"
                     clip_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", f"manual_{sc}")
                     os.makedirs(clip_dir, exist_ok=True)
-                    hydrated_path = vault_indexer.hydrate_raw_video_from_vault(url, dest_dir=clip_dir)
+                    hydrated_path = vault_indexer.hydrate_raw_video_from_vault(url, dest_dir=clip_dir, check_clean_first=True)
                     if hydrated_path and os.path.exists(hydrated_path) and os.path.getsize(hydrated_path) > 1024:
-                        logger.info(f"⚡ [VAULT FIRST-LOOK HIT] Retrieved raw source from Telegram Vault -> {hydrated_path}. Skipping Phase 1 downloader!")
+                        _kind = "watermark-cleaned" if "clean" in os.path.basename(hydrated_path).lower() else "raw source"
+                        logger.info(f"⚡ [VAULT FIRST-LOOK HIT] Retrieved {_kind} from Telegram Vault -> {hydrated_path}. Skipping Phase 1 downloader!")
+                        std_vid = os.path.join(clip_dir, "video.mp4")
+                        if not os.path.exists(std_vid):
+                            try:
+                                import shutil
+                                shutil.copy2(hydrated_path, std_vid)
+                            except Exception:
+                                pass
                         target_clip_dirs = [clip_dir]
         except Exception as _vh_err:
             logger.debug(f"[MASTER PIPELINE] Vault check error: {_vh_err}")
