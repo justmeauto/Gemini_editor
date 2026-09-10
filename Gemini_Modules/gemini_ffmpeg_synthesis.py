@@ -2165,10 +2165,11 @@ class GeminiFFmpegEngine:
                     command_steps.append(res)
                 elif bgm_file and os.path.exists(bgm_file):
                     if extra_inputs.get("preserve_original_audio"):
-                        v_vol = 1.0
-                        m_vol = 0.20
+                        v_vol = float(op.get("video_volume", 1.0))
+                        m_vol = float(op.get("music_volume", 0.20))
                     else:
-                        v_vol = op.get("video_volume", 0.0)
+                        v_vol = float(op.get("video_volume", 0.0))
+                        m_vol = float(op.get("music_volume", 0.80))
                     audio_st = float(op.get("audio_start_time") or extra_inputs.get("audio_start_time", 0.0) or 0.0)
                     audio_off = float(op.get("audio_offset", 0.0) or 0.0)
                     res = self.cmd_generator.build_bgm_mix_command(
