@@ -14,6 +14,20 @@
       "telegram_file_id": "",
       "reason": "admin_rejected",
       "blacklisted_at": 1788989869.6837757
+    },
+    "extracted_ddbnl08lncl.wav": {
+      "filename": "extracted_ddbnl08lncl.wav",
+      "shortcode": "ddbnl08lncl",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788996769.7049444
+    },
+    "ddbnl08lncl": {
+      "filename": "extracted_ddbnl08lncl.wav",
+      "shortcode": "ddbnl08lncl",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1788996769.7049444
     }
   }
 }
