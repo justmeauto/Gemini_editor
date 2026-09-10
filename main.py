@@ -118,11 +118,22 @@ if _REPO_ROOT not in sys.path:
 
 
 # ── Logging & Polling Filter Setup ───────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | [%(name)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+class UnbufferedStreamHandler(logging.StreamHandler):
+    """Ensures every log record is instantly written and flushed to stdout for live CI console streaming."""
+    def emit(self, record):
+        try:
+            super().emit(record)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+_log_handler = UnbufferedStreamHandler(sys.stdout)
+_log_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_root.handlers = [_log_handler]
+
 logger = logging.getLogger("main_orchestrator")
 
 class PollingFilter(logging.Filter):
@@ -1036,6 +1047,7 @@ async def handle_telegram_callback(update, context):
             logger.info(f"🗑️ Purged all assets for rejected session {session_id}: {purge_res.get('purged_count')} items removed")
 async def execute_reedit_with_directive(query, context, session_id: str, directive: str, chat_id: int):
     """Executes aggressive re-edit with human directive injected into Gemini Call 3."""
+    logger.info(f"🎬 [EXECUTE RE-EDIT] Requested re-edit for session '{session_id}' | Directive: '{directive}' | Chat ID: {chat_id}")
     sess = session_manager.get_session(session_id)
     curr_text = (query.message.caption or query.message.text or "Master Reel") if (query and query.message) else "Master Reel"
     new_text = f"{curr_text}\n\n⚡ **RE-EDITING WITH AGGRESSIVE DIRECTIVE:**\n*\"{directive}\"*\n\nGemini is polishing cuts & filtergraph..."
@@ -1048,83 +1060,123 @@ async def execute_reedit_with_directive(query, context, session_id: str, directi
     except Exception:
         pass
 
-    if sess:
-        raw_input = sess.get("raw_video_path")
-        clip_id = sess.get("clip_id")
-        if not raw_input and clip_id and clip_id != "Processed Shorts":
-            possible_raw = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id, "video.mp4")
-            if os.path.exists(possible_raw):
-                raw_input = possible_raw
-
-        target_input = raw_input or sess.get("video_path")
-
-        # 🛡️ Double-Mix Prevention Guard
-        if target_input and "_master.mp4" in target_input and not raw_input:
-            logger.warning(f"⚠️ [DOUBLE-MIX GUARD] Re-edit target is rendered master '{target_input}' — searching downloads for raw source...")
-            bname = os.path.basename(target_input).replace("_master.mp4", "")
-            d_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
-            if os.path.isdir(d_dir):
-                for d in os.listdir(d_dir):
-                    if bname in d or d in bname:
-                        candidate = os.path.join(d_dir, d, "video.mp4")
-                        if os.path.exists(candidate):
-                            target_input = candidate
-                            logger.info(f"✅ [DOUBLE-MIX GUARD] Recovered raw source video: {target_input}")
-                            break
-
-        # ─────────────────────────────────────────────────────────────────────────
-        # 📡 VAULT RECOVERY: If local disk is wiped (GitHub Actions runner restart),
-        # download raw_video_file_id from Telegram Vault Storage Group to recover the
-        # raw source video and run the full pipeline on it again.
-        # ─────────────────────────────────────────────────────────────────────────
-        if (not target_input or not os.path.exists(str(target_input))) and context and context.bot:
-            logger.info(f"📡 [VAULT RECOVERY] Local source missing for session '{session_id}' — attempting Telegram Vault recovery...")
+    if not sess:
+        logger.error(f"❌ [RE-EDIT ABORT] Session '{session_id}' not found in TelegramSessionManager! Available: {list(session_manager.sessions.keys())}")
+        if context and context.bot:
             try:
-                # Look up raw_video_file_id from vault index
-                vault_entry = (
-                    vault_indexer.lookup_processed_reel(session_id=session_id) or
-                    vault_indexer.lookup_downloaded_source(social_url=sess.get("social_url", ""))
-                )
-                raw_fid = (vault_entry or {}).get("raw_video_file_id")
-                if raw_fid:
-                    recovery_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id or f"recovered_{session_id}")
-                    os.makedirs(recovery_dir, exist_ok=True)
-                    recovery_path = os.path.join(recovery_dir, "video.mp4")
-                    logger.info(f"📥 [VAULT RECOVERY] Downloading raw source from Telegram Vault (file_id={raw_fid[:20]}...)...")
-                    tg_file = await context.bot.get_file(raw_fid)
-                    await tg_file.download_to_drive(custom_path=recovery_path)
-                    if os.path.exists(recovery_path) and os.path.getsize(recovery_path) > 1024:
-                        target_input = recovery_path
-                        logger.info(f"✅ [VAULT RECOVERY SUCCESS] Raw source recovered from Telegram Vault → {recovery_path}")
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"📡 **[VAULT RECOVERY]** Raw source video recovered from Telegram Vault!\nRe-editing now with your directive: *\"{directive}\"*",
-                            parse_mode="Markdown"
-                        )
-                    else:
-                        logger.warning(f"⚠️ [VAULT RECOVERY] Downloaded file is too small or missing: {recovery_path}")
-                else:
-                    logger.warning(f"⚠️ [VAULT RECOVERY] No raw_video_file_id in vault index for session '{session_id}'")
-            except Exception as _vr_err:
-                logger.error(f"❌ [VAULT RECOVERY] Failed to recover raw source from Telegram Vault: {_vr_err}")
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ **Re-edit failed:** Session `{session_id}` could not be found. Please submit the URL again to start fresh.")
+            except Exception:
+                pass
+        return
 
-        if not target_input or not os.path.exists(str(target_input)):
-            logger.error(f"❌ [RE-EDIT ABORT] Could not locate source video for session '{session_id}' even after Vault Recovery. Aborting.")
+    raw_input = sess.get("raw_video_path")
+    clip_id = sess.get("clip_id") or ""
+    if not raw_input and clip_id and clip_id != "Processed Shorts":
+        possible_raw = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id, "video.mp4")
+        if os.path.exists(possible_raw):
+            raw_input = possible_raw
+
+    video_path = sess.get("video_path")
+    logger.info(f"🔍 [RE-EDIT SOURCE CHECK] sess_id={session_id} | clip_id='{clip_id}' | raw_input='{raw_input}' (exists={bool(raw_input and os.path.exists(raw_input))}) | video_path='{video_path}' (exists={bool(video_path and os.path.exists(video_path))})")
+
+    # 🛡️ Double-Mix Prevention: never re-edit _master.mp4 directly
+    target_input = raw_input
+    if not target_input and video_path and "_master.mp4" not in video_path and os.path.exists(video_path):
+        target_input = video_path
+
+    if target_input and "_master.mp4" in target_input:
+        logger.warning(f"⚠️ [DOUBLE-MIX GUARD] Target is rendered master '{target_input}' — searching downloads for raw source...")
+        bname = os.path.basename(target_input).replace("_master.mp4", "")
+        d_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+        recovered_local = None
+        if os.path.isdir(d_dir):
+            for d in os.listdir(d_dir):
+                if bname in d or d in bname:
+                    candidate = os.path.join(d_dir, d, "video.mp4")
+                    if os.path.exists(candidate):
+                        recovered_local = candidate
+                        logger.info(f"✅ [DOUBLE-MIX GUARD] Recovered raw source video: {candidate}")
+                        break
+        target_input = recovered_local
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 📡 VAULT RECOVERY: If local disk is wiped (ephemeral clean or runner restart),
+    # recover raw_video_file_id or wm_clean_file_id from Telegram Vault Storage Group.
+    # ─────────────────────────────────────────────────────────────────────────
+    if (not target_input or not os.path.exists(str(target_input))) and context and context.bot:
+        logger.info(f"📡 [VAULT RECOVERY] Local raw source missing on disk for session '{session_id}'. Initiating Telegram Vault recovery...")
+        try:
+            clean_sc = clip_id.replace("manual_", "").strip() if clip_id else ""
+            social_url = sess.get("social_url") or (f"https://instagram.com/reel/{clean_sc}" if clean_sc else "")
+
+            # 1. Check session for stored raw_video_file_id
+            raw_fid = sess.get("raw_video_file_id")
+
+            # 2. Check pool_metadata and vault index by shortcode / URL
+            if not raw_fid:
+                vault_entry = (
+                    (vault_indexer.find_entry_by_shortcode(clean_sc) if clean_sc else None)
+                    or (vault_indexer.find_entry_by_shortcode(clip_id) if clip_id else None)
+                    or (vault_indexer.lookup_downloaded_source(social_url) if social_url else None)
+                    or vault_indexer.lookup_processed_reel(session_id=session_id)
+                )
+                if vault_entry:
+                    logger.info(f"📌 [VAULT RECOVERY] Found vault entry via shortcode '{clean_sc or clip_id}'")
+                    raw_fid = (
+                        vault_entry.get("media_file_ids", {}).get("wm_clean_file_id")
+                        or vault_entry.get("wm_clean_file_id")
+                        or vault_entry.get("media_file_ids", {}).get("raw_video_file_id")
+                        or vault_entry.get("raw_video_file_id")
+                        or vault_entry.get("raw_file_id")
+                    )
+
+            if raw_fid:
+                recovery_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id or f"manual_{clean_sc}" or f"recovered_{session_id}")
+                os.makedirs(recovery_dir, exist_ok=True)
+                recovery_path = os.path.join(recovery_dir, "video.mp4")
+                logger.info(f"📥 [VAULT RECOVERY] Downloading raw source from Telegram Vault (file_id={raw_fid[:20]}...) -> {recovery_path}")
+                tg_file = await context.bot.get_file(raw_fid)
+                await tg_file.download_to_drive(custom_path=recovery_path)
+                if os.path.exists(recovery_path) and os.path.getsize(recovery_path) > 1024:
+                    target_input = recovery_path
+                    logger.info(f"✅ [VAULT RECOVERY SUCCESS] Raw source recovered from Telegram Vault → {recovery_path}")
+
+                    # Also hydrate extracted audio from vault into recovery_dir
+                    try:
+                        logger.info(f"🎵 [VAULT RECOVERY] Hydrating extracted audio from vault for '{clean_sc or clip_id}'...")
+                        vault_indexer.hydrate_extracted_audio_from_vault(clean_sc or clip_id, dest_dir=recovery_dir)
+                    except Exception as _ea_e:
+                        logger.debug(f"Extracted audio recovery notice: {_ea_e}")
+
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"📡 **[VAULT RECOVERY]** Raw source video recovered from Telegram Vault!\nRe-editing now with your directive: *\"{directive}\"*",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    logger.warning(f"⚠️ [VAULT RECOVERY] Downloaded file is too small or missing: {recovery_path}")
+            else:
+                logger.warning(f"⚠️ [VAULT RECOVERY] No raw_video_file_id found in session or vault index for session '{session_id}' (clip_id='{clip_id}')")
+        except Exception as _vr_err:
+            logger.error(f"❌ [VAULT RECOVERY ERROR] Failed to recover raw source from Telegram Vault: {_vr_err}", exc_info=True)
+
+    if not target_input or not os.path.exists(str(target_input)):
+        logger.error(f"❌ [RE-EDIT ABORT] Could not locate source video for session '{session_id}' even after Vault Recovery. Aborting.")
+        if context and context.bot:
             try:
                 await context.bot.send_message(chat_id=chat_id, text="❌ **Re-edit failed:** Source video not found on disk or in Telegram Vault. Please submit the URL again to start fresh.")
             except Exception:
                 pass
-            return
+        return
 
-        try:
-            run_master_pipeline(
-                mode="manual",
-                input_path=target_input,
-                requestor_chat_id=sess.get("requestor_chat_id") or chat_id,
-                user_edit_directive=directive
-            )
-        except Exception as _re_err:
-            logger.error(f"❌ Re-edit execution failed: {_re_err}")
+    # Non-blocking dispatch so Telegram event loop remains alive and responsive
+    logger.info(f"🚀 [RE-EDIT DISPATCH] Launching master pipeline in background worker for session '{session_id}' with input '{target_input}'")
+    _dispatch_pipeline_in_background(
+        mode="manual",
+        input_path=target_input,
+        requestor_chat_id=sess.get("requestor_chat_id") or chat_id,
+        user_edit_directive=directive
+    )
 
 
 # ── Telegram Command Handlers ─────────────────────────────────────────────────
@@ -1268,11 +1320,14 @@ def _dispatch_pipeline_in_background(**kwargs):
     logger.info(f"🚀 [PIPELINE DISPATCH] Spawning background worker thread for requestor {kwargs.get('requestor_chat_id')} (mode={kwargs.get('mode')}, url={kwargs.get('url')})")
     def _worker():
         try:
+            logger.info(f"▶️ [PIPELINE WORKER START] Worker thread executing job '{job_id}'")
             run_master_pipeline(**kwargs)
         except Exception as _pe:
-            logger.error(f"❌ Background pipeline error: {_pe}")
+            logger.error(f"❌ Background pipeline error: {_pe}", exc_info=True)
         finally:
             ACTIVE_PIPELINE_JOBS.discard(job_id)
+            logger.info(f"🏁 [PIPELINE WORKER FINISHED] Worker thread finished job '{job_id}' (active remaining: {len(ACTIVE_PIPELINE_JOBS)})")
+            sys.stdout.flush()
 
     import threading
     t = threading.Thread(target=_worker, daemon=True)
@@ -2245,13 +2300,16 @@ def run_master_pipeline(
                                 logger.warning(f"⚠️ [PHASE 2.1] Watermark gate failed, continuing with original render: {_wm_err}")
 
 
+                        _clean_cid = real_cid.replace("manual_", "").strip()
+                        _social_link = url or (f"https://instagram.com/reel/{_clean_cid}" if _clean_cid else None)
                         _sel_audio_track = _intel_d.get("audio_data", {}).get("selected_bgm_track") if _intel_d else None
                         sess_id = session_manager.create_session(
                             video_path=active_reel_path,
                             clip_id=real_cid,
                             raw_video_path=possible_raw if os.path.exists(possible_raw) else None,
                             requestor_chat_id=requestor_chat_id,
-                            selected_audio=_sel_audio_track
+                            selected_audio=_sel_audio_track,
+                            social_url=_social_link
                         )
                         keyboard = build_telegram_session_keyboard(session_id=sess_id, shortcode=real_cid)
                         sent_msg = await _send_video_safe_main(
@@ -2496,7 +2554,16 @@ def run_scheduled_pipeline_loop():
         next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
         hours_left = delay_s / 3600.0
         logger.info(f"⏳ [SCHEDULER] Next scheduled run at {next_slot} {tz_label} (in {hours_left:.2f} hours / {delay_s:.0f}s)...")
-        time.sleep(delay_s)
+        # Sleep in chunks to emit heartbeat every 15 minutes
+        remaining_s = delay_s
+        while remaining_s > 0:
+            to_sleep = min(remaining_s, 900.0)
+            time.sleep(to_sleep)
+            remaining_s -= to_sleep
+            if remaining_s > 0:
+                h_left = remaining_s / 3600.0
+                logger.info(f"💓 [DAEMON HEARTBEAT] Scheduler active | Next run at {next_slot} {tz_label} (in {h_left:.2f}h / {remaining_s:.0f}s)...")
+                sys.stdout.flush()
 
         logger.info(f"⏰ [SCHEDULER] Trigger time reached ({next_slot})! Executing max 2-account scraper batch...")
         try:
@@ -2520,7 +2587,16 @@ async def _async_static_scheduler_task(bot_app=None):
         next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
         hours_left = delay_s / 3600.0
         logger.info(f"⏳ [ASYNC SCHEDULER] Next run scheduled at {next_slot} {tz_label} (in {hours_left:.2f} hours)...")
-        await asyncio.sleep(delay_s)
+        # Sleep in chunks to emit heartbeat every 15 minutes so console logs remain alive
+        remaining_s = delay_s
+        while remaining_s > 0:
+            to_sleep = min(remaining_s, 900.0)
+            await asyncio.sleep(to_sleep)
+            remaining_s -= to_sleep
+            if remaining_s > 0:
+                h_left = remaining_s / 3600.0
+                logger.info(f"💓 [ASYNC SCHEDULER HEARTBEAT] Telegram polling active | Next run at {next_slot} {tz_label} (in {h_left:.2f}h / {remaining_s:.0f}s) | Active background jobs: {len(ACTIVE_PIPELINE_JOBS)}")
+                sys.stdout.flush()
 
         logger.info(f"⏰ [ASYNC SCHEDULER] Trigger time reached ({next_slot})! Starting 2-account ingestion & AI edit cycle...")
         try:

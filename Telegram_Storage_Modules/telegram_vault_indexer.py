@@ -1254,12 +1254,16 @@ class TelegramVaultIndexer:
             pm = AudioPoolManager()
             clips = pm.metadata.get("files", {}).get("social_media_id", {})
             for stored_url, entry in clips.items():
-                if session_id and (session_id in stored_url or session_id == entry.get("shortcode")):
+                if session_id and (
+                    session_id in stored_url
+                    or session_id == entry.get("session_id")
+                    or session_id == entry.get("shortcode")
+                ):
                     return entry
                 if social_url and (social_url.strip() in stored_url or stored_url in social_url.strip()):
                     return entry
                 if user_id and str(entry.get("user_id")) == str(user_id):
-                    if session_id and session_id not in stored_url:
+                    if session_id and session_id not in stored_url and session_id != entry.get("session_id"):
                         continue
                     return entry
         except Exception as e:
@@ -1739,6 +1743,8 @@ class TelegramVaultIndexer:
 
             if sc_val:
                 entry["shortcode"] = sc_val
+            if session_id:
+                entry["session_id"] = session_id
             entry["social_media_id"] = target_key
             m_ids = entry.setdefault("media_file_ids", {})
             if master_file_id:

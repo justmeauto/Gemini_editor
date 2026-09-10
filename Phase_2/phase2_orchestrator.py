@@ -112,7 +112,7 @@ def run_phase2_pipeline(
                 try:
                     from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                     _v_indexer = TelegramVaultIndexer()
-                    _clean_hydrated = _v_indexer.hydrate_clean_video_from_vault(clip_id, clip_dir)
+                    _clean_hydrated = _v_indexer.hydrate_clean_video_from_vault(folder_name, clip_dir)
                     if _clean_hydrated and os.path.exists(_clean_hydrated) and os.path.getsize(_clean_hydrated) > 1024:
                         clean_raw_path = _clean_hydrated
                         logger.info(f"⚡ [VAULT INPAINTING CACHE HIT] Hydrated pre-cleaned video from Telegram Vault: {os.path.basename(clean_raw_path)} — skipping OpenCV inpainting!")

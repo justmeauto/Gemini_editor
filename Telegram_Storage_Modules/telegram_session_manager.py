@@ -69,7 +69,8 @@ class TelegramSessionManager:
         raw_video_path: Optional[str] = None,
         requestor_chat_id: Optional[int] = None,
         selected_audio: Optional[str] = None,
-        raw_video_file_id: Optional[str] = None
+        raw_video_file_id: Optional[str] = None,
+        social_url: Optional[str] = None
     ) -> str:
         """
         Creates a new review session for a rendered video reel.
@@ -97,9 +98,12 @@ class TelegramSessionManager:
             try:
                 from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                 vi = TelegramVaultIndexer()
-                entry = vi.find_entry_by_shortcode(clip_id)
+                clean_cid = clip_id.replace("manual_", "").strip()
+                entry = vi.find_entry_by_shortcode(clean_cid) or vi.find_entry_by_shortcode(clip_id)
                 if entry:
                     raw_video_file_id = (
+                        entry.get("media_file_ids", {}).get("wm_clean_file_id") or
+                        entry.get("wm_clean_file_id") or
                         entry.get("media_file_ids", {}).get("raw_video_file_id") or
                         entry.get("raw_video_file_id") or
                         entry.get("raw_file_id")
@@ -129,6 +133,7 @@ class TelegramSessionManager:
             "video_path": os.path.abspath(video_path),
             "raw_video_path": os.path.abspath(raw_video_path) if raw_video_path and os.path.exists(raw_video_path) else None,
             "raw_video_file_id": raw_video_file_id,
+            "social_url": social_url,
             "clip_id": clip_id,
             "creator": creator,
             "status": "AWAITING_REVIEW",
@@ -138,6 +143,7 @@ class TelegramSessionManager:
             "updated_at": time.time()
         }
         self.sessions[sess_id] = session_data
+        logger.info(f"📝 [SESSION CREATED] {sess_id} for clip '{clip_id}' (raw_file_id={bool(raw_video_file_id)}, social_url={social_url})")
         self._save_sessions()
         logger.info(f"📝 Created Telegram review session: {sess_id} for '{os.path.basename(video_path)}' (clip_id='{clip_id}', selected_audio='{selected_audio}')")
         return sess_id
