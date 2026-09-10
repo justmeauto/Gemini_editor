@@ -1500,6 +1500,7 @@ class TelegramVaultIndexer:
             if clean_file_id:
                 try:
                     from Audio_Modules.audio_pool_manager import AudioPoolManager
+                    pm = AudioPoolManager()
                     clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
                     top_clips = pm.metadata.setdefault("clips", {})
                     clean_sc = clip_folder_name.replace("manual_", "").strip().lower()
@@ -1516,7 +1517,8 @@ class TelegramVaultIndexer:
                                 m_ids = entry.setdefault("media_file_ids", {})
                                 m_ids["wm_clean_file_id"] = clean_file_id
                                 entry["wm_clean_file_id"] = clean_file_id
-                    pm._save_metadata()
+                    pm._save_metadata(sync_to_vault=True)
+                    logger.info(f"✅ [VAULT CLEAN INDEX] Saved wm_clean_file_id to pool_metadata.json: {clean_file_id[:15]}...")
                 except Exception as _pe:
                     logger.debug("Notice updating clean_file_id in pool_metadata: %s", _pe)
 
