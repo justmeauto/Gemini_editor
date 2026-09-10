@@ -173,6 +173,31 @@ def extract_audio(video_path: str, output_path: str) -> bool:
 # Phase 1 Post-Download Hook
 # ─────────────────────────────────────────────────────────────────────────────
 
+def ensure_clip_audio_extracted(
+    clip_dir: str,
+    video_path: Optional[str] = None,
+    clip_id: Optional[str] = None
+) -> Optional[str]:
+    """
+    Directly retrieves the clip's extracted audio from Telegram Storage Vault
+    using the file_id registered in pool_metadata.json.
+    """
+    if not clip_dir:
+        return None
+
+    clean_sc = (clip_id or os.path.basename(clip_dir)).replace("manual_", "").strip() or "clip"
+    try:
+        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+        vault = TelegramVaultIndexer()
+        hydrated_wav = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_dir)
+        if not hydrated_wav and clip_id:
+            hydrated_wav = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_dir)
+        return hydrated_wav
+    except Exception as exc:
+        logger.warning("⚠️ Vault extracted audio retrieval notice: %s", exc)
+        return None
+
+
 def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
     """
     Phase 1 post-download hook. Called immediately after video.mp4 is saved.
@@ -185,6 +210,7 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
     Returns the analysis dict (or a minimal silent-clip dict).
     """
     analysis_path = os.path.join(clip_dir, "audio_analysis.json")
+    clean_sc = os.path.basename(clip_dir).replace("manual_", "").strip() or "clip"
 
     # Return cached result if already computed
     if os.path.exists(analysis_path):
@@ -193,29 +219,31 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
                 cached = json.load(f)
             logger.info("♻️ [AUDIO] Using cached audio_analysis.json for %s", os.path.basename(clip_dir))
             if not cached.get("extracted_audio_file_id"):
-                stem = os.path.splitext(os.path.basename(video_path))[0]
-                wav_path = os.path.join(clip_dir, f"{stem}_extracted.wav")
+                wav_path = os.path.join(clip_dir, f"{clean_sc}.wav")
+                if not os.path.exists(wav_path):
+                    wav_path = os.path.join(clip_dir, "video_extracted.wav")
                 if os.path.exists(wav_path):
-                    send_extracted_audio_to_telegram_vault_async(wav_path, clip_dir, stem=os.path.basename(clip_dir))
+                    send_extracted_audio_to_telegram_vault_async(wav_path, clip_dir, stem=clean_sc)
             return cached
         except Exception:
             pass  # Re-run if cache is corrupt
 
-    stem = os.path.splitext(os.path.basename(video_path))[0]
-    # ── ARCHITECTURE NOTE ────────────────────────────────────────────────────────
-    # Extracted clip audio goes into the CLIP FOLDER, not Original_audio/.
-    # Original_audio/active/ is the curated BGM rotation pool for Gemini to select
-    # tracks from. Dumping per-clip ambient audio there corrupts pool selection.
-    # ─────────────────────────────────────────────────────────────────────────────
     os.makedirs(clip_dir, exist_ok=True)
-    wav_path = os.path.join(clip_dir, f"{stem}_extracted.wav")
+    wav_path = os.path.join(clip_dir, f"{clean_sc}.wav")
+    legacy_wav = os.path.join(clip_dir, "video_extracted.wav")
 
     # Step 1: Extract
     has_audio = extract_audio(video_path, wav_path)
+    if has_audio and os.path.exists(wav_path):
+        try:
+            import shutil
+            shutil.copy2(wav_path, legacy_wav)
+        except Exception:
+            pass
 
     # Step 1b: Asynchronous Telegram Storage Vault upload for raw extracted audio
     if has_audio and os.path.exists(wav_path):
-        send_extracted_audio_to_telegram_vault_async(wav_path, clip_dir, stem)
+        send_extracted_audio_to_telegram_vault_async(wav_path, clip_dir, stem=clean_sc)
 
     # Step 2: Beat analysis
     analysis: dict = {
@@ -332,14 +360,7 @@ def run_phase1_audio_analysis(video_path: str, clip_dir: str) -> dict:
         )
     elif has_audio and os.path.exists(wav_path) and analysis.get("tempo_bpm", 0) > 0:
         try:
-            from Audio_Modules.audio_pool_manager import AudioPoolManager
-            pool_mgr = AudioPoolManager()
-            pool_mgr.process_new_audio(
-                audio_path=wav_path,
-                bpm=analysis["tempo_bpm"],
-                energy=analysis["avg_energy"],
-                beat_analysis=analysis
-            )
+            _ingest_clip_audio_to_pool(clean_sc, wav_path, analysis)
             logger.info("🎵 [AUDIO POOL] Registered harvested musical audio '%s' into Original_audio/active pool!", os.path.basename(wav_path))
         except Exception as pool_err:
             logger.warning("⚠️ Failed to register harvested audio into active pool: %s", pool_err)
@@ -480,6 +501,19 @@ def _ingest_clip_audio_to_pool(stem: str, wav_path: str, analysis: dict):
                             if clip_folder in c2_sess:
                                 c2_sess[clip_folder]["extracted_audio_file_id"] = captured_fid
                                 v_indexer._save_local_index()
+                        except Exception:
+                            pass
+
+                        # Also sync extracted_audio_file_id under social_media_id in pool_metadata.json
+                        try:
+                            clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
+                            for k, entry in clips.items():
+                                if isinstance(entry, dict):
+                                    entry_sc = str(entry.get("shortcode") or "")
+                                    if entry_sc.lower() == clean_stem.lower() or clean_stem.lower() in k.lower():
+                                        entry.setdefault("media_file_ids", {})["extracted_audio_file_id"] = captured_fid
+                                        entry["extracted_audio_file_id"] = captured_fid
+                            pm._save_metadata(sync_to_vault=True)
                         except Exception:
                             pass
                     else:

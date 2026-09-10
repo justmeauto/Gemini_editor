@@ -2455,12 +2455,17 @@ class GeminiFFmpegEngine:
                 logger.debug("🎙️ [TTS BRIDGE] enable_voiceover=true but engagement_hook is empty — skipping TTS.")
 
 
-        # Adopt clip's clean continuous extracted audio if external audio_path is missing
+        # Retrieve clip's clean continuous extracted audio from Telegram Vault if external audio_path is missing
         if not audio_path or not os.path.exists(audio_path):
-            clip_extracted = os.path.join(os.path.dirname(input_video_path), "video_extracted.wav")
-            if os.path.isfile(clip_extracted):
-                audio_path = clip_extracted
-                logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] Adopted clip's clean extracted audio as track: {audio_path}")
+            _c_dir = os.path.dirname(input_video_path)
+            _clean_sc = os.path.basename(_c_dir).replace("manual_", "")
+            try:
+                from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                audio_path = TelegramVaultIndexer().hydrate_extracted_audio_from_vault(_clean_sc, dest_dir=_c_dir)
+            except Exception:
+                pass
+            if audio_path and os.path.isfile(audio_path):
+                logger.info(f"🎙️ [CONTINUOUS AUDIO ADOPTED] Retrieved clip's extracted audio from Telegram Vault: {audio_path}")
             else:
                 logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be muted (video_volume=0.00).")
 
@@ -2732,10 +2737,15 @@ class GeminiFFmpegEngine:
                 bgm_path = candidate
 
         if not bgm_path or not os.path.exists(bgm_path):
-            clip_extracted = os.path.join(os.path.dirname(input_path), "video_extracted.wav")
-            if os.path.isfile(clip_extracted):
-                bgm_path = clip_extracted
-                logger.info(f"🎙️ [SINGLE-PASS] Adopted clip's clean continuous extracted audio: {bgm_path}")
+            _c_dir = os.path.dirname(input_path)
+            _clean_sc = os.path.basename(_c_dir).replace("manual_", "")
+            try:
+                from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                bgm_path = TelegramVaultIndexer().hydrate_extracted_audio_from_vault(_clean_sc, dest_dir=_c_dir)
+            except Exception:
+                pass
+            if bgm_path and os.path.isfile(bgm_path):
+                logger.info(f"🎙️ [SINGLE-PASS] Retrieved clip's extracted audio from Telegram Vault: {bgm_path}")
             else:
                 logger.info("🔇 [AUDIO DIRECTIVE] No BGM path or extracted audio found — source clip will be silenced (video_volume=0.00).")
 

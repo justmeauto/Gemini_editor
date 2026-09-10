@@ -471,11 +471,11 @@ class TelegramVaultIndexer:
 
 
     def get_vault_audio_pool(self, current_clip_id: Optional[str] = None) -> Dict[str, Any]:
-        """Returns audio track metadata from pool_metadata.json only.
-        master_vault_index.json stores only JSON file_id pointers — clip data lives in pool_metadata.json.
+        """Returns audio track metadata from pool_metadata.json.
+        Includes both active curated BGM files and valid harvested audio tracks from social_media_id.
         """
         pool = {}
-        clip_stem = current_clip_id.lower().strip() if current_clip_id else ""
+        clip_stem = current_clip_id.lower().replace("manual_", "").strip() if current_clip_id else ""
 
         pm_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
         if os.path.exists(pm_path):
@@ -488,10 +488,36 @@ class TelegramVaultIndexer:
                             if isinstance(v, dict) and k != "social_media_id":
                                 if clip_stem and clip_stem in k.lower():
                                     continue
-                                if k in pool:
-                                    pool[k].update(v)
-                                else:
-                                    pool[k] = v
+                                pool[k] = dict(v)
+
+                        # ALSO include valid audio tracks from social_media_id indexed by shortcode!
+                        sm_dict = files_dict.get("social_media_id", {})
+                        if isinstance(sm_dict, dict):
+                            for sm_url, sm_entry in sm_dict.items():
+                                if not isinstance(sm_entry, dict):
+                                    continue
+                                sc = sm_entry.get("shortcode") or ""
+                                if not sc or (clip_stem and clip_stem in sc.lower()):
+                                    continue
+                                ext_fid = (
+                                    sm_entry.get("media_file_ids", {}).get("extracted_audio_file_id") or
+                                    sm_entry.get("extracted_audio_file_id")
+                                )
+                                a_data = sm_entry.get("audio_data") or {}
+                                if ext_fid:
+                                    track_key = f"{sc}.wav"
+                                    pool[track_key] = {
+                                        "shortcode": sc,
+                                        "file_id": ext_fid,
+                                        "telegram_file_id": ext_fid,
+                                        "bpm": float(a_data.get("tempo_bpm") or a_data.get("bpm") or 120.0),
+                                        "energy": float(a_data.get("avg_energy") or a_data.get("energy") or 0.7),
+                                        "vibe": a_data.get("vibe") or "energetic",
+                                        "duration": float(a_data.get("duration") or a_data.get("audio_duration") or 15.0),
+                                        "is_source_extract": True,
+                                        "usage_count": sm_entry.get("usage_count", 0),
+                                        "last_used": sm_entry.get("last_used", 0),
+                                    }
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)
 
@@ -966,6 +992,132 @@ class TelegramVaultIndexer:
             out_path = os.path.join(dest_dir, f"vault_bgm_{selected_fid[:10]}.mp3")
             if self.download_vault_file_by_id(selected_fid, out_path):
                 return out_path
+
+        return None
+
+    def hydrate_extracted_audio_from_vault(self, identifier: str, dest_dir: Optional[str] = None) -> Optional[str]:
+        """
+        Downloads or locates the clip's extracted audio ({shortcode}.wav / video_extracted.wav)
+        from Telegram Storage Group using extracted_audio_file_id.
+        """
+        if not identifier:
+            return None
+
+        search_keys = self._normalize_search_keys(identifier)
+        entry = self.find_entry_by_shortcode(identifier) or self.lookup_downloaded_source(identifier)
+
+        shortcode = None
+        if entry and entry.get("shortcode"):
+            shortcode = str(entry["shortcode"]).strip()
+        if not shortcode:
+            for k in search_keys:
+                if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
+                    shortcode = k.replace("manual_", "").strip()
+                    break
+        if not shortcode:
+            shortcode = "clip"
+        else:
+            shortcode = os.path.splitext(shortcode)[0]
+
+        if not dest_dir:
+            dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Check local candidate files
+        cand_files = [
+            os.path.join(dest_dir, f"{shortcode}.wav"),
+            os.path.join(dest_dir, "video_extracted.wav"),
+        ]
+        for cf in cand_files:
+            if os.path.exists(cf) and os.path.getsize(cf) > 1024:
+                return cf
+
+        # Check local active pool cache (already harvested)
+        active_candidates = [
+            os.path.join(_REPO_ROOT, "Original_audio", "active", f"{shortcode}.wav"),
+            os.path.join(_REPO_ROOT, "Original_audio", "active", f"bgm_{shortcode}.wav"),
+        ]
+        for ac in active_candidates:
+            if os.path.exists(ac) and os.path.getsize(ac) > 1024:
+                out_path = os.path.join(dest_dir, f"{shortcode}.wav")
+                try:
+                    import shutil
+                    shutil.copy2(ac, out_path)
+                    legacy_wav = os.path.join(dest_dir, "video_extracted.wav")
+                    if not os.path.exists(legacy_wav):
+                        shutil.copy2(ac, legacy_wav)
+                    logger.info(f"⚡ [LOCAL POOL CACHE HIT] Extracted audio found in active pool: {ac} -> {out_path}")
+                    return out_path
+                except Exception:
+                    return ac
+
+        # Resolve extracted_audio_file_id from entry or session
+        ext_fid = None
+        if entry:
+            ext_fid = (
+                entry.get("media_file_ids", {}).get("extracted_audio_file_id") or
+                entry.get("extracted_audio_file_id")
+            )
+        if not ext_fid:
+            try:
+                from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+                sm = TelegramSessionManager()
+                for k in search_keys:
+                    sess = sm.get_session(k)
+                    if sess:
+                        ext_fid = (
+                            sess.get("media_file_ids", {}).get("extracted_audio_file_id") if isinstance(sess.get("media_file_ids"), dict) else None
+                        ) or sess.get("extracted_audio_file_id")
+                        if ext_fid:
+                            break
+            except Exception:
+                pass
+
+        # Resolve from AudioPoolManager pool_metadata.json (track intelligence & files index)
+        if not ext_fid:
+            try:
+                from Audio_Modules.audio_pool_manager import AudioPoolManager
+                pm = AudioPoolManager()
+                for t_name in [f"{shortcode}.wav", f"bgm_{shortcode}.wav", f"{shortcode}.mp3", identifier]:
+                    t_intel = pm.get_track_intelligence(t_name)
+                    if t_intel and t_intel.get("file_id"):
+                        ext_fid = t_intel["file_id"]
+                        break
+                if not ext_fid:
+                    f_dict = pm.metadata.get("files", {})
+                    for fk, fv in f_dict.items():
+                        if isinstance(fv, dict) and fv.get("file_id"):
+                            if shortcode.lower() in fk.lower():
+                                ext_fid = fv["file_id"]
+                                break
+            except Exception as _pme:
+                logger.debug("Notice on AudioPoolManager file_id lookup: %s", _pme)
+
+        # Resolve from master_vault_index.json Column 2
+        if not ext_fid:
+            try:
+                c2_sess = self.vault_index.get("column_2_downloaded_sources", {}).get("by_session_id", {})
+                for c2_k, c2_v in c2_sess.items():
+                    if shortcode.lower() in c2_k.lower() and isinstance(c2_v, dict) and c2_v.get("extracted_audio_file_id"):
+                        ext_fid = c2_v["extracted_audio_file_id"]
+                        break
+            except Exception:
+                pass
+
+        if ext_fid:
+            out_path = os.path.join(dest_dir, f"{shortcode}.wav")
+            logger.info(f"⚡ [VAULT AUDIO HYDRATE] Downloading extracted audio for '{shortcode}' from Telegram Vault (file_id: {ext_fid[:15]})...")
+            if self.download_vault_file_by_id(ext_fid, out_path):
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+                    legacy_wav = os.path.join(dest_dir, "video_extracted.wav")
+                    if not os.path.exists(legacy_wav):
+                        try:
+                            import shutil
+                            shutil.copy2(out_path, legacy_wav)
+                        except Exception:
+                            pass
+                    logger.info(f"✅ [VAULT AUDIO HYDRATE] Extracted audio recovered successfully -> {out_path}")
+                    return out_path
 
         return None
 

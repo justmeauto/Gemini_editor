@@ -2118,6 +2118,11 @@ def run_master_pipeline(
                             except Exception:
                                 pass
                         target_clip_dirs = [clip_dir]
+                        # Also retrieve the already-extracted audio from Telegram Vault
+                        try:
+                            vault_indexer.hydrate_extracted_audio_from_vault(url, dest_dir=clip_dir)
+                        except Exception as _ea_err:
+                            logger.debug(f"[MASTER PIPELINE] Extracted audio vault retrieval notice: {_ea_err}")
         except Exception as _vh_err:
             logger.debug(f"[MASTER PIPELINE] Vault check error: {_vh_err}")
 

@@ -120,15 +120,25 @@ def select_clip_bgm(
         except Exception as pool_err:
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 
-    # Fallback to clip's clean continuous extracted audio if no pool BGM resolved
+    # Fallback to clip's clean continuous extracted audio retrieved directly from Telegram Vault
     if not resolved_path and clip_folder:
-        clip_extracted = os.path.join(clip_folder, "video_extracted.wav")
-        if os.path.isfile(clip_extracted):
-            resolved_path = clip_extracted
-            selected_track_name = "video_extracted.wav"
+        clean_sc = (clip_id or os.path.basename(clip_folder)).replace("manual_", "").strip() or "clip"
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            vault = TelegramVaultIndexer()
+            hydrated_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
+            if not hydrated_audio and clip_id:
+                hydrated_audio = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_folder)
+        except Exception as _v_err:
+            hydrated_audio = None
+            logger.debug(f"[STEP 04] Vault audio recovery notice: {_v_err}")
+
+        if hydrated_audio and os.path.isfile(hydrated_audio) and os.path.getsize(hydrated_audio) > 1024:
+            resolved_path = hydrated_audio
+            selected_track_name = os.path.basename(hydrated_audio)
             res["selected_audio_track"] = selected_track_name
             res["alignment_score"] = 0.85
-            logger.info(f"🎙️ [STEP 04] No pool BGM found — adopting clip's clean continuous extracted audio: {clip_extracted}")
+            logger.info(f"🎙️ [STEP 04] Retrieved clip's continuous extracted audio from Telegram Vault: {resolved_path}")
 
     res["physical_path"] = resolved_path
 

@@ -989,20 +989,16 @@ def select_best_audio_for_clip(
     except ImportError:
         def _is_pipeline_artifact(f):
             fl = f.lower()
-            if fl.startswith("bgm_manual_") or "manual_" in fl:
-                return True  # Exclude raw manual harvest clip extractions
-            if fl.startswith("vault_bgm_"):
+            if fl.startswith("vault_bgm_") or fl.startswith("bgm_"):
                 return False
-            if fl.startswith("bgm_") and not fl.startswith("bgm_manual_"):
-                return False
-            return "extracted" in fl or fl in ("video.wav", "video.mp4", "video_extracted.wav")
+            for bad in ["_master", "_proxy", "_stripped", "_clean", "mask_", "tmp_", "step_", "audio_ducked"]:
+                if bad in fl:
+                    return True
+            return False
 
     def _is_noisy_or_unusable(fname, meta):
         if not isinstance(meta, dict):
             return False
-        fn_l = fname.lower()
-        if fn_l.startswith("bgm_manual_") or "manual_" in fn_l:
-            return True
         if meta.get("is_unusable", False) or meta.get("is_speech_only", False):
             return True
         reason = str(meta.get("unusable_reason", "")).lower()
@@ -1072,7 +1068,23 @@ def select_best_audio_for_clip(
     ]
 
     if not all_candidates:
-        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index (pipeline artifacts, noisy, and <10s audio excluded).")
+        clean_sc = (clip_id or os.path.basename(clip_folder or "")).replace("manual_", "").strip() or "clip"
+        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+        vault = TelegramVaultIndexer()
+        retrieved_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
+        if not retrieved_audio and clip_id:
+            retrieved_audio = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_folder)
+
+        if retrieved_audio and os.path.exists(retrieved_audio) and os.path.getsize(retrieved_audio) > 1024:
+            track_name = os.path.basename(retrieved_audio)
+            logger.info(f"🎙️ [BGM Selector] Retrieved clip's own extracted audio from Telegram Vault: {retrieved_audio}")
+            return {
+                "selected_audio_track": track_name,
+                "alignment_score": 0.90,
+                "reasoning": f"Retrieved clip's own continuous audio track ({track_name}) from Telegram Vault.",
+                "physical_path": retrieved_audio,
+            }
+        logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index and vault has no audio.")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid clean BGM tracks in pool."}
 
     # ── 6-HOUR USAGE COOLDOWN ENFORCEMENT ────────────────────────────────────

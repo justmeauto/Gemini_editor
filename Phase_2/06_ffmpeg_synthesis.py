@@ -194,13 +194,17 @@ def synthesize_editing_plan(
         if wm_boxes:
             extra_inputs["watermark_boxes"] = wm_boxes
 
-    # If no external BGM track is available, adopt clip's clean continuous extracted audio
+    # If no external BGM track is available, retrieve clip's clean continuous extracted audio from Telegram Vault
     if not selected_bgm_path or not os.path.exists(selected_bgm_path):
         clip_dir = os.path.dirname(video_path)
-        extracted_wav = os.path.join(clip_dir, "video_extracted.wav")
-        if os.path.isfile(extracted_wav):
-            selected_bgm_path = extracted_wav
-            logger.info(f"🎙️ [STEP 06] Using clean continuous extracted audio as track: {extracted_wav}")
+        clean_sc = os.path.basename(clip_dir).replace("manual_", "")
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            selected_bgm_path = TelegramVaultIndexer().hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_dir)
+        except Exception:
+            pass
+        if selected_bgm_path and os.path.isfile(selected_bgm_path):
+            logger.info(f"🎙️ [STEP 06] Using clean continuous extracted audio from Telegram Vault as track: {selected_bgm_path}")
 
     try:
         synthesis_result = engine.run_full_pipeline(

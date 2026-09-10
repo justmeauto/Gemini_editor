@@ -233,6 +233,10 @@ def run_phase1_ingestion(
                                     pass
                             _kind = "watermark-cleaned" if "clean" in os.path.basename(_hydrated).lower() else "raw source"
                             logger.info(f"   ✅ [VAULT SOURCE CACHE HIT] Hydrated {_kind} from Telegram Vault — skipping yt-dlp download")
+                            try:
+                                _indexer.hydrate_extracted_audio_from_vault(_clean_sc, dest_dir=clip_dir)
+                            except Exception:
+                                pass
                 except Exception as _v_err:
                     logger.debug(f"[WORKER 2] Vault hydration check notice: {_v_err}")
 

@@ -51,6 +51,10 @@ def download_stream(
             if metadata:
                 with open(meta_path, "w", encoding="utf-8") as mf:
                     json.dump(metadata, mf, indent=2, ensure_ascii=False)
+            try:
+                vault.hydrate_extracted_audio_from_vault(url, dest_dir=destination_dir)
+            except Exception:
+                pass
             _kind = "watermark-cleaned" if "clean" in os.path.basename(vault_video).lower() else "raw source"
             logger.info(f"📥 [STEP 04 - PRIMARY] Hydrated {_kind} video directly from Telegram Storage Group Vault: {os.path.basename(destination_dir)}")
             res = {

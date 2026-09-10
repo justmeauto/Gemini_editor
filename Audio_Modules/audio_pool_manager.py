@@ -38,17 +38,15 @@ def _is_pipeline_artifact(filename: str) -> bool:
     lower_name = filename.lower()
     if lower_name in PIPELINE_BLOCKED_EXACT:
         return True
-    if lower_name.startswith("bgm_manual_") or "manual_" in lower_name:
-        return True  # Exclude raw manual harvest clip extractions
-    # Explicit BGM files are never pipeline artifacts
-    if lower_name.startswith("vault_bgm_"):
+    # Scratch artifacts are blocked
+    for bad in ["_master", "_proxy", "_stripped", "_clean", "mask_", "tmp_", "step_", "audio_ducked"]:
+        if bad in lower_name:
+            return True
+    # Explicit BGM files and audio tracks are valid
+    if lower_name.startswith("vault_bgm_") or lower_name.startswith("bgm_"):
         return False
-    if lower_name.startswith("bgm_") and not lower_name.startswith("bgm_manual_"):
+    if lower_name.endswith((".wav", ".mp3", ".m4a")):
         return False
-    if lower_name.startswith("video_") or lower_name.startswith("tmp_") or lower_name.startswith("step_"):
-        return True
-    if lower_name.endswith((".wav", ".mp4")) and ("_master" in lower_name or "_proxy" in lower_name or "_stripped" in lower_name or "_clean" in lower_name):
-        return True
     return any(bool(re.search(pat, lower_name)) for pat in PIPELINE_BLOCKED_PATTERNS)
 
 class AudioPoolManager:
@@ -570,6 +568,18 @@ class AudioPoolManager:
         """
         with self.lock:
             return self._get_file_metadata(audio_name)
+
+    def retrieve_audio_from_vault(self, track_name_or_shortcode: str, dest_dir: Optional[str] = None) -> Optional[str]:
+        """
+        Public API: Retrieves an audio track or extracted clip audio from Telegram Storage Vault
+        using the file_id registered in pool_metadata.json.
+        """
+        try:
+            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+            return TelegramVaultIndexer().hydrate_extracted_audio_from_vault(track_name_or_shortcode, dest_dir=dest_dir)
+        except Exception as err:
+            logger.warning("⚠️ Error retrieving audio from vault: %s", err)
+            return None
 
     def _set_file_metadata(self, filename: str, data: Dict):
         """Helper to set file metadata accounting for schema version."""
