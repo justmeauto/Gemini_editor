@@ -211,6 +211,7 @@ jobs:
         DISPATCH_PLATFORM: ${{ github.event.inputs.platform || 'all_available' }}
         DISPATCH_TARGET_ACCOUNTS: ${{ github.event.inputs.target_accounts || '' }}
         DISPATCH_TARGET_URL: ${{ github.event.inputs.target_url || '' }}
+        PYTHONUNBUFFERED: "1"
       run: |
         # FIX: Store the spaced path in a variable so it is correctly quoted everywhere
         LOCK_FILE="Phase_1/The jsons/Github_Actions_json/bot_lock.json"
@@ -248,7 +249,7 @@ jobs:
         trap cleanup EXIT
         # ─────────────────────────────────────────────────────────────────────
         echo "🤖 Executing RawGrab daemon scheduler mode ($DISPATCH_MODE)..."
-        python main.py
+        python -u main.py
 
     # ── 7. Commit State Back to Repo ─────────────────────────────────────────
     - name: Commit Dedup State to Git

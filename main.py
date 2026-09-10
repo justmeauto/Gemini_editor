@@ -102,13 +102,14 @@ try:
 except Exception:
     pass
 
-# Ensure UTF-8 output on Windows consoles
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+# Ensure UTF-8 output and immediate line buffering for CI / Docker / Windows consoles
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+except Exception:
+    pass
 
 # Ensure the canonical workspace root is on sys.path.
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1264,11 +1265,12 @@ def _dispatch_pipeline_in_background(**kwargs):
     """Spawns non-blocking daemon thread so Telegram bot loop never freezes."""
     job_id = f"{kwargs.get('requestor_chat_id')}_{time.time()}"
     ACTIVE_PIPELINE_JOBS.add(job_id)
+    logger.info(f"🚀 [PIPELINE DISPATCH] Spawning background worker thread for requestor {kwargs.get('requestor_chat_id')} (mode={kwargs.get('mode')}, url={kwargs.get('url')})")
     def _worker():
         try:
             run_master_pipeline(**kwargs)
         except Exception as _pe:
-            logger.error("❌ Background pipeline error: {_pe}")
+            logger.error(f"❌ Background pipeline error: {_pe}")
         finally:
             ACTIVE_PIPELINE_JOBS.discard(job_id)
 
@@ -1667,6 +1669,9 @@ async def handle_telegram_incoming_msg(update, context):
     chat_id = msg.chat.id
     from_user = msg.from_user.to_dict() if msg.from_user else {}
     user_id = str(msg.from_user.id) if msg.from_user else str(chat_id)
+    user_handle = msg.from_user.username if (msg.from_user and msg.from_user.username) else str(user_id)
+    text_preview = (msg.text[:80] + "...") if (msg.text and len(msg.text) > 80) else (msg.text or ("[Video/File]" if (msg.video or msg.document) else "[Media]"))
+    logger.info(f"📩 [TELEGRAM INCOMING] From @{user_handle} (chat_id={chat_id}): '{text_preview}'")
 
     # ── Active Wizard Step Handler ────────────────────────────────────────────
     active_wizard = _wizard_sessions.get(chat_id, {}).get("wizard")
@@ -2418,19 +2423,49 @@ def parse_static_publish_times() -> List[str]:
 
 
 
-def get_seconds_until_next_slot(slots: List[str]) -> tuple[str, float]:
+def resolve_app_timezone():
     """
-    Calculates the next target time slot and seconds remaining until it fires.
+    Returns a timezone object and readable label.
+    Supports IANA names via zoneinfo or fallback offsets (defaults to Asia/Kolkata / IST).
     """
     import datetime
-    now = datetime.datetime.now()
+    tz_env = (os.getenv("APP_TIMEZONE") or os.getenv("TZ") or "Asia/Kolkata").strip()
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(tz_env), tz_env
+    except Exception:
+        pass
+
+    known_offsets = {
+        "asia/kolkata": (5, 30, "IST"),
+        "kolkata": (5, 30, "IST"),
+        "ist": (5, 30, "IST"),
+        "utc": (0, 0, "UTC"),
+        "gmt": (0, 0, "GMT"),
+    }
+    key = tz_env.lower()
+    if key in known_offsets:
+        h, m, name = known_offsets[key]
+        return datetime.timezone(datetime.timedelta(hours=h, minutes=m), name=name), name
+
+    return datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST"), "IST"
+
+
+def get_seconds_until_next_slot(slots: List[str]) -> tuple[str, float, str]:
+    """
+    Calculates the next target time slot and seconds remaining until it fires.
+    Timezone-aware: respects APP_TIMEZONE / TZ (defaults to Asia/Kolkata / IST).
+    """
+    import datetime
+    tz, tz_label = resolve_app_timezone()
+    now = datetime.datetime.now(tz)
     today_date = now.date()
 
     candidates = []
     for slot_str in slots:
         try:
             h, m = map(int, slot_str.split(":"))
-            slot_dt = datetime.datetime.combine(today_date, datetime.time(hour=h, minute=m))
+            slot_dt = datetime.datetime.combine(today_date, datetime.time(hour=h, minute=m), tzinfo=tz)
             if slot_dt <= now:
                 slot_dt += datetime.timedelta(days=1)
             candidates.append((slot_str, slot_dt))
@@ -2438,12 +2473,12 @@ def get_seconds_until_next_slot(slots: List[str]) -> tuple[str, float]:
             pass
 
     if not candidates:
-        return ("12:00", 3600.0)
+        return ("12:00", 3600.0, tz_label)
 
     candidates.sort(key=lambda x: x[1])
     next_slot, next_dt = candidates[0]
     delay_s = max(1.0, (next_dt - now).total_seconds())
-    return (next_slot, delay_s)
+    return (next_slot, delay_s, tz_label)
 
 
 def run_scheduled_pipeline_loop():
@@ -2458,9 +2493,9 @@ def run_scheduled_pipeline_loop():
     while True:
         # Dynamically reload slots from .env on every check
         slots = parse_scraping_auto_input_times()
-        next_slot, delay_s = get_seconds_until_next_slot(slots)
+        next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
         hours_left = delay_s / 3600.0
-        logger.info(f"⏳ [SCHEDULER] Next scheduled run at {next_slot} (in {hours_left:.2f} hours / {delay_s:.0f}s)...")
+        logger.info(f"⏳ [SCHEDULER] Next scheduled run at {next_slot} {tz_label} (in {hours_left:.2f} hours / {delay_s:.0f}s)...")
         time.sleep(delay_s)
 
         logger.info(f"⏰ [SCHEDULER] Trigger time reached ({next_slot})! Executing max 2-account scraper batch...")
@@ -2482,9 +2517,9 @@ async def _async_static_scheduler_task(bot_app=None):
     while True:
         # Dynamically reload slots from .env on every check
         slots = parse_scraping_auto_input_times()
-        next_slot, delay_s = get_seconds_until_next_slot(slots)
+        next_slot, delay_s, tz_label = get_seconds_until_next_slot(slots)
         hours_left = delay_s / 3600.0
-        logger.info(f"⏳ [ASYNC SCHEDULER] Next run scheduled at {next_slot} (in {hours_left:.2f} hours)...")
+        logger.info(f"⏳ [ASYNC SCHEDULER] Next run scheduled at {next_slot} {tz_label} (in {hours_left:.2f} hours)...")
         await asyncio.sleep(delay_s)
 
         logger.info(f"⏰ [ASYNC SCHEDULER] Trigger time reached ({next_slot})! Starting 2-account ingestion & AI edit cycle...")
