@@ -103,9 +103,25 @@ def run_phase2_pipeline(
             # and FFmpeg single-pass synthesis operate on clean video.
             # ─────────────────────────────────────────────────────────────────
             _emit("step_02_watermark", "running", {"message": f"Checking/inpainting watermarks for {folder_name}..."})
-            clean_raw_path = os.path.join(clip_dir, "video_inpainted_clean.mp4")
+            is_auto = folder_name.startswith("auto_")
+            prefix = "auto_" if is_auto else "manual_"
+            shortcode_stem = folder_name.replace("manual_", "").replace("auto_", "").strip()
+            clean_filename = f"{folder_name}.mp4" if (folder_name.startswith("manual_") or folder_name.startswith("auto_")) else f"{prefix}{shortcode_stem}.mp4"
+            clean_raw_path = os.path.join(clip_dir, clean_filename)
             working_video_path = video_path
             watermark_boxes = []
+
+            # Check candidate clean video files on local disk
+            candidate_clean = [
+                clean_raw_path,
+                os.path.join(clip_dir, f"manual_{shortcode_stem}.mp4"),
+                os.path.join(clip_dir, f"auto_{shortcode_stem}.mp4"),
+                os.path.join(clip_dir, "video_inpainted_clean.mp4"),
+            ]
+            for c_cand in candidate_clean:
+                if os.path.exists(c_cand) and os.path.getsize(c_cand) > 1024:
+                    clean_raw_path = c_cand
+                    break
 
             # 1. Check Telegram Storage Vault for pre-cleaned video (wm_clean_file_id) if not on local disk
             if not os.path.exists(clean_raw_path) or os.path.getsize(clean_raw_path) <= 1024:

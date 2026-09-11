@@ -753,18 +753,30 @@ class TelegramVaultIndexer:
         if not shortcode:
             for k in search_keys:
                 if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
-                    shortcode = k.replace("manual_", "").strip()
+                    shortcode = k.replace("manual_", "").replace("auto_", "").strip()
                     break
         if not shortcode:
             shortcode = "clip"
 
+        is_auto = "auto_" in str(identifier).lower() or (dest_dir and "auto_" in str(dest_dir).lower())
+        prefix = "auto_" if is_auto else "manual_"
+
         # 1. Check if already exists on local disk (prioritize cleaned over raw)
         candidate_dirs = [
             dest_dir,
+            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
-        candidate_filenames = ["video_inpainted_clean.mp4", "video.mp4", f"{shortcode}.mp4", f"manual_{shortcode}.mp4"]
+        candidate_filenames = [
+            f"{prefix}{shortcode}.mp4",
+            f"manual_{shortcode}.mp4",
+            f"auto_{shortcode}.mp4",
+            "video_inpainted_clean.mp4",
+            "video.mp4",
+            f"{shortcode}.mp4",
+        ]
         if entry and entry.get("file_name"):
             candidate_filenames.insert(1, entry["file_name"])
 
@@ -894,23 +906,36 @@ class TelegramVaultIndexer:
         if not shortcode:
             for k in search_keys:
                 if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
-                    shortcode = k.replace("manual_", "").strip()
+                    shortcode = k.replace("manual_", "").replace("auto_", "").strip()
                     break
         if not shortcode:
             shortcode = "clip"
 
+        is_auto = "auto_" in str(identifier).lower() or (dest_dir and "auto_" in str(dest_dir).lower())
+        prefix = "auto_" if is_auto else "manual_"
+        clean_filename = f"{prefix}{shortcode}.mp4"
+
         # 1. Local disk check across candidate directories
         candidate_dirs = [
             dest_dir,
+            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
+        ]
+        clean_candidates = [
+            clean_filename,
+            f"manual_{shortcode}.mp4",
+            f"auto_{shortcode}.mp4",
+            "video_inpainted_clean.mp4",
         ]
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
-                c_clean = os.path.join(c_dir, "video_inpainted_clean.mp4")
-                if os.path.exists(c_clean) and os.path.getsize(c_clean) > 1024:
-                    logger.info(f"⚡ [VAULT CLEAN HYDRATE] Local clean video found -> {c_clean}")
-                    return c_clean
+                for c_fn in clean_candidates:
+                    c_clean = os.path.join(c_dir, c_fn)
+                    if os.path.exists(c_clean) and os.path.getsize(c_clean) > 1024:
+                        logger.info(f"⚡ [VAULT CLEAN HYDRATE] Local clean video found -> {c_clean}")
+                        return c_clean
 
         # Check TelegramSessionManager for clean video path
         sess = None
@@ -922,7 +947,7 @@ class TelegramVaultIndexer:
                 if sess:
                     for s_k in ["clean_video_path", "clean_raw_path", "video_path"]:
                         sp = sess.get(s_k)
-                        if sp and "clean" in os.path.basename(sp).lower() and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                        if sp and ("clean" in os.path.basename(sp).lower() or os.path.basename(sp).startswith(("manual_", "auto_"))) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
                             return sp
                     break
         except Exception:
@@ -942,10 +967,10 @@ class TelegramVaultIndexer:
 
         if clean_file_id:
             if not dest_dir:
-                dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
+                dest_dir = os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}")
             os.makedirs(dest_dir, exist_ok=True)
-            clean_path = os.path.join(dest_dir, "video_inpainted_clean.mp4")
-            logger.info(f"⚡ [VAULT CLEAN HYDRATE] Downloading watermark-cleaned video for '{shortcode}' from Telegram Vault...")
+            clean_path = os.path.join(dest_dir, clean_filename)
+            logger.info(f"⚡ [VAULT CLEAN HYDRATE] Downloading watermark-cleaned video for '{shortcode}' from Telegram Vault -> {clean_filename}...")
             if self.download_vault_file_by_id(clean_file_id, clean_path):
                 if os.path.exists(clean_path) and os.path.getsize(clean_path) > 1024:
                     logger.info(f"✅ [VAULT CLEAN HYDRATE] Clean video recovered successfully -> {clean_path}")
@@ -1237,6 +1262,135 @@ class TelegramVaultIndexer:
                 return True
             except Exception as _h_err:
                 logger.error(f"❌ Failed to send hydrated raw video: {_h_err}")
+
+        return False
+
+    async def send_clean_video_to_user_chat(self, bot, chat_id: int | str, identifier: str) -> bool:
+        """
+        Sends raw watermark-cleaned video directly to the user's chat.
+        Never leaks internal file_id values in the user-visible caption.
+        Prioritizes:
+          1. Existing local clean file (manual_<shortcode>.mp4 / auto_<shortcode>.mp4 / video_inpainted_clean.mp4)
+          2. Direct file_id delivery via Telegram Bot API (instant, 0 bandwidth)
+          3. On-demand vault hydration fallback via hydrate_clean_video_from_vault
+        """
+        if not bot or not chat_id or not identifier:
+            return False
+
+        shortcode = identifier.replace("manual_", "").replace("auto_", "").strip()
+        is_auto = "auto_" in str(identifier).lower()
+        prefix = "auto_" if is_auto else "manual_"
+        clean_filename = f"{prefix}{shortcode}.mp4"
+        caption = f"🧼 **Raw Watermark Cleaned Video**\n📁 `{clean_filename}`"
+        search_keys = self._normalize_search_keys(identifier)
+
+        # 1. Check if clean video file already exists on local disk
+        candidate_dirs = [
+            os.path.join(_REPO_ROOT, "downloads", identifier),
+            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", shortcode),
+        ]
+        local_clean = None
+        for c_dir in candidate_dirs:
+            if c_dir and os.path.exists(c_dir):
+                for c_fn in [clean_filename, f"manual_{shortcode}.mp4", f"auto_{shortcode}.mp4", "video_inpainted_clean.mp4"]:
+                    c_out = os.path.join(c_dir, c_fn)
+                    if os.path.exists(c_out) and os.path.getsize(c_out) > 1024:
+                        local_clean = c_out
+                        break
+            if local_clean:
+                break
+
+        if not local_clean:
+            try:
+                from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+                sm = TelegramSessionManager()
+                for k in search_keys:
+                    s = sm.get_session(k)
+                    if s:
+                        for s_k in ["clean_video_path", "clean_raw_path"]:
+                            sp = s.get(s_k)
+                            if sp and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                                local_clean = sp
+                                break
+                    if local_clean:
+                        break
+            except Exception:
+                pass
+
+        if local_clean and os.path.exists(local_clean) and os.path.getsize(local_clean) > 1024:
+            try:
+                with open(local_clean, "rb") as vf:
+                    await bot.send_video(
+                        chat_id=int(chat_id),
+                        video=vf,
+                        caption=caption,
+                        supports_streaming=True,
+                        read_timeout=600,
+                        write_timeout=600
+                    )
+                logger.info(f"✅ [CLEAN VIDEO DISPATCH] Sent local clean video to chat {chat_id} for '{identifier}'")
+                return True
+            except Exception as _send_err:
+                logger.warning(f"⚠️ Failed to send local clean video file: {_send_err}")
+
+        # 2. Try sending directly via Telegram file_id (instant cloud delivery, zero bandwidth)
+        entry = self.find_entry_by_shortcode(identifier) or self.lookup_downloaded_source(identifier)
+        clean_file_id = None
+        if entry:
+            clean_file_id = (
+                entry.get("media_file_ids", {}).get("wm_clean_file_id") or
+                entry.get("wm_clean_file_id")
+            )
+
+        if not clean_file_id:
+            try:
+                from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
+                sm = TelegramSessionManager()
+                for k in search_keys:
+                    s = sm.get_session(k)
+                    if s:
+                        m_ids = s.get("media_file_ids") if isinstance(s.get("media_file_ids"), dict) else {}
+                        clean_file_id = m_ids.get("wm_clean_file_id") or s.get("wm_clean_file_id")
+                        if clean_file_id:
+                            break
+            except Exception:
+                pass
+
+        if clean_file_id:
+            try:
+                await bot.send_video(
+                    chat_id=int(chat_id),
+                    video=clean_file_id,
+                    caption=caption,
+                    supports_streaming=True,
+                    read_timeout=600,
+                    write_timeout=600
+                )
+                logger.info(f"✅ [CLEAN VIDEO DISPATCH] Sent vault clean video by file_id to chat {chat_id} for '{identifier}'")
+                return True
+            except Exception as _fid_err:
+                logger.warning(f"⚠️ Direct clean file_id send failed, attempting hydration fallback: {_fid_err}")
+
+        # 3. Fallback: on-demand vault hydration and stream
+        hydrated_path = self.hydrate_clean_video_from_vault(identifier)
+        if hydrated_path and os.path.exists(hydrated_path) and os.path.getsize(hydrated_path) > 1024:
+            try:
+                with open(hydrated_path, "rb") as vf:
+                    await bot.send_video(
+                        chat_id=int(chat_id),
+                        video=vf,
+                        caption=caption,
+                        supports_streaming=True,
+                        read_timeout=600,
+                        write_timeout=600
+                    )
+                logger.info(f"✅ [CLEAN VIDEO DISPATCH] Sent hydrated clean video to chat {chat_id} for '{identifier}'")
+                return True
+            except Exception as _h_err:
+                logger.error(f"❌ Failed to send hydrated clean video: {_h_err}")
 
         return False
 

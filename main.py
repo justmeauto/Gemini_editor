@@ -448,6 +448,9 @@ def build_telegram_session_keyboard(session_id: str, shortcode: Optional[str] = 
             ],
             [
                 InlineKeyboardButton("📥 Raw Downloaded Video", callback_data=f"raw_video_{trigger_id}"),
+            ],
+            [
+                InlineKeyboardButton("🧼 Raw Watermark Cleaned", callback_data=f"clean_video_{trigger_id}"),
             ]
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -716,6 +719,26 @@ async def handle_telegram_callback(update, context):
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"⚠️ **Raw Video Unavailable**: Could not locate raw video for `{trigger_id}` on disk or in Telegram Storage Vault."
+            )
+        return
+
+    if data.startswith("clean_video_"):
+        trigger_id = data.replace("clean_video_", "").strip()
+        logger.info(f"🧼 [CALLBACK] User requested raw watermark cleaned video for: '{trigger_id}' from Chat ID: {chat_id}")
+        try:
+            await query.answer("🧼 Retrieving watermark-cleaned video...", show_alert=False)
+        except Exception:
+            pass
+
+        sent = await vault_indexer.send_clean_video_to_user_chat(
+            bot=context.bot,
+            chat_id=chat_id,
+            identifier=trigger_id
+        )
+        if not sent:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ **Watermark Cleaned Video Unavailable**: Could not locate clean video for `{trigger_id}` on disk or in Telegram Storage Vault."
             )
         return
 

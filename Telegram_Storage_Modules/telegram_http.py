@@ -13,11 +13,65 @@ import os
 import json
 import uuid
 import logging
+import asyncio
+import concurrent.futures
 import urllib.request
 import urllib.error
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("vault.telegram_http")
+
+# Safely pre-import pyrogram if present to avoid thread-local import race/missing loop issues
+try:
+    from pyrogram import Client as _PyroClient
+except Exception:
+    _PyroClient = None
+
+
+def _ensure_event_loop() -> asyncio.AbstractEventLoop:
+    """Ensures the current thread has an active event loop set, creating one if needed."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+def _run_coro_safely(coro):
+    """
+    Safely executes an async coroutine synchronously from any context:
+      - Active running event loop (e.g. main asyncio loop) -> uses nest_asyncio or isolated thread executor
+      - Worker thread without event loop -> creates and binds thread event loop
+      - Worker thread with inactive event loop -> runs loop.run_until_complete
+    """
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop and running_loop.is_running():
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+            return running_loop.run_until_complete(coro)
+        except Exception:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                def _thread_worker():
+                    thr_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(thr_loop)
+                    try:
+                        return thr_loop.run_until_complete(coro)
+                    finally:
+                        thr_loop.close()
+                return executor.submit(_thread_worker).result()
+    else:
+        loop = _ensure_event_loop()
+        return loop.run_until_complete(coro)
+
 
 # Automatically load environment variables from Credentials/.env or .env
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,10 +129,8 @@ def upload_file_with_pyrogram(
     file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
     logger.info("[telegram_http] Initiating Pyrogram MTProto upload for %s (size: %.1f MB) -> chat %s...",
                 filename, file_size_mb, chat_id)
-
     try:
-        import asyncio
-        import concurrent.futures
+        _ensure_event_loop()
         from pyrogram import Client
 
         token = _token()
@@ -141,24 +193,7 @@ def upload_file_with_pyrogram(
                     return {"ok": True, "result": res_payload}
                 return None
 
-        def _run_coro(coro):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                try:
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    return loop.run_until_complete(coro)
-                except Exception:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        return executor.submit(asyncio.run, coro).result()
-            else:
-                return asyncio.run(coro)
-
-        return _run_coro(_async_upload())
+        return _run_coro_safely(_async_upload())
 
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto upload failed for %s: %s", filename, e)
@@ -265,8 +300,7 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
     """
     logger.info("[telegram_http] Initiating Pyrogram MTProto download for large file_id=%s...", file_id[:12])
     try:
-        import asyncio
-        import concurrent.futures
+        _ensure_event_loop()
         from pyrogram import Client
 
         token = _token()
@@ -284,30 +318,19 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
                 os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
                 tmp_path = dest_path + ".tmp"
                 downloaded_file = await app.download_media(message=file_id, file_name=tmp_path)
-                if downloaded_file and os.path.exists(tmp_path):
-                    os.replace(tmp_path, dest_path)
+                actual_path = (
+                    downloaded_file
+                    if (downloaded_file and os.path.exists(str(downloaded_file)))
+                    else (tmp_path if os.path.exists(tmp_path) else None)
+                )
+                if actual_path:
+                    if os.path.abspath(actual_path) != os.path.abspath(dest_path):
+                        os.replace(actual_path, dest_path)
                     logger.info("[telegram_http] Pyrogram MTProto download successful -> %s", dest_path)
                     return True
                 return False
 
-        def _run_coro(coro):
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop and loop.is_running():
-                try:
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    return loop.run_until_complete(coro)
-                except Exception:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        return executor.submit(asyncio.run, coro).result()
-            else:
-                return asyncio.run(coro)
-
-        return _run_coro(_async_download())
+        return _run_coro_safely(_async_download())
 
     except Exception as e:
         logger.warning("[telegram_http] Pyrogram MTProto download failed for file_id=%s: %s", file_id[:12], e)
