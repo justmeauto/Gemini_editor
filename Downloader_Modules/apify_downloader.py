@@ -353,7 +353,7 @@ def gemini_reel_prescreen(item: Dict, creator_name: str) -> tuple:
     Returns:
         (approved: bool, result: dict)
         result contains: black_bars, is_ad, people_count, primary_subject,
-                         woman_is_focus, content_type, confidence, reject_reason
+                         subject_is_focus, content_type, confidence, reject_reason
     """
     _default_approve = (True, {
         "approved": True,
@@ -361,7 +361,7 @@ def gemini_reel_prescreen(item: Dict, creator_name: str) -> tuple:
         "is_ad": False,
         "people_count": -1,
         "primary_subject": "unknown",
-        "woman_is_focus": True,
+        "subject_is_focus": True,
         "content_type": "unknown",
         "confidence": 0.0,
         "reject_reason": None,
@@ -420,22 +420,22 @@ Analyze for ALL of the following:
    brand logos with product names, "swipe up", discount offers, e-commerce layouts,
    multiple products displayed, before/after comparisons.
 
-3. PEOPLE COUNT AND GENDER
+3. PEOPLE COUNT AND SUBJECT FOCUS
    How many people are clearly visible in the thumbnail?
-   What is the primary subject's gender? (man / woman / unclear)
-   Is a single woman the clear visual focus? (not one of many people)
+   What is the primary subject? (person | group | object_scene | none)
+   Is there a clear visual subject or focus? (not chaotic background clutter)
 
 4. CONTENT TYPE
-   Classify: dance_fashion | lifestyle_selfie | group_event | talking_head |
-             news_interview | product_ad | no_person | other
+   Classify: dynamic_visual | lifestyle_vlog | group_event | talking_head |
+             news_interview | product_ad | screen_ui | other
 
 Return ONLY this JSON, no other text:
 {{
   "black_bars": true/false,
   "is_ad": true/false,
   "people_count": <integer 0-10>,
-  "primary_subject": "man" | "woman" | "group" | "none",
-  "woman_is_focus": true/false,
+  "primary_subject": "person" | "group" | "object_scene" | "none",
+  "subject_is_focus": true/false,
   "content_type": "<one of the types above>",
   "confidence": <0.0-1.0>
 }}"""
@@ -477,9 +477,6 @@ Return ONLY this JSON, no other text:
 
     elif result.get("content_type", "") in ("product_ad", "news_interview"):
         reject_reason = f"content_type={result.get('content_type')}"
-
-    elif result.get("primary_subject", "") == "man" and not result.get("woman_is_focus", True):
-        reject_reason = "primary_subject_is_man"
 
     elif result.get("people_count", 1) > MAX_PEOPLE_IN_FRAME:
         count = result.get("people_count", 0)

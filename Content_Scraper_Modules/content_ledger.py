@@ -13,7 +13,7 @@ Layer 2 — Content hash lock: MD5 of the downloaded file bytes.
 
 Layer 3 — Cross-channel dedup: Tracks which channel used each clip.
            A clip used by General_Fallback will NOT be reused by
-           Paparazzi_Channel, and vice versa.
+           Entertainment_Channel, and vice versa.
 
 Ledger file : Content_Scraper_Modules/content_ledger.json
               Human-readable, safe to delete to reset history.
@@ -239,7 +239,7 @@ class ContentLedger:
         and the original post timestamp from Apify (for posting time analysis).
         Prevents the same clip from being posted on multiple channels.
 
-        Replaces the plain commit() call in the new paparazzi pipeline.
+        Replaces the plain commit() call in the ingestion pipeline.
         commit() still works for legacy source_accounts.json paths.
         post_timestamp: reel.get("timestamp") from Apify — Unix epoch float.
         """

@@ -2369,14 +2369,29 @@ class GeminiFFmpegEngine:
             if vo_candidate and os.path.exists(str(vo_candidate)):
                 extra_inputs["voiceover"] = str(vo_candidate)
 
-        # ── Agentic TTS Bridge ────────────────────────────────────────────────
-        # If enable_voiceover=true or creative_script narration_mode=="voiceover", generate one now.
-        _flags = forensic.get("feature_flags") or {}
-        _should_narrate = bool(_flags.get("enable_voiceover", False))
-        if not _should_narrate and creative_script:
+        # ── Agentic TTS Bridge (User-Controlled Narration Only) ───────────────
+        # Narration is ONLY generated if explicitly requested by the user:
+        # 1. Via Telegram re-edit button or custom prompt directive: 'voiceover', 'narrat', 'speak', etc.
+        # 2. Via explicit extra_inputs['enable_voiceover'] = True
+        # 3. Via structured creative_script narration_mode == 'voiceover'
+        # Autonomous AI runs (default) NEVER auto-generate voiceover over music.
+        req_directive = (
+            str(user_request or "") + " " +
+            str(extra_inputs.get("directive", "")) + " " +
+            str(extra_inputs.get("user_directive", "")) + " " +
+            str(extra_inputs.get("user_edit_directive", ""))
+        ).lower()
+
+        user_explicitly_requested_narration = any(
+            kw in req_directive for kw in ["voiceover", "narrat", "voice over", "ai voice", "speak hook"]
+        ) or bool(extra_inputs.get("enable_voiceover", False))
+
+        if not user_explicitly_requested_narration and creative_script:
             audio_strat = creative_script.get("audio_strategy", {})
             if audio_strat.get("narration_mode") == "voiceover":
-                _should_narrate = True
+                user_explicitly_requested_narration = True
+
+        _should_narrate = user_explicitly_requested_narration
 
         if _should_narrate and "voiceover" not in extra_inputs:
             # First priority: extract spoken text from creative_script segments
@@ -2387,11 +2402,26 @@ class GeminiFFmpegEngine:
             ]
             _hook_text = " ... ".join(script_text_parts).strip()
             if not _hook_text:
-                _hook_text = (
+                _hook_candidate = (
                     (forensic.get("content_director") or {}).get("engagement_hook")
                     or forensic.get("engagement_hook")
                     or ""
                 ).strip()
+                # CAMERA DIRECTION FILTER: Block directorial camera instructions from being voiced!
+                _lower_cand = _hook_candidate.lower()
+                _is_camera_direction = any(_lower_cand.startswith(pfx) for pfx in [
+                    "open with", "start with", "camera", "close-up", "closeup", "wide shot",
+                    "tight shot", "pan to", "zoom on", "cut to", "fade in", "show ", "focus on"
+                ])
+                if not _is_camera_direction:
+                    _hook_text = _hook_candidate
+                else:
+                    logger.info(f"🚫 [TTS BRIDGE] Rejected camera instruction from voiceover: '{_hook_candidate}'")
+                    _discovered_subject = (forensic.get("content_director") or {}).get("main_subject") or ""
+                    if _discovered_subject:
+                        _hook_text = f"Check out {_discovered_subject} on the red carpet."
+                    else:
+                        _hook_text = "Check out this incredible look."
             if _hook_text:
                 try:
                     import tempfile as _tf

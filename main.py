@@ -187,6 +187,7 @@ def build_reedit_options_keyboard(session_id: str):
             [InlineKeyboardButton("⚡ Aggressive Shot Reshaping (Dopamine Cuts)", callback_data=f"ro_shots_{session_id}")],
             [InlineKeyboardButton("🎬 Polish Climax & Ending", callback_data=f"ro_climax_{session_id}")],
             [InlineKeyboardButton("🎣 Fix Intro & Hook (First 3s)", callback_data=f"ro_hook_{session_id}")],
+            [InlineKeyboardButton("🎙️ Add AI Voiceover Narration", callback_data=f"ro_voiceover_{session_id}")],
             [InlineKeyboardButton("✏️ Custom Suggestion...", callback_data=f"ro_custom_{session_id}")],
         ]
         return InlineKeyboardMarkup(keyboard)
@@ -1009,7 +1010,8 @@ async def handle_telegram_callback(update, context):
             "music": "Change Music & Beat Alignment — switch to a faster BGM track and align cuts precisely to audio drops.",
             "shots": "Aggressive Shot Reshaping — force maximum cut frequency, dopamine-spike shot pacing, and rapid speed ramps for intense visual energy.",
             "climax": "Polish Climax & Ending Hook — sharpen the final 5-10 seconds of the video, ensure a high-satisfaction closing transition.",
-            "hook": "Fix Intro & Hook (First 3s) — re-sample and emphasize the initial 3 seconds for maximum immediate visual grab."
+            "hook": "Fix Intro & Hook (First 3s) — re-sample and emphasize the initial 3 seconds for maximum immediate visual grab.",
+            "voiceover": "Add AI Voiceover Narration — synthesize and overlay punchy storytelling voiceover narration on top of the reel with ducked BGM."
         }
 
         if opt_type in preset_directives:

@@ -644,14 +644,33 @@ Analyze the visual content against the candidate BGM audio tracks listed above:
 Include `selected_audio_track` and `creative_possibilities` in your returned JSON object.
 """
 
-        # Inject Pool Metadata Context if available
+        # ── Targeted Clip Ground Truth Metadata & Full CBM Injection ──────────
+        target_clip_meta_block = ""
+        cbm_block = ""
+
         if frame_paths:
             clip_dir = os.path.dirname(frame_paths[0])
+            folder_name = os.path.basename(clip_dir)
+            clean_sc = folder_name.replace("manual_", "").strip() if folder_name.startswith("manual_") else folder_name
+            if "_" in clean_sc:
+                clean_sc = clean_sc.split("_", 1)[1]
+
+            # 1. Load local clip metadata.json
+            local_meta = {}
+            local_meta_path = os.path.join(clip_dir, "metadata.json")
+            if os.path.exists(local_meta_path):
+                try:
+                    with open(local_meta_path, "r", encoding="utf-8") as _lmf:
+                        local_meta = json.load(_lmf)
+                except Exception as _lme:
+                    logger.debug(f"🔬 Could not load local metadata.json: {_lme}")
+
+            # 2. Load pool_metadata.json
+            pool_data = None
             possible_pm_paths = [
                 os.path.join(clip_dir, "pool_metadata.json"),
                 os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json"),
             ]
-            pool_data = None
             for pmp in possible_pm_paths:
                 if os.path.exists(pmp):
                     try:
@@ -661,12 +680,72 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                     except Exception as _pm_e:
                         logger.debug(f"🔬 Could not load pool_metadata ({pmp}): {_pm_e}")
 
-            if pool_data:
-                prompt_text += (
-                    f"\n---\n\nTASK 5 — POOL METADATA CONTEXT\n"
-                    f"Use the following clip & pool metadata to inform your analysis:\n"
-                    f"```json\n{json.dumps(pool_data, indent=2)[:3000]}\n```\n"
+            # 3. Locate the specific clip entry in pool_metadata
+            clip_entry = {}
+            if pool_data and isinstance(pool_data, dict):
+                social_entries = pool_data.get("files", {}).get("social_media_id", {})
+                if isinstance(social_entries, dict):
+                    for k, v in social_entries.items():
+                        if isinstance(v, dict):
+                            sc = v.get("shortcode") or ""
+                            if (clean_sc and (clean_sc in k or clean_sc == sc)) or (folder_name in k):
+                                clip_entry = v
+                                break
+
+            # Merge fields between local_meta and clip_entry
+            owner_user = local_meta.get("ownerUsername") or clip_entry.get("ownerUsername") or local_meta.get("uploader") or ""
+            if owner_user == "manual":
+                owner_user = ""
+            caption = local_meta.get("caption") or clip_entry.get("caption") or ""
+            hashtags = local_meta.get("hashtags") or clip_entry.get("hashtags") or []
+            tagged_users = local_meta.get("taggedUsers") or clip_entry.get("taggedUsers") or []
+
+            # 4. Construct authoritative targeted grounding block
+            meta_lines = [
+                "### ACTIVE CLIP GROUND TRUTH METADATA (AUTHORITATIVE)",
+                f"- Clip ID / Shortcode: {clean_sc}",
+            ]
+            if owner_user:
+                meta_lines.append(f"- Creator / Account Username: @{owner_user}")
+            if caption:
+                meta_lines.append(f"- Post Caption: {caption}")
+            if hashtags:
+                tag_str = ", ".join(hashtags) if isinstance(hashtags, list) else str(hashtags)
+                meta_lines.append(f"- Hashtags: {tag_str}")
+            if tagged_users:
+                tu_str = ", ".join(tagged_users) if isinstance(tagged_users, list) else str(tagged_users)
+                meta_lines.append(f"- Tagged Accounts: {tu_str}")
+
+            meta_lines.extend([
+                "\nCRITICAL GROUNDING DIRECTIVE FOR `main_subject` & ENTITIES:",
+                "1. Treat the above caption, hashtags, and username as authoritative ground truth for identifying the celebrity or creator.",
+                "2. If the hashtags or caption identify the person, you MUST set `main_subject` to that exact person's name.",
+                "3. NEVER substitute, guess, or hallucinate a different celebrity (e.g. guessing someone else based on visual resemblance alone) when the hashtags or caption already identify the subject.",
+            ])
+            target_clip_meta_block = "\n".join(meta_lines)
+
+            # 5. Extract Full CBM (Creator Behavior Model) with ZERO character/token truncation
+            cbm_data = clip_entry.get("creator_behavior_model")
+            if not cbm_data and pool_data and isinstance(pool_data, dict):
+                cbm_data = pool_data.get("creator_behavior_model") or pool_data.get("cbm")
+                if not cbm_data:
+                    for entry in pool_data.get("files", {}).get("social_media_id", {}).values():
+                        if isinstance(entry, dict) and entry.get("creator_behavior_model"):
+                            cbm_data = entry["creator_behavior_model"]
+                            break
+
+            if cbm_data:
+                cbm_block = (
+                    f"\n---\n\n### CREATOR BEHAVIOR MODEL (CBM) — FULL VERIFIED PROFILE\n"
+                    f"```json\n{json.dumps(cbm_data, indent=2, default=str)}\n```\n"
+                    f"DIRECTOR DIRECTIVE: Align visual rhythm, camera pacing, tone, and audience hook tactics "
+                    f"to this creator's verified behavioral DNA.\n"
                 )
+
+        if target_clip_meta_block:
+            prompt_text += f"\n---\n\n{target_clip_meta_block}\n"
+        if cbm_block:
+            prompt_text += f"{cbm_block}\n"
 
         payload = [prompt_text]
         try:

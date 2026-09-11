@@ -87,7 +87,7 @@ OUTPUT REQUIREMENTS:
 - `audio_strategy.narration_mode` MUST be autonomously chosen based on footage audio and creator format:
   * "voiceover": Footage is B-roll or silent and needs spoken storytelling. You MUST write concise spoken sentences in `spoken_or_caption_text` for voice synthesis.
   * "preserve_original_voice": Footage contains clear on-camera speech. Original voice will be preserved with BGM ducked.
-  * "music_and_text_only": High-energy visual montage, paparazzi reel, or music-driven clip. Zero spoken voice; use bold `on_screen_text_overlay`.
+  * "music_and_text_only": High-energy visual montage, curated reel, or music-driven clip. Zero spoken voice; use bold `on_screen_text_overlay`.
 - Every segment MUST reference an actual source_clip from the provided source material.
 - `source_time_range_s` MUST be timestamps [start_s, end_s] WITHIN THAT SPECIFIC SOURCE CLIP (not exceeding clip duration).
 - `spoken_or_caption_text` MUST be an exact substring quote from the clip's transcript or caption (or dialogue for voiceover).

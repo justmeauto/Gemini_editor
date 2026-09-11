@@ -56,7 +56,7 @@ CRITICAL GROUNDING & FORMAT RULES:
    Categorize creator_format as exactly one of:
    - talking_head: Creator speaks directly on camera.
    - voiceover_narrator: Creator narrates over visual footage/b-roll.
-   - curator_aggregator: Re-posted clips, paparazzi, celebrity b-roll, synced music, minimal/no host speech.
+   - curator_aggregator: Curated clips, visual montage, b-roll, synced music, minimal/no host speech.
    - text_music_only: Visuals with text overlays and BGM, no vocal speech.
    
 2. VERBAL SIGNATURE GROUNDING:
@@ -101,10 +101,10 @@ Return ONLY a single JSON object matching this EXACT schema (no markdown, no pro
     }},
 
     "presentation_and_visual_style_dna": {{
-      "visual_presentation_style": "<e.g. paparazzi_clip_compilation | direct_camera_talking_head | dynamic_voiceover_broll | text_over_broll>",
+      "visual_presentation_style": "<e.g. curated_clip_compilation | direct_camera_talking_head | dynamic_voiceover_broll | text_over_broll>",
       "on_camera_energy": "<high_hyper | relaxed_conversational | intense_focused | N/A_curated_clips>",
       "signature_editing_tics": ["<e.g. slow_mo_walk_sync", "text_overlay_emoji_punch", "rapid_cut_montage", "reaction_freeze_frame">],
-      "visual_framing_preference": "close_up_face | medium_shot | full_body | product_macro | paparazzi_telephoto | mixed"
+      "visual_framing_preference": "close_up_face | medium_shot | full_body | product_macro | telephoto_candid | mixed"
     }},
 
     "audience_relationship_and_stance": {{
@@ -122,7 +122,7 @@ Return ONLY a single JSON object matching this EXACT schema (no markdown, no pro
     }},
 
     "narrative_and_storytelling_dna": {{
-      "storytelling_logic": "anecdote_first | fact_first | mystery_reveal | escalation_challenge | highlight_glorification | paparazzi_event_capture",
+      "storytelling_logic": "anecdote_first | fact_first | mystery_reveal | escalation_challenge | highlight_glorification | live_event_capture",
       "hook_formula": "<repeatable hook pattern in opening seconds>",
       "tension_building_pattern": "<how curiosity, hype, or suspense is constructed>",
       "payoff_and_twist_style": "<how reveals, punchlines, or clips conclude>"

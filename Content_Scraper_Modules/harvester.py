@@ -54,30 +54,24 @@ LIMIT_PER_ACCOUNT = (
 DOWNLOADS_PER_ACCOUNT = int(os.getenv("ACTRESS_DOWNLOADS_PER_ACCOUNT", "3"))
 MISSED_GRACE_MINUTES  = int(os.getenv("ACTRESS_MISSED_GRACE_MINUTES", "60"))
 
-# Channel constants (same values as original channel_router.py)
-CHANNEL_WOMEN     = "General_Fallback"
-CHANNEL_PAPARAZZI = "Paparazzi"
-CHANNEL_FASHION   = "Fashion_Style"
+# Channel constants
+CHANNEL_GENERAL       = "General_Fallback"
+CHANNEL_ENTERTAINMENT = "Entertainment"
+CHANNEL_FASHION       = "Fashion_Style"
 
 
 # ==============================================================================
-# Channel routing  (formerly channel_router.py)
+# Channel routing
 # ==============================================================================
 
-def _paparazzi_creds_exist() -> bool:
-    """True when Credentials/social_media/Paparazzi/ has real files."""
-    base = os.path.join(_REPO_ROOT, "Credentials", "social_media", "Paparazzi")
-    if not os.path.isdir(base):
-        return False
-    return any(os.path.isfile(os.path.join(base, f)) for f in os.listdir(base))
-
-
-def _men_channel() -> str:
-    return CHANNEL_PAPARAZZI if _paparazzi_creds_exist() else CHANNEL_WOMEN
+def _entertainment_creds_exist() -> bool:
+    """True when Credentials/social_media/Entertainment/ has real files."""
+    base = os.path.join(_REPO_ROOT, "Credentials", "social_media", "Entertainment")
+    return os.path.isdir(base) and any(os.path.isfile(os.path.join(base, f)) for f in os.listdir(base))
 
 
 def _extract_person_name(reel: Dict) -> str:
-    """Extract featured person name from reel metadata (tagged users > owner > caption)."""
+    """Extract featured person or creator name from reel metadata (tagged users > owner > caption)."""
     # Priority 1: tagged users
     for user in reel.get("taggedUsers", []):
         if isinstance(user, dict):
@@ -97,20 +91,9 @@ def _extract_person_name(reel: Dict) -> str:
     return reel.get("ownerUsername", "")
 
 
-def _detect_gender(name: str, cfg_data: Dict) -> str:
-    """Returns 'female', 'male', or 'unknown' based on name token lists."""
-    if not name:
-        return "unknown"
-    tokens = set(re.split(r"[\s_.\\-]+", name.lower()))
-    female_tokens = set(cfg_data.get("female_name_tokens", []))
-    male_tokens   = set(cfg_data.get("male_name_tokens", []))
-    f = sum(1 for t in tokens if t in female_tokens)
-    m = sum(1 for t in tokens if t in male_tokens)
-    if f > m:
-        return "female"
-    if m > f:
-        return "male"
-    return "unknown"
+def _detect_gender(name: str, cfg_data: Dict = None) -> str:
+    """Neutral compatibility stub."""
+    return "neutral"
 
 
 def resolve_channel(ig_id: str, reel: Dict) -> Tuple[str, str, bool]:
@@ -124,7 +107,6 @@ def resolve_channel(ig_id: str, reel: Dict) -> Tuple[str, str, bool]:
     Returns:
         (channel_folder, person_title, is_nsfw)
     """
-    cfg = Core.get()
     accounts_raw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "source_accounts.json")
     try:
         with open(accounts_raw_path, "r", encoding="utf-8") as f:
@@ -132,62 +114,18 @@ def resolve_channel(ig_id: str, reel: Dict) -> Tuple[str, str, bool]:
     except Exception:
         raw = {}
 
-    # Build women map from all tiers
-    women_map: Dict[str, str] = {}   # name -> ig_id
-    for tier in ("primary", "secondary", "nsfw"):
-        for name, entry in raw.get(tier, {}).items():
-            if not name.startswith("_") and isinstance(entry, dict):
-                wid = entry.get("id", "").lower()
-                if wid:
-                    women_map[name] = wid
-
-    pap_block   = raw.get("_paparazzi", {})
-    nsfw_ids    = set(pap_block.get("nsfw_accounts", []))
-    cfg_data    = pap_block   # female/male_name_tokens live here
-
-    women_by_id = {v: k for k, v in women_map.items()}
+    nsfw_ids = set(raw.get("nsfw_accounts", []))
     ig_id_clean = ig_id.lower().lstrip("@")
-    _mc = _men_channel()
+    is_nsfw = ig_id_clean in nsfw_ids
+    person_name = _extract_person_name(reel) or ig_id_clean
 
-    # Step 0: Direct IG ID match
-    if ig_id_clean in women_by_id:
-        name    = women_by_id[ig_id_clean]
-        is_nsfw = ig_id_clean in nsfw_ids
-        logger.debug("router: direct women match @%s -> %s", ig_id_clean, name)
-        return CHANNEL_WOMEN, name, is_nsfw
-
-    # Step 1: Tagged users match
-    for user in reel.get("taggedUsers", []):
-        if not isinstance(user, dict):
-            continue
-        uid = (user.get("username") or user.get("id", "")).lower()
-        if uid and uid in women_by_id:
-            name    = women_by_id[uid]
-            is_nsfw = uid in nsfw_ids
-            logger.debug("router: tagged women match @%s -> %s", uid, name)
-            return CHANNEL_WOMEN, name, is_nsfw
-
-    # Step 2: Name token match
-    person_name  = _extract_person_name(reel)
-    person_lower = person_name.lower()
-    for name, wid in women_map.items():
-        name_tokens = [t.lower() for t in name.split() if len(t) > 2]
-        if any(t in person_lower for t in name_tokens):
-            is_nsfw = wid in nsfw_ids
-            logger.debug("router: name women match '%s' -> %s", person_name, name)
-            return CHANNEL_WOMEN, name, is_nsfw
-
-    # Step 3: Gender heuristic
-    gender = _detect_gender(person_name, cfg_data)
-    if gender == "female":
-        return CHANNEL_WOMEN, person_name or "Unknown Female", False
-
-    return _mc, person_name or "Unknown", False
+    target_channel = CHANNEL_ENTERTAINMENT if _entertainment_creds_exist() else CHANNEL_GENERAL
+    return target_channel, person_name, is_nsfw
 
 
 def get_source_accounts() -> List[str]:
-    """Returns list of paparazzi source IG account IDs to scrape."""
-    env_override = os.getenv("PAPARAZZI_SOURCE_ACCOUNTS", "").strip()
+    """Returns list of source IG account IDs to scrape."""
+    env_override = os.getenv("SOURCE_ACCOUNTS", "").strip()
     if env_override:
         return [a.strip().lstrip("@") for a in env_override.split(",") if a.strip()]
 
@@ -195,7 +133,7 @@ def get_source_accounts() -> List[str]:
     try:
         with open(accounts_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        accounts = raw.get("_paparazzi", {}).get("source_accounts", [])
+        accounts = raw.get("source_accounts", [])
         return [a for a in accounts if a and not a.startswith("REPLACE_WITH")]
     except Exception:
         return []
@@ -295,7 +233,7 @@ def _run_harvest_cycle() -> int:
         try:
             with open(accounts_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                sources = data.get("_paparazzi", {}).get("source_accounts", [])
+                sources = data.get("source_accounts", [])
         except Exception as e:
             logger.warning(f"harvester: failed to load source accounts: {e}")
 

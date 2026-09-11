@@ -20,7 +20,7 @@ It implements a thread-safe, 3-tier pool architecture (`active/`, `cooldown/`, a
 Original_audio/
 ├── active/               <-- Eligible audio tracks available for video builds
 ├── cooldown/             <-- Temporarily benched audio tracks (used within last 48 hours)
-├── quarantine/           <-- Purged unusable audio (paparazzi chatter, traffic noise, trading hall shouting)
+├── quarantine/           <-- Purged unusable audio (crowd chatter, traffic noise, trading hall shouting)
 ├── beats/                <-- Cached .npz binary beat grids & <filename>_lyric.json persistent intel
 └── pool_metadata.json    <-- Master JSON ledger tracking usage_count, last_used, BPM, energy, is_unusable
 ```
@@ -37,7 +37,7 @@ Whenever an audio track is selected for a video build:
 
 ### 2. AI Unusable Audio Detection & Quarantine
 During Gemini background enrichment (`_gemini_enrich_background`):
-* Detects non-music noise: paparazzi shouting/chatter, car/traffic noise, stock trading hall shouting, or heavy static.
+* Detects non-music noise: crowd shouting/chatter, car/traffic noise, stock trading hall shouting, or heavy static.
 * Moves flagged files from `active/` to `Original_audio/quarantine/`.
 * Hard-blocks quarantined tracks in `select_best_audio()` (`meta.get("is_unusable", False)`).
 
@@ -70,7 +70,7 @@ stateDiagram-v2
         IdleInActive --> ScoredAndSelected: Best BPM/Energy/Lyric Semantic Match
     }
     
-    ActivePool --> QuarantinePool: Gemini Detects Paparazzi/Traffic Noise
+    ActivePool --> QuarantinePool: Gemini Detects Crowd/Traffic Noise
     ScoredAndSelected --> CooldownPool: Video Build Rendered
     
     state CooldownPool {

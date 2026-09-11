@@ -188,7 +188,31 @@ def run_phase2_pipeline(
             # intent, tone, style, narrative, faces/subjects, and speech mode.
             # ─────────────────────────────────────────────────────────────────
             _emit("step_02", "running", {"message": f"Running Gemini Call 1 Forensic Perception on clean video for {folder_name}..."})
+
+            # Pre-hydrate pool metadata with this clip's data before Gemini runs
+            try:
+                from Audio_Modules.audio_pool_manager import AudioPoolManager
+                AudioPoolManager().hydrate_harvested_clip_metadata()
+            except Exception as _ph_err:
+                logger.debug(f"[STEP 02] Pre-hydration notice: {_ph_err}")
+
             creator_hint = folder_name.split("_")[0] if "_" in folder_name else "unknown"
+            if creator_hint == "manual":
+                _meta_file = os.path.join(clip_dir, "metadata.json")
+                if os.path.exists(_meta_file):
+                    try:
+                        with open(_meta_file, "r", encoding="utf-8") as _mf:
+                            _m_data = json.load(_mf)
+                            _real_owner = _m_data.get("ownerUsername") or _m_data.get("uploader")
+                            if _real_owner and _real_owner != "manual":
+                                creator_hint = _real_owner
+                    except Exception:
+                        pass
+                if creator_hint == "manual":
+                    clean_sc = folder_name.replace("manual_", "").strip()
+                    if clean_sc:
+                        creator_hint = clean_sc
+
             forensic_res = step02.run_forensic_perception(
                 video_path=working_video_path,
                 creator_name=creator_hint,

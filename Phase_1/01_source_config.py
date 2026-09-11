@@ -1,7 +1,7 @@
 """
 01_source_config.py — Phase 1 Step 1: Target Source Account & Channel Resolver
 ================================================================================
-Resolves target celebrity/actress/paparazzi account handles from:
+Resolves target creator account handles from:
   - Explicit function arguments
   - Content_Scraper_Modules/source_accounts.json
   - Fallback default pools
@@ -55,7 +55,7 @@ def resolve_target_accounts(
         try:
             with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                raw_accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+                raw_accs = data.get("source_accounts", [])
                 resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
                 logger.info(f"📋 [STEP 01] Loaded accounts from source_accounts.json: {resolved_sources}")
         except Exception as e:
@@ -63,7 +63,7 @@ def resolve_target_accounts(
             try:
                 from Downloader_Modules.scheduled_scraper_manager import _load_accounts_json
                 data = _load_accounts_json()
-                raw_accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+                raw_accs = data.get("source_accounts", [])
                 resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
                 logger.info(f"📋 [STEP 01 RECOVERY] Recovered accounts from default pool: {resolved_sources}")
             except Exception as _re:
@@ -73,7 +73,7 @@ def resolve_target_accounts(
         try:
             from Downloader_Modules.scheduled_scraper_manager import _load_accounts_json
             data = _load_accounts_json()
-            raw_accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+            raw_accs = data.get("source_accounts", [])
             resolved_sources = [h for h in raw_accs if re.match(r"^[A-Za-z0-9._]{1,30}$", str(h))]
         except Exception:
             resolved_sources = []

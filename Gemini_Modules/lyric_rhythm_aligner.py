@@ -174,7 +174,7 @@ JSON schema:
   ],
 
   "is_unusable": true | false,
-  "unusable_reason": "<brief explanation if unusable: e.g. 'paparazzi shouting/chatter with no music', 'heavy traffic/car noise', 'trading floor shouting', 'pure mic static' or '' if usable>"
+  "unusable_reason": "<brief explanation if unusable: e.g. 'loud crowd shouting/chatter with no music', 'heavy traffic/car noise', 'trading floor shouting', 'pure mic static' or '' if usable>"
 }
 
 RULES:
@@ -189,7 +189,7 @@ RULES:
   Do NOT summarize, skip, or truncate ANY spoken or sung words.
   If instrumental or no speech, set to "".
 
-- is_unusable: set to true ONLY if the audio is unusable non-music noise (e.g. paparazzi chatter, car traffic noise, stock market trading hall shouting, heavy static/distortion with no usable music).
+- is_unusable: set to true ONLY if the audio is unusable non-music noise (e.g. crowd chatter, shouting, car traffic noise, stock market trading hall shouting, heavy static/distortion with no usable music).
 
 - lyrics TIMESTAMP LOCK (CRITICAL — highest priority rule):
   The `time` and `end` values in every lyrics[] entry MUST be copied verbatim from the ASR transcript
@@ -1003,7 +1003,7 @@ def select_best_audio_for_clip(
             return True
         reason = str(meta.get("unusable_reason", "")).lower()
         vibe = str(meta.get("vibe_tags", [])).lower()
-        noise_kws = ("paparazzi", "crowd", "babble", "car_sound", "traffic", "pollution", "horn", "shouting", "chatter", "mic_static")
+        noise_kws = ("crowd", "babble", "screaming", "car_sound", "traffic", "pollution", "horn", "shouting", "chatter", "mic_static")
         if any(kw in reason for kw in noise_kws) or any(kw in vibe for kw in noise_kws):
             return True
         return False
@@ -1219,7 +1219,7 @@ def select_best_audio_for_clip(
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
-- STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, paparazzi shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
+- STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
 - FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(tier1[:7]) if tier1 else len(tier2[:8])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
 - LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
 - Prioritize musical style, emotional vibe, and BPM alignment with the video.

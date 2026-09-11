@@ -176,6 +176,8 @@ def synthesize_editing_plan(
             )
 
     extra_inputs = {}
+    if user_edit_directive:
+        extra_inputs["user_edit_directive"] = user_edit_directive
     if micro_shots:
         extra_inputs["micro_shots"] = micro_shots
         extra_inputs["rtb_timeline"] = micro_shots

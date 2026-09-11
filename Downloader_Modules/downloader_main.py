@@ -360,7 +360,7 @@ def run_phase1_ingestion(
             try:
                 with open(accounts_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    sources = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+                    sources = data.get("source_accounts", [])
             except Exception as e:
                 logger.warning(f"   ⚠ Failed to load source_accounts.json: {e}")
 
@@ -375,7 +375,7 @@ def run_phase1_ingestion(
             if os.path.exists(accounts_file) and sources:
                 with open(accounts_file, "r", encoding="utf-8") as f:
                     acc_data = json.load(f)
-                acc_data.setdefault("_paparazzi", {})["source_accounts"] = sources
+                acc_data["source_accounts"] = sources
                 tmp_accounts_file = accounts_file + ".tmp"
                 with open(tmp_accounts_file, "w", encoding="utf-8") as f:
                     json.dump(acc_data, f, indent=2, ensure_ascii=False)

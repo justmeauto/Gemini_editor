@@ -47,7 +47,7 @@ def _load_accounts_json() -> Dict[str, Any]:
         try:
             with open(ACCOUNTS_JSON, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, dict) and ("source_accounts" in data or "_paparazzi" in data):
+                if isinstance(data, dict) and "source_accounts" in data:
                     return data
         except Exception as e:
             logger.error("❌ JSON error reading %s: %s. Rebuilding with default accounts...", ACCOUNTS_JSON, e)
@@ -70,8 +70,8 @@ def purge_expired_accounts() -> List[str]:
     """
     try:
         data = _load_accounts_json()
-        accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
-        timestamps = data.get("account_added_timestamps") or data.get("_paparazzi", {}).get("account_timestamps", {})
+        accs = data.setdefault("source_accounts", [])
+        timestamps = data.setdefault("account_added_timestamps", {})
         now = time.time()
 
         expired = []
@@ -86,10 +86,7 @@ def purge_expired_accounts() -> List[str]:
                 data.get("account_last_scraped_iso", {}).pop(handle, None)
 
         if expired:
-            if "source_accounts" in data:
-                data["source_accounts"] = accs
-            elif "_paparazzi" in data:
-                data["_paparazzi"]["source_accounts"] = accs
+            data["source_accounts"] = accs
             _save_accounts_json(data)
             sync_source_accounts_to_telegram_vault()
             logger.info("⏰ [EXPIRATION] Purged %d expired account(s) after 30 days: %s", len(expired), expired)
@@ -105,8 +102,8 @@ def get_active_accounts_metadata() -> List[Dict[str, Any]]:
     purge_expired_accounts()
     try:
         data = _load_accounts_json()
-        accs = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
-        timestamps = data.get("account_added_timestamps") or data.get("_paparazzi", {}).get("account_timestamps", {})
+        accs = data.get("source_accounts", [])
+        timestamps = data.get("account_added_timestamps", {})
         now = time.time()
 
         res = []
@@ -137,10 +134,10 @@ def get_rotated_max_two_accounts(max_accounts: int = 2) -> List[str]:
     try:
         data = _load_accounts_json()
 
-        all_accounts = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+        all_accounts = data.get("source_accounts", [])
         if not all_accounts:
             data = _load_accounts_json()
-            all_accounts = data.get("source_accounts") or data.get("_paparazzi", {}).get("source_accounts", [])
+            all_accounts = data.get("source_accounts", [])
 
         if not all_accounts:
             logger.warning("⚠️ No target source accounts configured in source_accounts.json. Use /addaccount <handle> to add accounts.")
@@ -384,13 +381,8 @@ def add_source_account(account_handle: str, platform: str = "instagram") -> bool
         data = _load_accounts_json()
         data["platform"] = platform
         
-        if "source_accounts" in data:
-            accs = data.setdefault("source_accounts", [])
-            timestamps = data.setdefault("account_added_timestamps", {})
-        else:
-            pap = data.setdefault("_paparazzi", {})
-            accs = pap.setdefault("source_accounts", [])
-            timestamps = pap.setdefault("account_timestamps", {})
+        accs = data.setdefault("source_accounts", [])
+        timestamps = data.setdefault("account_added_timestamps", {})
 
         if clean_handle not in accs:
             accs.append(clean_handle)
@@ -416,13 +408,8 @@ def remove_source_account(account_handle: str) -> bool:
         return False
     try:
         data = _load_accounts_json()
-        if "source_accounts" in data:
-            accs = data.get("source_accounts", [])
-            timestamps = data.get("account_added_timestamps", {})
-        else:
-            pap = data.get("_paparazzi", {})
-            accs = pap.get("source_accounts", [])
-            timestamps = pap.get("account_timestamps", {})
+        accs = data.get("source_accounts", [])
+        timestamps = data.get("account_added_timestamps", {})
 
         if clean_handle in accs:
             accs.remove(clean_handle)
