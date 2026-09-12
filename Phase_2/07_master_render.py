@@ -21,7 +21,15 @@ def verify_master_render(
 ) -> Dict[str, Any]:
     """
     Verifies output master reel in Processed Shorts/.
+    Ensures Step 06 synthesis succeeded and output file exists with valid size.
     """
+    if synthesis_result is not None and isinstance(synthesis_result, dict):
+        status = str(synthesis_result.get("status", "")).upper()
+        if status not in ("SUCCESS", "EXECUTED"):
+            err_msg = synthesis_result.get("error") or f"Step 06 synthesis status was '{status}' (expected SUCCESS or EXECUTED)"
+            logger.error(f"❌ [STEP 07 FAILED] Synthesis execution failed: {err_msg}")
+            return {"success": False, "error": f"Synthesis failed: {err_msg}"}
+
     output_path = os.path.abspath(output_path)
     if not os.path.isfile(output_path):
         logger.error(f"❌ [STEP 07 FAILED] Output master reel not found: {output_path}")

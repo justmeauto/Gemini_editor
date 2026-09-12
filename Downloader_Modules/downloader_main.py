@@ -98,8 +98,11 @@ def send_raw_download_to_telegram_vault_async(
             from Telegram_Storage_Modules.telegram_http import send_document
             from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
 
-            caption = f"Raw Download: {shortcode} | Platform: {platform}\nURL: {url}"
-            resp = send_document(out_file, caption=caption)
+            is_auto = "auto_" in clip_dir.lower() or "auto_" in os.path.basename(clip_dir).lower()
+            prefix = "auto_raw_" if is_auto else "manual_raw_"
+            raw_display_name = f"{prefix}{shortcode}.mp4" if shortcode else f"{prefix}{os.path.basename(out_file)}"
+            caption = f"📥 **[VAULT RAW SOURCE]** `{raw_display_name}`\n🔗 `{url}`\n🆔 `{os.path.basename(clip_dir)}`"
+            resp = send_document(out_file, caption=caption, custom_filename=raw_display_name)
 
             if resp and isinstance(resp, dict):
                 result = resp.get("result", resp)

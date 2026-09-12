@@ -102,7 +102,7 @@ def test_hydrate_clean_video_from_vault_in_worker_thread(tmp_path):
 
     assert result.get("res") is not None
     assert os.path.exists(result["res"])
-    assert "manual_Dc8dzXbIIq7.mp4" in result["res"]
+    assert "manual_clean_Dc8dzXbIIq7.mp4" in result["res"]
 
 
 def test_hydrate_clean_video_auto_mode(tmp_path):
@@ -143,7 +143,7 @@ def test_hydrate_clean_video_auto_mode(tmp_path):
 
     assert result.get("res") is not None
     assert os.path.exists(result["res"])
-    assert "auto_test123.mp4" in result["res"]
+    assert "auto_clean_test123.mp4" in result["res"]
 
 
 def test_hydrate_raw_video_retrieves_clean_first(tmp_path):
@@ -187,7 +187,7 @@ def test_hydrate_raw_video_retrieves_clean_first(tmp_path):
     t.join()
 
     assert result.get("res") is not None
-    assert "manual_Dc8dzXbIIq7.mp4" in result["res"]
+    assert "manual_clean_Dc8dzXbIIq7.mp4" in result["res"]
 
 
 def test_build_telegram_session_keyboard_has_clean_button():
@@ -230,4 +230,42 @@ def test_send_clean_video_to_user_chat_via_file_id():
         assert "Raw Watermark Cleaned Video" in call_kwargs["caption"]
 
 
+def test_verify_master_render_rejects_failed_synthesis(tmp_path):
+    import importlib
+    step07 = importlib.import_module("Phase_2.07_master_render")
+    verify_master_render = step07.verify_master_render
 
+    fake_master = tmp_path / "manual_test_master.mp4"
+    with open(fake_master, "wb") as f:
+        f.write(b"EXISTING_STALE_RENDER_DATA" * 5000)
+
+    synthesis_failed = {"status": "FAILED", "error": "FFmpeg exit code -22: Output same as Input"}
+    res = verify_master_render(str(fake_master), synthesis_result=synthesis_failed)
+    assert res["success"] is False
+    assert "Synthesis failed" in res["error"]
+
+
+def test_hydrate_clean_video_rejects_master_reel_in_session(tmp_path):
+    from unittest.mock import MagicMock
+    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+
+    tvi = TelegramVaultIndexer()
+    stale_master = tmp_path / "downloads" / "Processed Shorts" / "manual_Dc8dzXbIIq7_master.mp4"
+    stale_master.parent.mkdir(parents=True, exist_ok=True)
+    with open(stale_master, "wb") as f:
+        f.write(b"MASTER_REEL_DATA" * 100)
+
+    fake_session = {
+        "video_path": str(stale_master),
+        "clean_video_path": str(stale_master),
+    }
+
+    mock_sm = MagicMock()
+    mock_sm.get_session.return_value = fake_session
+
+    with patch("Telegram_Storage_Modules.telegram_session_manager.TelegramSessionManager", return_value=mock_sm):
+        with patch.object(tvi, "find_entry_by_shortcode", return_value=None):
+            with patch.object(tvi, "lookup_downloaded_source", return_value=None):
+                clean_path = tvi.hydrate_clean_video_from_vault("manual_Dc8dzXbIIq7")
+                # Must NOT return the master reel!
+                assert clean_path is None or "_master.mp4" not in clean_path

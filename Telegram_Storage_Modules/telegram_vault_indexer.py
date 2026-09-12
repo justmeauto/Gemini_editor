@@ -753,24 +753,30 @@ class TelegramVaultIndexer:
         if not shortcode:
             for k in search_keys:
                 if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
-                    shortcode = k.replace("manual_", "").replace("auto_", "").strip()
+                    shortcode = k.strip()
                     break
+        if shortcode:
+            shortcode = shortcode.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_raw_", "").replace("auto_raw_", "").replace("manual_", "").replace("auto_", "").strip()
         if not shortcode:
             shortcode = "clip"
 
-        is_auto = "auto_" in str(identifier).lower() or (dest_dir and "auto_" in str(dest_dir).lower())
-        prefix = "auto_" if is_auto else "manual_"
+        is_auto = "auto" in str(identifier).lower() or (dest_dir and "auto" in str(dest_dir).lower())
+        folder_prefix = "auto_" if is_auto else "manual_"
+        prefix = "auto_raw_" if is_auto else "manual_raw_"
 
         # 1. Check if already exists on local disk (prioritize cleaned over raw)
         candidate_dirs = [
             dest_dir,
-            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
         candidate_filenames = [
             f"{prefix}{shortcode}.mp4",
+            f"manual_raw_{shortcode}.mp4",
+            f"auto_raw_{shortcode}.mp4",
+            f"{folder_prefix}{shortcode}.mp4",
             f"manual_{shortcode}.mp4",
             f"auto_{shortcode}.mp4",
             "video_inpainted_clean.mp4",
@@ -783,6 +789,8 @@ class TelegramVaultIndexer:
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
                 for c_fn in candidate_filenames:
+                    if "_master.mp4" in c_fn.lower():
+                        continue
                     c_out = os.path.join(c_dir, c_fn)
                     if os.path.exists(c_out) and os.path.getsize(c_out) > 1024:
                         return c_out
@@ -797,7 +805,7 @@ class TelegramVaultIndexer:
                 if sess:
                     break
             if sess and sess.get("raw_video_path") and os.path.exists(sess["raw_video_path"]):
-                if os.path.getsize(sess["raw_video_path"]) > 1024:
+                if "_master.mp4" not in sess["raw_video_path"].lower() and os.path.getsize(sess["raw_video_path"]) > 1024:
                     return sess["raw_video_path"]
         except Exception:
             pass
@@ -819,13 +827,22 @@ class TelegramVaultIndexer:
 
         # 3. Download via vault file downloader
         if not dest_dir:
-            dest_dir = os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}")
+            dest_dir = os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}")
         os.makedirs(dest_dir, exist_ok=True)
-        out_path = os.path.join(dest_dir, "video.mp4")
+        raw_filename = f"{prefix}{shortcode}.mp4"
+        out_path = os.path.join(dest_dir, raw_filename)
 
-        logger.info(f"📥 [VAULT HYDRATE] Downloading raw source for '{shortcode}' from Telegram Storage Group...")
+        logger.info(f"📥 [VAULT HYDRATE] Downloading raw source for '{shortcode}' from Telegram Storage Group -> {raw_filename}...")
         if self.download_vault_file_by_id(raw_file_id, out_path):
             if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+                # Maintain legacy video.mp4 for backward compatibility
+                legacy_path = os.path.join(dest_dir, "video.mp4")
+                if not os.path.exists(legacy_path):
+                    try:
+                        import shutil
+                        shutil.copyfile(out_path, legacy_path)
+                    except Exception:
+                        pass
                 logger.info(f"✅ [VAULT HYDRATE] Raw video recovered successfully -> {out_path}")
                 return out_path
 
@@ -906,25 +923,31 @@ class TelegramVaultIndexer:
         if not shortcode:
             for k in search_keys:
                 if k and not k.startswith("http") and "/" not in k and "\\" not in k and ":" not in k and "?" not in k:
-                    shortcode = k.replace("manual_", "").replace("auto_", "").strip()
+                    shortcode = k.strip()
                     break
+        if shortcode:
+            shortcode = shortcode.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_raw_", "").replace("auto_raw_", "").replace("manual_", "").replace("auto_", "").strip()
         if not shortcode:
             shortcode = "clip"
 
-        is_auto = "auto_" in str(identifier).lower() or (dest_dir and "auto_" in str(dest_dir).lower())
-        prefix = "auto_" if is_auto else "manual_"
+        is_auto = "auto" in str(identifier).lower() or (dest_dir and "auto" in str(dest_dir).lower())
+        folder_prefix = "auto_" if is_auto else "manual_"
+        prefix = "auto_clean_" if is_auto else "manual_clean_"
         clean_filename = f"{prefix}{shortcode}.mp4"
 
         # 1. Local disk check across candidate directories
         candidate_dirs = [
             dest_dir,
-            os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}"),
+            os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"manual_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", f"auto_{shortcode}"),
             os.path.join(_REPO_ROOT, "downloads", shortcode),
         ]
         clean_candidates = [
             clean_filename,
+            f"manual_clean_{shortcode}.mp4",
+            f"auto_clean_{shortcode}.mp4",
+            f"{folder_prefix}{shortcode}.mp4",
             f"manual_{shortcode}.mp4",
             f"auto_{shortcode}.mp4",
             "video_inpainted_clean.mp4",
@@ -932,12 +955,14 @@ class TelegramVaultIndexer:
         for c_dir in candidate_dirs:
             if c_dir and os.path.exists(c_dir):
                 for c_fn in clean_candidates:
+                    if "_master.mp4" in c_fn.lower():
+                        continue
                     c_clean = os.path.join(c_dir, c_fn)
                     if os.path.exists(c_clean) and os.path.getsize(c_clean) > 1024:
                         logger.info(f"⚡ [VAULT CLEAN HYDRATE] Local clean video found -> {c_clean}")
                         return c_clean
 
-        # Check TelegramSessionManager for clean video path
+        # Check TelegramSessionManager for clean video path (NEVER use video_path which points to master reels)
         sess = None
         try:
             from Telegram_Storage_Modules.telegram_session_manager import TelegramSessionManager
@@ -945,9 +970,14 @@ class TelegramVaultIndexer:
             for k in search_keys:
                 sess = sm.get_session(k)
                 if sess:
-                    for s_k in ["clean_video_path", "clean_raw_path", "video_path"]:
+                    for s_k in ["clean_video_path", "clean_raw_path"]:
                         sp = sess.get(s_k)
-                        if sp and ("clean" in os.path.basename(sp).lower() or os.path.basename(sp).startswith(("manual_", "auto_"))) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
+                        if not sp:
+                            continue
+                        bname = os.path.basename(sp).lower()
+                        if "_master.mp4" in bname or "processed shorts" in sp.lower():
+                            continue
+                        if ("clean" in bname or bname.startswith(("manual_", "auto_"))) and os.path.exists(sp) and os.path.getsize(sp) > 1024:
                             return sp
                     break
         except Exception:
@@ -967,12 +997,20 @@ class TelegramVaultIndexer:
 
         if clean_file_id:
             if not dest_dir:
-                dest_dir = os.path.join(_REPO_ROOT, "downloads", f"{prefix}{shortcode}")
+                dest_dir = os.path.join(_REPO_ROOT, "downloads", f"{folder_prefix}{shortcode}")
             os.makedirs(dest_dir, exist_ok=True)
             clean_path = os.path.join(dest_dir, clean_filename)
             logger.info(f"⚡ [VAULT CLEAN HYDRATE] Downloading watermark-cleaned video for '{shortcode}' from Telegram Vault -> {clean_filename}...")
             if self.download_vault_file_by_id(clean_file_id, clean_path):
                 if os.path.exists(clean_path) and os.path.getsize(clean_path) > 1024:
+                    # Maintain legacy video_inpainted_clean.mp4 for backward compatibility
+                    legacy_path = os.path.join(dest_dir, "video_inpainted_clean.mp4")
+                    if not os.path.exists(legacy_path):
+                        try:
+                            import shutil
+                            shutil.copyfile(clean_path, legacy_path)
+                        except Exception:
+                            pass
                     logger.info(f"✅ [VAULT CLEAN HYDRATE] Clean video recovered successfully -> {clean_path}")
                     return clean_path
 
@@ -1629,7 +1667,10 @@ class TelegramVaultIndexer:
             return None
 
         try:
-            clean_display_name = f"{clip_folder_name}.mp4" if not clip_folder_name.endswith(".mp4") else clip_folder_name
+            is_auto = "auto" in clip_folder_name.lower()
+            clean_sc = clip_folder_name.replace("manual_clean_", "").replace("auto_clean_", "").replace("manual_", "").replace("auto_", "").rstrip(".mp4")
+            prefix = "auto_clean_" if is_auto else "manual_clean_"
+            clean_display_name = f"{prefix}{clean_sc}.mp4"
             caption = f"🎬 [CLEAN INPAINTED SOURCE] `{clean_display_name}`\n🆔 `{clip_folder_name}`"
 
             upload_res = _send_telegram_file_sync(
@@ -1661,7 +1702,6 @@ class TelegramVaultIndexer:
                     pm = AudioPoolManager()
                     clips = pm.metadata.setdefault("files", {}).setdefault("social_media_id", {})
                     top_clips = pm.metadata.setdefault("clips", {})
-                    clean_sc = clip_folder_name.replace("manual_", "").strip().lower()
                     for pool_dict in [clips, top_clips]:
                         for url_key, entry in pool_dict.items():
                             if not isinstance(entry, dict):
@@ -1669,8 +1709,8 @@ class TelegramVaultIndexer:
                             entry_sc = str(entry.get("shortcode", "")).strip().lower()
                             if (
                                 clip_folder_name.lower() in url_key.lower() or
-                                clean_sc in url_key.lower() or
-                                (clean_sc and entry_sc == clean_sc)
+                                clean_sc.lower() in url_key.lower() or
+                                (clean_sc and entry_sc == clean_sc.lower())
                             ):
                                 m_ids = entry.setdefault("media_file_ids", {})
                                 m_ids["wm_clean_file_id"] = clean_file_id
@@ -1723,17 +1763,42 @@ class TelegramVaultIndexer:
         """Record downloaded raw video and audio into Telegram Storage Group & pool_metadata.json."""
         storage_group_id = os.getenv("TELEGRAM_STORAGE_GROUP_ID")
 
+        canonical_url = canonicalize_social_url(social_url)
+        sc_val = extract_clean_shortcode(social_url)
+        if not sc_val and raw_video_path:
+            parent_name = os.path.basename(os.path.dirname(raw_video_path))
+            sc_val = extract_clean_shortcode(parent_name)
+        if not canonical_url and sc_val:
+            canonical_url = canonicalize_social_url(sc_val)
+        target_key = canonical_url or social_url
+
+        is_auto = ("auto" in (session_id or "").lower()) or ("auto" in (raw_video_path or "").lower()) or (user_id == "auto")
+        prefix = "auto_raw_" if is_auto else "manual_raw_"
+        raw_display_name = f"{prefix}{sc_val}.mp4" if sc_val else f"{prefix}{os.path.basename(raw_video_path)}"
+
         if storage_group_id and bot:
             try:
                 if raw_video_path and os.path.exists(raw_video_path):
                     with open(raw_video_path, "rb") as rf:
-                        rmsg = await bot.send_video(
-                            chat_id=int(storage_group_id),
-                            video=rf,
-                            caption=f"📥 **[VAULT RAW SOURCE]** `{os.path.basename(raw_video_path)}`\n🔗 `{social_url}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else ""),
-                            read_timeout=600,
-                            write_timeout=600
-                        )
+                        caption_text = f"📥 **[VAULT RAW SOURCE]** `{raw_display_name}`\n🔗 `{social_url}`\n🆔 `{session_id}`" + (f"\n👤 User: `{user_id}`" if user_id else "")
+                        try:
+                            rmsg = await bot.send_video(
+                                chat_id=int(storage_group_id),
+                                video=rf,
+                                filename=raw_display_name,
+                                caption=caption_text,
+                                read_timeout=600,
+                                write_timeout=600
+                            )
+                        except TypeError:
+                            rf.seek(0)
+                            rmsg = await bot.send_video(
+                                chat_id=int(storage_group_id),
+                                video=rf,
+                                caption=caption_text,
+                                read_timeout=600,
+                                write_timeout=600
+                            )
                         if rmsg and rmsg.video:
                             raw_file_id = rmsg.video.file_id
 
@@ -1754,15 +1819,6 @@ class TelegramVaultIndexer:
                         logger.warning(f"❌ [VAULT AUDIO ERROR] Audio upload failed: {_aud_err}")
             except Exception as e:
                 logger.warning(f"⚠️ Vault raw source upload warning: {e}")
-
-        canonical_url = canonicalize_social_url(social_url)
-        sc_val = extract_clean_shortcode(social_url)
-        if not sc_val and raw_video_path:
-            parent_name = os.path.basename(os.path.dirname(raw_video_path))
-            sc_val = extract_clean_shortcode(parent_name)
-        if not canonical_url and sc_val:
-            canonical_url = canonicalize_social_url(sc_val)
-        target_key = canonical_url or social_url
 
         try:
             from Audio_Modules.audio_pool_manager import AudioPoolManager
@@ -1788,8 +1844,8 @@ class TelegramVaultIndexer:
             if sc_val:
                 entry["shortcode"] = sc_val
             entry["social_media_id"] = target_key
-            if raw_video_path and not entry.get("file_name"):
-                entry["file_name"] = os.path.basename(raw_video_path)
+            if raw_video_path:
+                entry["file_name"] = raw_display_name
             m_ids = entry.setdefault("media_file_ids", {})
             if raw_file_id:
                 m_ids["raw_video_file_id"] = raw_file_id

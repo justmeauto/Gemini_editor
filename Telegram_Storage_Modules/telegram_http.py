@@ -200,7 +200,13 @@ def upload_file_with_pyrogram(
         return None
 
 
-def send_document(local_path: str, chat_id: Optional[str] = None, caption: str = "", max_retries: int = 3) -> Optional[Dict[str, Any]]:
+def send_document(
+    local_path: str,
+    chat_id: Optional[str] = None,
+    caption: str = "",
+    max_retries: int = 3,
+    custom_filename: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Uploads local_path as a document to the Telegram storage group.
     Returns the raw Telegram message dict on success, or None on failure.
@@ -213,13 +219,13 @@ def send_document(local_path: str, chat_id: Optional[str] = None, caption: str =
         logger.error("[telegram_http] send_document: file not found: %s", local_path)
         return None
 
-    filename = os.path.basename(local_path)
+    filename = custom_filename or os.path.basename(local_path)
     file_size = os.path.getsize(local_path)
 
     # 50MB HTTP limit proactive check: route >= 45MB to Pyrogram MTProto
     if file_size >= 45 * 1024 * 1024:
         logger.info("[telegram_http] File size %.1fMB >= 45MB. Delegating to Pyrogram MTProto upload directly...", file_size / (1024 * 1024))
-        pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+        pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, file_name=filename, as_video=False)
         if pyro_res and pyro_res.get("ok"):
             return pyro_res.get("result")
 
@@ -261,7 +267,7 @@ def send_document(local_path: str, chat_id: Optional[str] = None, caption: str =
             # Check for HTTP 413 Request Entity Too Large -> trigger Pyrogram immediately
             if "413" in str(e) or "Too Large" in str(e):
                 logger.warning("[telegram_http] HTTP 413 encountered for %s. Falling back to Pyrogram MTProto upload...", filename)
-                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, file_name=filename, as_video=False)
                 if pyro_res and pyro_res.get("ok"):
                     return pyro_res.get("result")
 
@@ -270,7 +276,7 @@ def send_document(local_path: str, chat_id: Optional[str] = None, caption: str =
                 time.sleep(2.0 * attempt)
             else:
                 logger.warning("[telegram_http] send_document failed after %d attempts for %s: %s. Trying Pyrogram MTProto fallback...", max_retries, filename, e)
-                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, as_video=False)
+                pyro_res = upload_file_with_pyrogram(local_path, chat_id=chat_id, caption=caption, file_name=filename, as_video=False)
                 if pyro_res and pyro_res.get("ok"):
                     return pyro_res.get("result")
                 return None

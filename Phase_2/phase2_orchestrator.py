@@ -92,6 +92,12 @@ def run_phase2_pipeline(
             logger.info(f"♻️ [SKIP EXPLICITLY REQUESTED] '{folder_name}_master.mp4' already exists.")
             rendered_files.append(os.path.abspath(target_output))
             continue
+        elif not skip_existing and os.path.isfile(target_output):
+            try:
+                os.remove(target_output)
+                logger.info(f"🧹 Removed stale master reel before fresh re-edit: {os.path.basename(target_output)}")
+            except Exception as _rm_err:
+                logger.debug(f"Notice removing pre-existing master reel {target_output}: {_rm_err}")
 
         logger.info(f"\n🚀 [PHASE 2 CLIP {idx}/{len(targets)}] Ingesting folder: {folder_name}")
         tmp_dir = tempfile.mkdtemp(prefix="phase2_frames_")
@@ -104,9 +110,10 @@ def run_phase2_pipeline(
             # ─────────────────────────────────────────────────────────────────
             _emit("step_02_watermark", "running", {"message": f"Checking/inpainting watermarks for {folder_name}..."})
             is_auto = folder_name.startswith("auto_")
-            prefix = "auto_" if is_auto else "manual_"
+            folder_prefix = "auto_" if is_auto else "manual_"
+            prefix = "auto_clean_" if is_auto else "manual_clean_"
             shortcode_stem = folder_name.replace("manual_", "").replace("auto_", "").strip()
-            clean_filename = f"{folder_name}.mp4" if (folder_name.startswith("manual_") or folder_name.startswith("auto_")) else f"{prefix}{shortcode_stem}.mp4"
+            clean_filename = f"{prefix}{shortcode_stem}.mp4"
             clean_raw_path = os.path.join(clip_dir, clean_filename)
             working_video_path = video_path
             watermark_boxes = []
@@ -114,11 +121,16 @@ def run_phase2_pipeline(
             # Check candidate clean video files on local disk
             candidate_clean = [
                 clean_raw_path,
+                os.path.join(clip_dir, f"manual_clean_{shortcode_stem}.mp4"),
+                os.path.join(clip_dir, f"auto_clean_{shortcode_stem}.mp4"),
+                os.path.join(clip_dir, f"{folder_prefix}{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, f"manual_{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, f"auto_{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, "video_inpainted_clean.mp4"),
             ]
             for c_cand in candidate_clean:
+                if "_master.mp4" in c_cand.lower():
+                    continue
                 if os.path.exists(c_cand) and os.path.getsize(c_cand) > 1024:
                     clean_raw_path = c_cand
                     break
@@ -136,7 +148,7 @@ def run_phase2_pipeline(
                     logger.debug(f"[UPFRONT INPAINTING] Vault clean check notice: {_vi_err}")
 
             # 2. If clean video already exists, reuse it and load sidecar coordinates
-            if os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024:
+            if os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024 and os.path.abspath(clean_raw_path) != os.path.abspath(target_output):
                 working_video_path = clean_raw_path
                 logger.info(f"⚡ [UPFRONT INPAINTING CACHE] Reusing clean inpainted raw video: {os.path.basename(working_video_path)}")
                 coords_sidecar = clean_raw_path + ".coords.json"
