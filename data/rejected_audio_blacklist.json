@@ -70,6 +70,34 @@
       "telegram_file_id": "",
       "reason": "admin_rejected",
       "blacklisted_at": 1789851878.7034311
+    },
+    "ddr3ujwmskv.wav": {
+      "filename": "ddr3ujwmskv.wav",
+      "shortcode": "ddr3ujwmskv",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1789937050.1111982
+    },
+    "ddr3ujwmskv": {
+      "filename": "ddr3ujwmskv.wav",
+      "shortcode": "ddr3ujwmskv",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1789937050.1111982
+    },
+    "ddywfurs_av.wav": {
+      "filename": "ddywfurs_av.wav",
+      "shortcode": "ddywfurs_av",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1789937078.19686
+    },
+    "ddywfurs_av": {
+      "filename": "ddywfurs_av.wav",
+      "shortcode": "ddywfurs_av",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1789937078.19686
     }
   }
 }
