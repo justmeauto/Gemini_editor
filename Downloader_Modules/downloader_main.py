@@ -346,7 +346,14 @@ def run_phase1_ingestion(
                 except Exception as ae:
                     logger.warning(f"   ⚠ Audio analysis warning: {ae}")
 
-            return {"success": len(downloaded_files) > 0, "mode": "manual", "count": len(downloaded_files), "downloaded_files": downloaded_files, "downloads_dir": downloads_dir}
+            return {
+                "success": len(downloaded_files) > 0,
+                "mode": "manual",
+                "count": len(downloaded_files),
+                "downloaded_files": downloaded_files,
+                "downloads_dir": downloads_dir,
+                "error": None if downloaded_files else f"All download strategies exhausted for {url} (content may be restricted, age-gated, or private)"
+            }
         except Exception as err:
             logger.error(f"❌ [WORKER 2 FAILED] Manual download error: {err}")
             return {"success": False, "mode": "manual", "downloaded_files": [], "error": str(err)}

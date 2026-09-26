@@ -94,6 +94,13 @@ def run_phase1_pipeline(
             dedup_info = check_deduplication(shortcode, owner=owner, downloads_dir=downloads_dir, callback=event_callback)
             clip_dir = dedup_info["clip_dir"]
 
+            # ── GUARD: skip processing if already seen ──────────────────────
+            if dedup_info.get("is_duplicate"):
+                logger.info(f"♻️ [WORKER 2 - DEDUP] Shortcode '{shortcode}' already processed. Skipping download.")
+                if event_callback:
+                    event_callback("phase1", "skipped", {"message": f"Duplicate detected: '{shortcode}' already in pool. Skipping.", "shortcode": shortcode})
+                return {"success": False, "mode": "manual", "downloaded_files": [], "error": f"Duplicate: '{shortcode}' already processed."}
+
             # Step 3: Harvester (Skipped in Manual Mode)
             if event_callback:
                 event_callback("step_03", "success", {"message": "Manual URL mode: Skipping Apify scraper step."})
@@ -120,7 +127,8 @@ def run_phase1_pipeline(
                 "mode": "manual",
                 "count": len(downloaded_files),
                 "downloaded_files": downloaded_files,
-                "downloads_dir": downloads_dir
+                "downloads_dir": downloads_dir,
+                "error": dl_info.get("error") if not downloaded_files else None
             }
 
         except Exception as err:

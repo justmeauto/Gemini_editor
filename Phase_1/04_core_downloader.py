@@ -132,8 +132,10 @@ def download_stream(
                     "video_path": downloaded_file
                 })
             return res
+        elif not downloaded_file:
+            raise RuntimeError(f"All download strategies exhausted (content may be restricted, age-gated, private, or deleted)")
         else:
-            raise RuntimeError(f"Download completed but output file not found in {destination_dir}")
+            raise RuntimeError(f"Download output file not found in {destination_dir}: {downloaded_file}")
 
     except Exception as e:
         logger.error(f"❌ [STEP 04 FAILED] Download error for {url}: {e}")

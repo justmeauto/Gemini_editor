@@ -3,12 +3,15 @@
 ===========================================================================
 Checks if a reel shortcode or URL has already been processed or downloaded
 using:
-  - Content_Scraper_Modules/content_ledger.py
-  - Local disk existence check in downloads/{owner}_{shortcode}/
+  - Telegram Storage Group Vault (primary)
+  - Local disk existence check in downloads/{owner}_{shortcode}/ (secondary)
+  - Direct scan of Original_audio/pool_metadata.json by shortcode/URL (tertiary)
+  - Published registry / queue files (quaternary)
 """
 
 import os
 import sys
+import json
 import logging
 from typing import Dict, Any, Optional, Callable
 
@@ -60,14 +63,26 @@ def check_deduplication(
     # 2. SECONDARY: Local Disk presence check
     already_on_disk = os.path.exists(meta_path) and os.path.exists(video_path)
 
-    # 3. TERTIARY: Content Ledger check
-    ledger_processed = False
+    # 3. TERTIARY: Scan pool_metadata.json for shortcode / URL match
+    pool_hit = False
     try:
-        from Content_Scraper_Modules.content_ledger import get_ledger
-        ledger = get_ledger()
-        ledger_processed = ledger.shortcode_seen(shortcode) or ledger.is_in_avoid_list(shortcode, video_path)
+        pool_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
+        if os.path.exists(pool_path):
+            with open(pool_path, "r", encoding="utf-8") as pf:
+                pool_data = json.load(pf)
+            ig_url = f"https://www.instagram.com/reel/{shortcode}/"
+            entries = pool_data if isinstance(pool_data, list) else list(pool_data.values())
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                sc = entry.get("shortcode", "") or entry.get("shortCode", "")
+                url_field = entry.get("url", "") or entry.get("videoUrl", "")
+                if sc == shortcode or ig_url in str(url_field) or shortcode in str(url_field):
+                    pool_hit = True
+                    logger.info(f"📋 [STEP 02 - TERTIARY] Shortcode '{shortcode}' found in pool_metadata.json. Flagging as duplicate.")
+                    break
     except Exception as e:
-        logger.debug(f"Ledger check warning: {e}")
+        logger.debug(f"[STEP 02] pool_metadata scan warning: {e}")
 
     # 4. QUATERNARY: Published Registry / Queue files check
     published_check = False
@@ -86,7 +101,7 @@ def check_deduplication(
             except Exception:
                 pass
 
-    is_duplicate = bool(vault_hit) or already_on_disk or ledger_processed or published_check
+    is_duplicate = bool(vault_hit) or already_on_disk or pool_hit or published_check
 
     res = {
         "step": "step_02",

@@ -290,6 +290,69 @@ def build_active_accounts_keyboard_and_text():
 _global_bot_instance = None
 
 
+def send_telegram_text_sync(
+    chat_id: Any,
+    text: str,
+    parse_mode: Optional[str] = "Markdown",
+    reply_markup: Optional[Any] = None,
+) -> bool:
+    """
+    Synchronously dispatches a text message to a Telegram chat using HTTP POST via urllib.
+    Safe to call from background worker threads without asyncio event loop conflicts.
+    Falls back to plain text if Markdown parsing fails.
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not bot_token or not chat_id:
+        return False
+
+    import urllib.request
+    import urllib.error
+    import json
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": str(chat_id), "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        if hasattr(reply_markup, "to_dict"):
+            payload["reply_markup"] = reply_markup.to_dict()
+        elif isinstance(reply_markup, (dict, list)):
+            payload["reply_markup"] = reply_markup
+
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except urllib.error.HTTPError as he:
+        # Fallback to plain text if Markdown format had parsing errors (HTTP 400 Bad Request)
+        if parse_mode and he.code == 400:
+            try:
+                payload.pop("parse_mode", None)
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    return resp.status == 200
+            except Exception as e_fb:
+                logger.warning(f"⚠️ Telegram plain-text fallback sendMessage error for {chat_id}: {e_fb}")
+        else:
+            logger.warning(f"⚠️ Telegram sendMessage HTTPError {he.code} for {chat_id}: {he}")
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to send Telegram notification to {chat_id}: {e}")
+        return False
+
+
 async def _send_video_safe_main(
     bot_obj,
     chat_id,
@@ -687,10 +750,12 @@ async def handle_telegram_callback(update, context):
                     f"⚙️ **Status**: Scraping top reels & starting AI editing pipeline..."
                 )
             )
-            try:
-                run_master_pipeline(mode="auto", target_accounts=[pending_handle], platform=chosen_p, requestor_chat_id=chat_id)
-            except Exception as _p_err:
-                logger.error(f"❌ Error executing pending handle pipeline: {_p_err}")
+            _dispatch_pipeline_in_background(
+                mode="auto",
+                target_accounts=[pending_handle],
+                platform=chosen_p,
+                requestor_chat_id=chat_id
+            )
             return
         back_kbd = build_back_button_keyboard()
         prompts = {
@@ -1349,6 +1414,17 @@ def _dispatch_pipeline_in_background(**kwargs):
             run_master_pipeline(**kwargs)
         except Exception as _pe:
             logger.error(f"❌ Background pipeline error: {_pe}", exc_info=True)
+            chat_id = kwargs.get("requestor_chat_id")
+            if chat_id:
+                try:
+                    send_telegram_text_sync(
+                        chat_id,
+                        f"❌ **Pipeline Processing Error**\n\n"
+                        f"An unexpected error occurred while processing your request:\n`{_pe}`\n\n"
+                        f"💡 Please try submitting again or upload the video file directly."
+                    )
+                except Exception as _ne:
+                    logger.debug(f"Notice sending background error notification: {_ne}")
         finally:
             ACTIVE_PIPELINE_JOBS.discard(job_id)
             logger.info(f"🏁 [PIPELINE WORKER FINISHED] Worker thread finished job '{job_id}' (active remaining: {len(ACTIVE_PIPELINE_JOBS)})")
@@ -2217,12 +2293,51 @@ def run_master_pipeline(
         ingest_res = run_phase1_ingestion(mode=mode, url=url, limit_per_account=3, target_accounts=target_accounts, platform=platform)
         if not ingest_res.get("success") and not input_path:
             logger.warning("⚠️ [MASTER PIPELINE] Ingestion completed with no new clips to process.")
-            return {"success": False, "rendered_files": []}
+            if requestor_chat_id:
+                err_detail = ingest_res.get("error") or "All download strategies failed"
+                if url:
+                    fail_msg = (
+                        "❌ **Download Failed**\n\n"
+                        f"🔗 **URL**: {url}\n"
+                        f"🌐 **Platform**: {platform.title()}\n\n"
+                        f"⚠️ **Reason**: {err_detail}\n\n"
+                        "💡 **Possible Causes & Solutions**:\n"
+                        "• Post is private, restricted, login-gated, or age-gated\n"
+                        "• Post has expired or was removed by the creator\n"
+                        "• **Direct Video Upload**: You can download/save the video on your device and upload the video file directly into this chat!"
+                    )
+                elif target_accounts:
+                    fail_msg = (
+                        "⚠️ **Ingestion Failed**\n\n"
+                        f"👤 **Target Account(s)**: `{', '.join(target_accounts)}`\n"
+                        f"🌐 **Platform**: {platform.title()}\n\n"
+                        f"⚠️ **Reason**: {err_detail}\n\n"
+                        "💡 No active or downloadable reels found for the specified account(s)."
+                    )
+                else:
+                    fail_msg = (
+                        "⚠️ **Ingestion Notice**\n\n"
+                        "No new clips found to process in the auto pool."
+                    )
+                send_telegram_text_sync(requestor_chat_id, fail_msg)
+            return {"success": False, "rendered_files": [], "error": ingest_res.get("error")}
         
         dl_files = ingest_res.get("downloaded_files", [])
         if dl_files:
             target_clip_dirs = list(set(os.path.dirname(f) for f in dl_files if os.path.exists(f)))
             logger.info(f"   🎯 Targeted ingestion isolated {len(target_clip_dirs)} folder(s): {[os.path.basename(d) for d in target_clip_dirs]}")
+
+    if not target_clip_dirs and not input_path:
+        logger.warning("⚠️ [MASTER PIPELINE] No valid clip directories or input file found to edit.")
+        if requestor_chat_id:
+            fail_msg = (
+                "❌ **Processing Failed**\n\n"
+                f"🔗 **Target**: {url or (target_accounts and ', '.join(target_accounts)) or 'Unknown'}\n\n"
+                "⚠️ **Reason**: No downloaded clips available for editing.\n\n"
+                "💡 **Tip**: If downloading from a link fails, you can upload the video file directly into this chat!"
+            )
+            send_telegram_text_sync(requestor_chat_id, fail_msg)
+        return {"success": False, "rendered_files": [], "error": "No valid clip directories or input file found"}
 
     # Phase 2 & 3: Master AI Perception & Render Orchestrator
     try:
@@ -2466,6 +2581,27 @@ def run_master_pipeline(
 
     except Exception as p2_err:
         logger.error(f"❌ [MASTER PIPELINE FAILED] Phase 2 error: {p2_err}")
+        if requestor_chat_id:
+            try:
+                send_telegram_text_sync(
+                    requestor_chat_id,
+                    f"❌ **AI Editing Failed**\n\n"
+                    f"⚠️ An error occurred during video editing:\n`{p2_err}`\n\n"
+                    f"💡 Please try again or submit a different video file directly."
+                )
+            except Exception as _e_msg:
+                logger.debug(f"Notice sending phase 2 failure message: {_e_msg}")
+
+    if not rendered_master_reels and requestor_chat_id and (url or input_path):
+        try:
+            send_telegram_text_sync(
+                requestor_chat_id,
+                "⚠️ **AI Editing Completed with No Output**\n\n"
+                "The AI editor could not generate a rendered reel from the provided input.\n\n"
+                "💡 Please verify the video and try uploading the video file directly into this chat."
+            )
+        except Exception as _e_msg:
+            logger.debug(f"Notice sending zero-render failure message: {_e_msg}")
 
     return {"success": len(rendered_master_reels) > 0, "rendered_files": rendered_master_reels}
 
