@@ -24,7 +24,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 THIRTY_DAYS_SECONDS = 30 * 86400  # 30 Days in Seconds
 
-DEFAULT_SOURCE_ACCOUNTS = ["glitz.in", "mobile_multiplex", "papsdesk", "justbollywood.in"]
+DEFAULT_SOURCE_ACCOUNTS = []
 
 
 def _save_accounts_json(data: Dict[str, Any]) -> bool:
