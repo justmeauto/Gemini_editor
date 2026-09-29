@@ -140,6 +140,20 @@
       "telegram_file_id": "",
       "reason": "admin_rejected",
       "blacklisted_at": 1790433609.3098085
+    },
+    "ddtl4ecimiq.wav": {
+      "filename": "ddtl4ecimiq.wav",
+      "shortcode": "ddtl4ecimiq",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1790679165.5708542
+    },
+    "ddtl4ecimiq": {
+      "filename": "ddtl4ecimiq.wav",
+      "shortcode": "ddtl4ecimiq",
+      "telegram_file_id": "",
+      "reason": "admin_rejected",
+      "blacklisted_at": 1790679165.5708542
     }
   }
 }
