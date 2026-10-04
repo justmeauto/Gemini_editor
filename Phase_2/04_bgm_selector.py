@@ -139,23 +139,17 @@ def select_clip_bgm(
         except Exception as pool_err:
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 
-    # Fallback to clip's clean continuous extracted audio retrieved directly from Telegram Vault (LAST RESORT)
-    if not resolved_path and clip_folder:
-        clean_sc = (clip_id or os.path.basename(clip_folder)).replace("manual_", "").strip() or "clip"
-        try:
-            hydrated_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
-            if not hydrated_audio and clip_id:
-                hydrated_audio = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_folder)
-        except Exception as _v_err:
-            hydrated_audio = None
-            logger.debug(f"[STEP 04] Vault audio recovery notice: {_v_err}")
-
-        if hydrated_audio and os.path.isfile(hydrated_audio) and os.path.getsize(hydrated_audio) > 1024:
-            resolved_path = hydrated_audio
-            selected_track_name = os.path.basename(hydrated_audio)
-            res["selected_audio_track"] = selected_track_name
-            res["alignment_score"] = 0.85
-            logger.info(f"🎙️ [STEP 04] Retrieved clip's continuous extracted audio from Telegram Vault: {resolved_path}")
+    # If Telegram Vault hydration failed for all candidates and pool manager has no tracks
+    if not resolved_path:
+        err_msg = (
+            f"❌ [STEP 04 ERROR] Telegram Vault BGM hydration failed for clip '{clip_id}'. "
+            f"Candidates attempted from Telegram Vault: {candidates_to_try}. "
+            f"Unable to retrieve any valid BGM track from Telegram Storage Group. "
+            f"Please verify that audio tracks in your Telegram Storage Group are accessible "
+            f"and under 20MB (or configure TELEGRAM_API_ID / TELEGRAM_API_HASH for Pyrogram MTProto)."
+        )
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
 
     res["physical_path"] = resolved_path
 

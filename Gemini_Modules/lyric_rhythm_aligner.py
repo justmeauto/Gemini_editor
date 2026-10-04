@@ -1193,10 +1193,6 @@ def select_best_audio_for_clip(
         )
         is_curated = (
             meta.get("is_curated_library", False)
-            or c_file.lower() in [
-                "action_strike.mp3", "luxury_bass.mp3", "adventure_spark.mp3", "urban_groove.mp3",
-                "mellow_lofi.mp3", "legendary_hype.mp3", "synth_nostalgia.mp3", "tech_tempo.mp3", "chill_mission.mp3"
-            ]
             or (not is_harvested_audio and not is_own_clip_audio)
         )
         # Tier 1 = Real Curated BGM Music Library (.mp3)

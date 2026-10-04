@@ -454,20 +454,6 @@ class TelegramVaultIndexer:
         if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
             logger.info("⚡ [LOCAL DISK CACHE HIT] BGM track '%s' already on local disk — skipping Telegram download.", filename)
             return local_path
-
-        assets_path = os.path.join(_REPO_ROOT, "assets", "music", filename)
-        if os.path.exists(assets_path) and os.path.getsize(assets_path) > 1024:
-            logger.info("⚡ [ASSETS MUSIC CACHE HIT] BGM track '%s' found in assets/music — copying to destination.", filename)
-            try:
-                import shutil
-                if os.path.abspath(assets_path) != os.path.abspath(local_path):
-                    shutil.copy2(assets_path, local_path)
-                    return local_path
-                return assets_path
-            except Exception as _cp_err:
-                logger.debug("Failed copying from assets/music: %s", _cp_err)
-                return assets_path
-
         active_path = os.path.join(_REPO_ROOT, "Original_audio", "active", filename)
         if os.path.exists(active_path) and os.path.getsize(active_path) > 1024:
             logger.info("⚡ [LOCAL POOL CACHE HIT] BGM track '%s' found in active pool — copying to destination.", filename)

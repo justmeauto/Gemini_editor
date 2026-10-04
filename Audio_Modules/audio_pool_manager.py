@@ -106,8 +106,6 @@ class AudioPoolManager:
         
         self.metadata = self._load_metadata()
         self.hydrate_harvested_clip_metadata()
-        # Seed curated CC0 master tracks from assets/music/ into active/
-        self._seed_assets_music_to_active()
         # Sync any loose files that landed in root (e.g. from extract_audio_from_video)
         # into active/ so select_best_audio() can find them immediately.
         self._sync_root_to_active()
@@ -614,23 +612,6 @@ class AudioPoolManager:
                 data["file_id"] = existing["file_id"]
         data["filename"] = filename
         self.metadata["files"][filename] = data
-
-    def _seed_assets_music_to_active(self):
-        """Copies curated CC0 master tracks from assets/music/ into Original_audio/active/ if missing."""
-        assets_music_dir = os.path.join(_REPO_ROOT, "assets", "music")
-        if not os.path.isdir(assets_music_dir):
-            return
-        import shutil
-        for fname in os.listdir(assets_music_dir):
-            if fname.lower().endswith((".mp3", ".wav", ".m4a")):
-                src = os.path.join(assets_music_dir, fname)
-                dst = os.path.join(self.active_dir, fname)
-                if not os.path.exists(dst) or os.path.getsize(dst) < 1000:
-                    try:
-                        shutil.copy2(src, dst)
-                        logger.info(f"🎵 [POOL SEED] Seeded curated BGM track to active: '{fname}'")
-                    except Exception as _ce:
-                        logger.debug(f"[POOL SEED] Notice copying {fname}: {_ce}")
 
     def _sync_root_to_active(self):
         """

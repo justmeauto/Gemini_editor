@@ -54,8 +54,6 @@ gemini_routing.json
 *.avi
 *.mov
 *.flac
-!assets/music/*.mp3
-!assets/music/*.wav
 
 # AI Model weights
 models/*.caffemodel
