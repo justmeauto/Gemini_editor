@@ -22,7 +22,7 @@ import threading
 import logging
 import argparse
 import signal
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union, Set
 # ── Windows Job Object: Auto-Kill Subprocess Tree on Exit ─────────────────────
 _GLOBAL_WINDOWS_JOB_HANDLE = None
 
@@ -1260,13 +1260,38 @@ async def execute_reedit_with_directive(query, context, session_id: str, directi
                 pass
         return
 
+    # Check if directive is music-related
+    is_music_directive = any(kw in directive.lower() for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio", "beat"])
+    curr_audio = sess.get("selected_audio") if sess else None
+    if not curr_audio and clip_id:
+        try:
+            from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
+            _st = ClipIntelligenceStore(clip_id=clip_id)
+            _prev_aud = _st.get("audio_data") or {}
+            curr_audio = _prev_aud.get("selected_bgm_track") or _prev_aud.get("selected_audio_track")
+        except Exception:
+            pass
+
+    if is_music_directive and curr_audio:
+        try:
+            from Audio_Modules.rejected_audio_blacklist import add as blacklist_add
+            blacklist_add(
+                audio_filename=curr_audio,
+                audio_shortcode=clip_id,
+                reason="user_requested_music_change"
+            )
+            logger.info(f"🚫 [RE-EDIT] Added '{curr_audio}' to rejected_audio_blacklist on music re-edit request.")
+        except Exception as _bl_err:
+            logger.warning(f"Failed to blacklist rejected audio: {_bl_err}")
+
     # Non-blocking dispatch so Telegram event loop remains alive and responsive
-    logger.info(f"🚀 [RE-EDIT DISPATCH] Launching master pipeline in background worker for session '{session_id}' with input '{target_input}'")
+    logger.info(f"🚀 [RE-EDIT DISPATCH] Launching master pipeline in background worker for session '{session_id}' with input '{target_input}' (excluded_audio={curr_audio if is_music_directive else None})")
     _dispatch_pipeline_in_background(
         mode="manual",
         input_path=target_input,
         requestor_chat_id=sess.get("requestor_chat_id") or chat_id,
-        user_edit_directive=directive
+        user_edit_directive=directive,
+        excluded_audio=curr_audio if is_music_directive else None
     )
 
 
@@ -2243,7 +2268,8 @@ def run_master_pipeline(
     target_accounts: Optional[List[str]] = None,
     platform: str = "instagram",
     requestor_chat_id: Optional[int] = None,
-    user_edit_directive: Optional[str] = None
+    user_edit_directive: Optional[str] = None,
+    excluded_audio: Optional[Union[str, List[str], Set[str]]] = None
 ) -> Dict[str, Any]:
     """
     Executes End-to-End Master Pipeline across all 4 Phases.
@@ -2582,7 +2608,8 @@ def run_master_pipeline(
             input_path=input_path,
             target_dirs=target_clip_dirs,
             on_rendered_callback=_on_clip_rendered,
-            user_edit_directive=user_edit_directive
+            user_edit_directive=user_edit_directive,
+            excluded_audio=excluded_audio
         )
         rendered_master_reels = phase2_res.get("rendered_files", [])
         logger.info(f"🎬 [PHASE 2 & 3 COMPLETE] {len(rendered_master_reels)} master reel(s) ready.")

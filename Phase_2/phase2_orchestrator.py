@@ -13,7 +13,7 @@ import logging
 import importlib
 import tempfile
 import shutil
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Union, Set
 
 logger = logging.getLogger("Phase2.Orchestrator")
 
@@ -46,6 +46,7 @@ def run_phase2_pipeline(
     on_rendered_callback: Optional[Callable[[str], None]] = None,
     event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None,
     user_edit_directive: Optional[str] = None,
+    excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Executes Phase 2 Pipeline through indexed steps 01 -> 07.
@@ -267,13 +268,26 @@ def run_phase2_pipeline(
 
             exclude_bgm = set(batch_used_bgms)
             force_new_music = False
+
+            # Ingest explicitly passed excluded_audio
+            if excluded_audio:
+                force_new_music = True
+                if isinstance(excluded_audio, (list, set, tuple)):
+                    for ea in excluded_audio:
+                        if ea:
+                            exclude_bgm.add(str(ea))
+                            exclude_bgm.add(os.path.basename(str(ea)))
+                elif isinstance(excluded_audio, str) and excluded_audio.strip():
+                    exclude_bgm.add(excluded_audio.strip())
+                    exclude_bgm.add(os.path.basename(excluded_audio.strip()))
+                logger.info(f"🚫 [STEP 04] Applied explicit excluded_audio: {exclude_bgm}")
+
             if user_edit_directive:
                 d_lower = user_edit_directive.lower()
-                if any(kw in d_lower for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio"]):
+                if any(kw in d_lower for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio", "beat"]):
                     force_new_music = True
                     try:
                         from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
-                        from Audio_Modules.audio_pool_manager import AudioPoolManager
                         _st = ClipIntelligenceStore(clip_id=folder_name, clip_folder=clip_dir)
                         _prev_aud = _st.get("audio_data") or {}
                         _prev_track = _prev_aud.get("selected_bgm_track") or _prev_aud.get("selected_audio_track")
@@ -281,31 +295,6 @@ def run_phase2_pipeline(
                             exclude_bgm.add(_prev_track)
                             exclude_bgm.add(os.path.basename(_prev_track))
                             logger.info(f"🚫 [STEP 04 RE-EDIT] User requested music change! Excluding previous BGM: '{_prev_track}'")
-
-                        # ── POOL EXHAUSTION GUARD ──────────────────────────────────────────────
-                        # If excluding the previous track empties the entire pool, warn clearly
-                        # and fall back to the least-recently-used track instead of re-using the
-                        # same one silently. This happens when the pool has only 1-2 tracks.
-                        try:
-                            _pm = AudioPoolManager()
-                            _all_pool = [
-                                f for f in _pm.get_files_index().keys()
-                                if f.lower().endswith((".mp3", ".wav", ".m4a"))
-                            ]
-                            _fresh_pool = [f for f in _all_pool if f.lower() not in {e.lower() for e in exclude_bgm}]
-                            if not _fresh_pool and _all_pool:
-                                logger.warning(
-                                    f"⚠️ [STEP 04 RE-EDIT] BGM pool exhausted after exclusion "
-                                    f"(pool_size={len(_all_pool)}, excluded={len(exclude_bgm)}). "
-                                    f"Clearing exclusions and picking least-recently-used track "
-                                    f"to avoid silent same-song repeat."
-                                )
-                                exclude_bgm.clear()
-                                # Don't exclude the previous track from the batch-level set —
-                                # just allow Gemini to pick again with full pool (LRU ordering).
-                        except Exception as _pgd_err:
-                            logger.debug(f"Pool guard check notice: {_pgd_err}")
-                        # ─────────────────────────────────────────────────────────────────────
                     except Exception as _ex_err:
                         logger.debug(f"Exclusion lookup notice: {_ex_err}")
 

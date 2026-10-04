@@ -979,10 +979,24 @@ def select_best_audio_for_clip(
     disqualified_tracks = set()
     if previous_bgm:
         disqualified_tracks.add(previous_bgm.lower())
+        disqualified_tracks.add(os.path.basename(previous_bgm).lower())
     if exclude_filenames:
         for ef in exclude_filenames:
-            disqualified_tracks.add(ef.lower())
-            disqualified_tracks.add(os.path.basename(ef).lower())
+            if ef:
+                disqualified_tracks.add(str(ef).lower())
+                disqualified_tracks.add(os.path.basename(str(ef)).lower())
+
+    try:
+        from Audio_Modules.rejected_audio_blacklist import is_blacklisted as _is_bl
+    except ImportError:
+        def _is_bl(*args, **kwargs): return False
+
+    try:
+        from Telegram_Storage_Modules.telegram_http import is_mtproto_configured as _is_mtproto_ok
+    except ImportError:
+        def _is_mtproto_ok(): return False
+
+    mtproto_available = _is_mtproto_ok()
 
     try:
         from Audio_Modules.audio_pool_manager import _is_pipeline_artifact
@@ -1008,6 +1022,23 @@ def select_best_audio_for_clip(
             return True
         return False
 
+    def _is_disqualified_by_size_or_blacklist(fname, meta):
+        # 1. Permanent Blacklist check
+        fid = meta.get("file_id") or meta.get("telegram_file_id")
+        if _is_bl(audio_filename=fname, telegram_file_id=fid):
+            logger.info(f"🚫 [BGM Selector] Track '{fname}' is in rejected_audio_blacklist — excluding.")
+            return True
+        # 2. Over 20MB check when MTProto is unconfigured
+        fsize = meta.get("file_size") or 0
+        try:
+            fsize_f = float(fsize)
+            if fsize_f > 20 * 1024 * 1024 and not mtproto_available:
+                logger.info(f"🚫 [BGM Selector] Track '{fname}' is {fsize_f/(1024*1024):.1f}MB (>20MB) and MTProto is unconfigured — excluding.")
+                return True
+        except (ValueError, TypeError):
+            pass
+        return False
+
     def _is_too_short(fname, meta):
         if not isinstance(meta, dict):
             return False
@@ -1023,6 +1054,7 @@ def select_best_audio_for_clip(
             repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             search_paths = [
                 fname,
+                os.path.join(repo_root, "assets", "music", fname),
                 os.path.join(repo_root, "Original_audio", "active", fname),
                 os.path.join(repo_root, "Original_audio", fname),
             ]
@@ -1064,6 +1096,7 @@ def select_best_audio_for_clip(
         and not _is_noisy_or_unusable(fname, meta)
         and not _is_pipeline_artifact(fname)
         and not _is_too_short(fname, meta)
+        and not _is_disqualified_by_size_or_blacklist(fname, meta)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
@@ -1156,30 +1189,46 @@ def select_best_audio_for_clip(
             or c_file.lower().startswith("bgm_manual_")
             or c_file.lower().startswith("sess_")
             or c_file.lower().startswith("vault_bgm_")
+            or (c_file.lower().endswith(".wav") and not meta.get("is_curated_library", False))
         )
-        # Tier 1 = Real BGM Music Library (.mp3)
-        # Tier 2 = Harvested Audio from OTHER clips
-        # Tier 3 = Harvested Audio from THIS CURRENT clip (last resort)
-        tier = 1 if not is_harvested_audio else (2 if not is_own_clip_audio else 3)
-        is_self_audio = (tier == 3)
+        is_curated = (
+            meta.get("is_curated_library", False)
+            or c_file.lower() in [
+                "action_strike.mp3", "luxury_bass.mp3", "adventure_spark.mp3", "urban_groove.mp3",
+                "mellow_lofi.mp3", "legendary_hype.mp3", "synth_nostalgia.mp3", "tech_tempo.mp3", "chill_mission.mp3"
+            ]
+            or (not is_harvested_audio and not is_own_clip_audio)
+        )
+        # Tier 1 = Real Curated BGM Music Library (.mp3)
+        # Tier 2 = Other non-harvested external audio
+        # Tier 3 = Harvested Audio from OTHER clips
+        # Tier 4 = Harvested Audio from THIS CURRENT clip
+        if is_own_clip_audio:
+            tier = 4
+        elif is_curated:
+            tier = 1
+        elif not is_harvested_audio:
+            tier = 2
+        else:
+            tier = 3
 
         hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
         recency_penalty = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
-        usage_penalty = 1.0 / (1.0 + u_count * 0.25)
-        self_discount = 0.05 if tier == 3 else (0.40 if tier == 2 else 1.0)
+        usage_penalty = 1.0 / (1.0 + (float(u_count) ** 2) * 1.5) if u_count > 0 else 1.0
+        tier_discount = 1.0 if tier == 1 else (0.70 if tier == 2 else (0.25 if tier == 3 else 0.01))
 
         bpm_match = max(0.0, 1.0 - (abs(clip_bpm - c_bpm) / 100.0))
         emotion_match = 1.0 if c_emotion in clip_tone or clip_tone in c_emotion else 0.5
-        math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * self_discount
+        math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * tier_discount
 
-        self_tag = " [CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]" if tier == 3 else (" [HARVESTED AUDIO FROM OTHER CLIP]" if tier == 2 else "")
+        tier_tag = " [CURATED MASTER BGM]" if tier == 1 else (" [HARVESTED AUDIO]" if tier == 3 else "")
 
         c_fid = str(meta.get("file_id") or "")
         fid_tag = f", telegram_file_id='{c_fid}'" if c_fid else ""
 
         candidate_scores.append((math_score, c_file, tier, c_fid))
         candidate_lines[c_file] = (
-            f"- '{c_file}'{self_tag}{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
+            f"- '{c_file}'{tier_tag}{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
@@ -1187,14 +1236,22 @@ def select_best_audio_for_clip(
     tier1 = [c for c in candidate_scores if c[2] == 1]
     tier2 = [c for c in candidate_scores if c[2] == 2]
     tier3 = [c for c in candidate_scores if c[2] == 3]
+    tier4 = [c for c in candidate_scores if c[2] == 4]
 
     # Apply small diversity jitter (0.0 to 0.03) for tracks with near-identical scores to avoid deterministic repetition
     tier1.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
     tier2.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
     tier3.sort(key=lambda x: x[0], reverse=True)
 
-    # Allow up to 20 candidate tracks into Gemini context (15 tier-1 + 4 tier-2 + 1 tier-3 fallback)
-    top_candidates = (tier1[:15] + tier2[:4] + tier3[:1]) if tier1 else (tier2[:19] + tier3[:1])
+    # When curated Tier-1 tracks exist, NEVER pollute Gemini prompt with the clip's ambient audio
+    if tier1:
+        top_candidates = tier1[:15] + tier2[:3]
+    elif tier2:
+        top_candidates = tier2[:15] + tier3[:3]
+    elif tier3:
+        top_candidates = tier3[:15]
+    else:
+        top_candidates = tier4[:1]
 
     non_disqualified_top = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
     if non_disqualified_top:
@@ -1218,16 +1275,15 @@ def select_best_audio_for_clip(
     candidates_str = "\n".join(top_lines)
     forbidden_str = ", ".join([f"'{t}'" for t in sorted(effective_disqualified)]) or "None"
 
-    num_external = len(tier1[:15]) if tier1 else len(tier2[:19])
+    num_external = len(top_candidates)
     prompt = f"""You are an Expert BGM Music Selector for short-form video reels.
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
-- STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
-- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{num_external}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
-- LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
-- Prioritize musical style, emotional vibe, and BPM alignment with the video.
-- PREFER FRESH & RARELY USED TRACKS (WITH HIGH CONFIDENCE OVERRIDE): Favor tracks with longer 'last_used' time and lower 'usage_count' to maintain diversity. HOWEVER, if a track is a perfect musical/visual fit with alignment confidence ≥ 90% (0.90+ match for BPM, mood, and rhythm), that high alignment confidence OVERRIDES recency preference and the track may be selected.
+- STRICT NOISE REJECTION: STRICTLY REJECT any audio corrupted by speech, crowd babble, shouting, camera clicks, horn blares, or environmental noise. Select ONLY clean, studio-quality, high-energy musical tracks.
+- Select the single best studio music track from the candidates below that matches the reel's mood, rhythm, and pacing.
+- PREFER FRESH & RARELY USED TRACKS: Favor tracks with longer 'last_used' time and lower 'usage_count' to maintain diversity.
+- Return the exact filename in 'selected_audio_track'.
 - Do NOT reference past clips — judge purely on the clip context and track metadata below.
 
 [FORBIDDEN TRACKS — DO NOT SELECT]
@@ -1240,7 +1296,7 @@ Rules:
 - Target BPM: {clip_bpm}
 - Speech mode: '{current_audio.get('context', {}).get('speech_mode', 'on_camera_dialogue')}'
 
-[TOP-10 CANDIDATE MUSIC TRACKS]
+[TOP CANDIDATE MUSIC TRACKS]
 {candidates_str}
 
 Return ONLY valid JSON:
@@ -1274,7 +1330,6 @@ Return ONLY valid JSON:
                 win_track = data.get("selected_audio_track")
                 win_fid = data.get("telegram_file_id")
                 # Validate Gemini's pick against ALL valid pools:
-                # available_candidates (outer), top_candidates list, and all_candidates (pre-cooldown)
                 all_valid_names = (
                     set(c.lower() for c in available_candidates)
                     | set(c[1].lower() for c in top_candidates)
@@ -1298,20 +1353,23 @@ Return ONLY valid JSON:
         selected_file_id = best_math_fid
         logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to smart math match: {e}")
 
+    # Compute backup candidates for resilient Step 04 failover
+    backup_candidates = [
+        c[1] for c in candidate_scores
+        if c[1] != selected_track and c[1].lower() not in effective_disqualified
+    ][:5]
+
     store.patch_bgm_selection(clip_data, selected_track, reasoning, alignment_score)
     store.save(clip_id, clip_data, clip_folder)
 
-    try:
-        from Audio_Modules.audio_pool_manager import AudioPoolManager
-        AudioPoolManager().use_audio(selected_track)
-    except Exception as _pe:
-        logger.warning(f"🎶 [BGM Selector] Could not register usage with AudioPoolManager: {_pe}")
+    # Note: Usage is registered in Step 04 only after physical verification on disk!
 
     return {
         "selected_audio_track": selected_track,
         "telegram_file_id": selected_file_id,
         "alignment_score": alignment_score,
         "reasoning": reasoning,
+        "backup_candidates": backup_candidates,
     }
 
 

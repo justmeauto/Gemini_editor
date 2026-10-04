@@ -20,7 +20,7 @@ import sys
 import json
 import logging
 import argparse
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Union, Set
 
 # Configure Logging
 logging.basicConfig(
@@ -57,6 +57,7 @@ def run_phase2_orchestration(
     skip_existing: bool = False,
     on_rendered_callback: Optional[Callable[[str], None]] = None,
     user_edit_directive: Optional[str] = None,
+    excluded_audio: Optional[Union[str, List[str], Set[str]]] = None,
 ) -> Dict[str, Any]:
     """
     Delegates Phase 2 Master AI Editing Pipeline to Phase_2.phase2_orchestrator.
@@ -70,6 +71,7 @@ def run_phase2_orchestration(
         skip_existing=skip_existing,
         on_rendered_callback=on_rendered_callback,
         user_edit_directive=user_edit_directive,
+        excluded_audio=excluded_audio,
     )
 
 

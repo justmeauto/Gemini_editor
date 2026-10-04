@@ -85,47 +85,64 @@ def select_clip_bgm(
         exclude_filenames=exclude_filenames
     )
     selected_track_name = res.get("selected_audio_track")
+    backup_candidates = res.get("backup_candidates") or []
 
     # Resolve physical path
     resolved_path = None
     target_dest = clip_folder if (clip_folder and os.path.exists(clip_folder)) else os.path.join(_REPO_ROOT, "data", "runtime_audio")
     os.makedirs(target_dest, exist_ok=True)
 
+    candidates_to_try = []
     if selected_track_name:
-        # Pass Gemini's selection directly to Telegram Vault Indexer to retrieve the audio
-        try:
-            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-            vault = TelegramVaultIndexer()
-            selected_fid = res.get("telegram_file_id")
-            resolved_path = vault.hydrate_bgm_track_from_vault(
-                selected_track_name,
-                target_dest,
-                file_id=selected_fid
-            )
-            if resolved_path and os.path.isfile(resolved_path):
-                logger.info(f"✓ [STEP 04] BGM track retrieved via Telegram Vault Indexer: '{selected_track_name}' -> {resolved_path}")
-        except Exception as _vh_err:
-            logger.debug(f"[STEP 04] Vault BGM track hydration notice: {_vh_err}")
+        candidates_to_try.append(selected_track_name)
+    for c in backup_candidates:
+        if c and c not in candidates_to_try:
+            candidates_to_try.append(c)
 
-    # Fallback to pool manager ONLY if Gemini returned no track selection at all
-    if not selected_track_name:
-        logger.warning("⚠️ [STEP 04] Gemini returned no track selection. Resorting to pool manager emergency fallback.")
+    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+    vault = TelegramVaultIndexer()
+
+    for cand_name in candidates_to_try:
+        try:
+            cand_fid = res.get("telegram_file_id") if cand_name == selected_track_name else None
+            resolved_path = vault.hydrate_bgm_track_from_vault(
+                cand_name,
+                target_dest,
+                file_id=cand_fid
+            )
+            if resolved_path and os.path.isfile(resolved_path) and os.path.getsize(resolved_path) > 1024:
+                selected_track_name = cand_name
+                res["selected_audio_track"] = selected_track_name
+                logger.info(f"✓ [STEP 04] BGM track retrieved and verified: '{selected_track_name}' -> {resolved_path}")
+                break
+            else:
+                logger.warning(f"⚠️ [STEP 04] Failed to hydrate BGM candidate '{cand_name}'. Trying next candidate...")
+                resolved_path = None
+        except Exception as _vh_err:
+            logger.debug(f"[STEP 04] Vault BGM track hydration notice for '{cand_name}': {_vh_err}")
+            resolved_path = None
+
+    # Fallback to pool manager if Gemini's primary and backup candidates failed to hydrate
+    if not resolved_path:
+        logger.warning("⚠️ [STEP 04] Primary and backup candidates unavailable. Resorting to pool manager emergency fallback.")
         try:
             pool = AudioPoolManager(base_dir=audio_dir)
-            resolved_path = pool.select_best_audio(exclude_filenames=exclude_filenames)
-            if resolved_path:
+            all_excludes = set(exclude_filenames or set()) | set(candidates_to_try)
+            resolved_path = pool.select_best_audio(exclude_filenames=all_excludes)
+            if resolved_path and os.path.isfile(resolved_path) and os.path.getsize(resolved_path) > 1024:
                 selected_track_name = os.path.basename(resolved_path)
                 res["selected_audio_track"] = selected_track_name
                 res["alignment_score"] = res.get("alignment_score") or 0.80
+                logger.info(f"✓ [STEP 04] Pool manager fallback succeeded: '{selected_track_name}' -> {resolved_path}")
+            else:
+                resolved_path = None
         except Exception as pool_err:
             logger.warning(f"⚠️ [STEP 04] BGM pool manager fallback notice: {pool_err}")
 
-    # Fallback to clip's clean continuous extracted audio retrieved directly from Telegram Vault
+    # Fallback to clip's clean continuous extracted audio retrieved directly from Telegram Vault (LAST RESORT)
     if not resolved_path and clip_folder:
         clean_sc = (clip_id or os.path.basename(clip_folder)).replace("manual_", "").strip() or "clip"
         try:
-            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-            vault = TelegramVaultIndexer()
             hydrated_audio = vault.hydrate_extracted_audio_from_vault(clean_sc, dest_dir=clip_folder)
             if not hydrated_audio and clip_id:
                 hydrated_audio = vault.hydrate_extracted_audio_from_vault(clip_id, dest_dir=clip_folder)
@@ -142,8 +159,8 @@ def select_clip_bgm(
 
     res["physical_path"] = resolved_path
 
-    # Save selected BGM track choice to ClipIntelligenceStore
-    if selected_track_name:
+    # Save selected BGM track choice to ClipIntelligenceStore & update usage count
+    if resolved_path and selected_track_name:
         try:
             from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
             store = ClipIntelligenceStore(clip_id=clip_id, clip_folder=clip_folder)
@@ -161,9 +178,11 @@ def select_clip_bgm(
                 alignment_score=res.get("alignment_score", 0.85),
                 reasoning=res.get("reasoning", "")
             )
+            # Only increment usage counter if track physically exists on disk and is not harvested audio
+            if not selected_track_name.startswith("extracted_") and not selected_track_name.startswith("telegram_"):
+                pm.use_audio(selected_track_name)
         except Exception as _st_err:
-            logger.warning(f"[STEP 04] ⚠️ Failed to record BGM selection in ClipIntelligenceStore / AudioPoolManager — "
-                           f"selected_audio will NOT be persisted and rejection purge will be blind: {_st_err}")
+            logger.warning(f"[STEP 04] ⚠️ Failed to record BGM selection in ClipIntelligenceStore / AudioPoolManager: {_st_err}")
 
     logger.info(
         f"✓ [STEP 04 SUCCESS] BGM Selected: '{selected_track_name}' "

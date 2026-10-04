@@ -101,8 +101,19 @@ def _group_id() -> str:
     return g
 
 
-def _api_url(method: str) -> str:
-    return f"https://api.telegram.org/bot{_token()}/{method}"
+def is_mtproto_configured() -> bool:
+    """Returns True if valid TELEGRAM_API_ID and TELEGRAM_API_HASH are configured for MTProto."""
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    if not api_id or not api_hash:
+        return False
+    clean_id = str(api_id).strip()
+    clean_hash = str(api_hash).strip()
+    if clean_id in ("", "6", "dummy", "None", "0"):
+        return False
+    if clean_hash in ("", "dummy", "None", "dummy_hash"):
+        return False
+    return True
 
 
 # ── UPLOAD ────────────────────────────────────────────────────────────────────
@@ -134,11 +145,11 @@ def upload_file_with_pyrogram(
         from pyrogram import Client
 
         token = _token()
-        api_id = os.getenv("TELEGRAM_API_ID")
-        api_hash = os.getenv("TELEGRAM_API_HASH")
-        if not api_id or not api_hash or str(api_id).strip() == "6":
+        if not is_mtproto_configured():
             logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto upload.")
             return None
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
 
         async def _async_upload():
             async with Client(
@@ -308,6 +319,10 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
     Bypasses Telegram Bot API getFile size restrictions up to 2GB.
     """
     logger.info("[telegram_http] Initiating Pyrogram MTProto download for large file_id=%s...", file_id[:12])
+    if not is_mtproto_configured():
+        logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto download.")
+        return False
+
     try:
         _ensure_event_loop()
         from pyrogram import Client
@@ -315,9 +330,6 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
         token = _token()
         api_id = os.getenv("TELEGRAM_API_ID")
         api_hash = os.getenv("TELEGRAM_API_HASH")
-        if not api_id or not api_hash or str(api_id).strip() == "6":
-            logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto download.")
-            return False
 
         async def _async_download():
             async with Client(
@@ -369,11 +381,16 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
             timeout=15,
         )
         if r.status_code == 400:
+            if not is_mtproto_configured():
+                logger.warning("[telegram_http] 20MB getFile limit hit for file_id=%s and MTProto is not configured. Download impossible via Bot API.", file_id[:12])
+                return False
             logger.warning("[telegram_http] 20MB getFile limit hit for file_id=%s. Switching to Pyrogram MTProto fallback...", file_id[:12])
             return _download_with_pyrogram(file_id, dest_path)
         r.raise_for_status()
         body = r.json()
         if not body.get("ok"):
+            if not is_mtproto_configured():
+                return False
             return _download_with_pyrogram(file_id, dest_path)
         dl_url = f"https://api.telegram.org/file/bot{token}/{body['result']['file_path']}"
         os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
@@ -399,6 +416,8 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read().decode())
             if not body.get("ok"):
+                if not is_mtproto_configured():
+                    return False
                 return _download_with_pyrogram(file_id, dest_path)
             dl_url = f"https://api.telegram.org/file/bot{token}/{body['result']['file_path']}"
             os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
@@ -410,6 +429,9 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
             return True
         except urllib.error.HTTPError as he:
             if he.code == 400:
+                if not is_mtproto_configured():
+                    logger.warning("[telegram_http] 20MB getFile limit (urllib) hit for file_id=%s and MTProto is not configured. Download impossible via Bot API.", file_id[:12])
+                    return False
                 logger.warning("[telegram_http] 20MB getFile limit (urllib) hit for file_id=%s. Switching to Pyrogram MTProto fallback...", file_id[:12])
                 return _download_with_pyrogram(file_id, dest_path)
             if attempt == 3:
@@ -419,7 +441,9 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
                 logger.warning("[telegram_http] download failed: %s", e)
             time.sleep(1.0)
 
-    return _download_with_pyrogram(file_id, dest_path)
+    if is_mtproto_configured():
+        return _download_with_pyrogram(file_id, dest_path)
+    return False
 
 
 # ── PIN / CHAT ─────────────────────────────────────────────────────────────────

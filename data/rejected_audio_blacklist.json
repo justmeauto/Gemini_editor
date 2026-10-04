@@ -224,6 +224,20 @@
       "telegram_file_id": "",
       "reason": "admin_rejected",
       "blacklisted_at": 1791046753.8040636
+    },
+    "telegram_7822881619_1790984293.wav": {
+      "filename": "telegram_7822881619_1790984293.wav",
+      "shortcode": "telegram_7822881619_1790984293",
+      "telegram_file_id": "BQACAgUAAyEG",
+      "reason": "oversized_20mb_bot_api_rejected",
+      "blacklisted_at": 1791146659.0
+    },
+    "telegram_7822881619_1790984293": {
+      "filename": "telegram_7822881619_1790984293.wav",
+      "shortcode": "telegram_7822881619_1790984293",
+      "telegram_file_id": "BQACAgUAAyEG",
+      "reason": "oversized_20mb_bot_api_rejected",
+      "blacklisted_at": 1791146659.0
     }
   }
 }
