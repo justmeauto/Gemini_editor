@@ -53,49 +53,32 @@ def _run_music_driven_fallback(
     target_duration: float = 15.0,
 ) -> Dict[str, Any]:
     """
-    Offline DSP fallback using MusicDrivenEditor & FFmpeg when Gemini Call 3 API is unavailable.
+    Offline DSP fallback using FFmpegCommandGenerator single-pass synthesis when Gemini Call 3 API is unavailable.
     """
-    logger.info(f"🎧 [STEP 06 FALLBACK] Activating MusicDrivenEditor offline DSP engine for: {os.path.basename(video_path)}")
+    logger.info(f"🎧 [STEP 06 FALLBACK] Activating single-pass offline DSP engine for: {os.path.basename(video_path)}")
     try:
-        from Audio_Modules.music_manager import MusicManager
-        mm = MusicManager()
-    except ImportError:
-        logger.warning("MusicManager import fallback notice")
-
-    shots = micro_shots or [{"start": 0.0, "end": target_duration}]
-    inputs = []
-    filter_parts = []
-
-    for i, s in enumerate(shots):
-        st = float(s.get("start", 0.0))
-        en = float(s.get("end", st + 3.0))
-        dur = max(0.5, en - st)
-        inputs.extend(["-ss", f"{st:.3f}", "-t", f"{dur:.3f}", "-i", video_path])
-        filter_parts.append(f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[v{i}];")
-
-    concat_inputs = "".join([f"[v{i}]" for i in range(len(shots))])
-    filter_graph = "".join(filter_parts) + f"{concat_inputs}concat=n={len(shots)}:v=1:a=0[vout]"
-
-    cmd = ["ffmpeg", "-y"] + inputs
-    if selected_bgm_path and os.path.exists(selected_bgm_path):
-        cmd.extend(["-i", selected_bgm_path])
-        bgm_idx = len(shots)
-        filter_graph += f";[{bgm_idx}:a]volume=0.5[aout]"
-    else:
-        cmd.extend(["-filter_complex", filter_graph, "-map", "[vout]"])
-
-    cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "main", "-movflags", "+faststart"])
-    if selected_bgm_path and os.path.exists(selected_bgm_path):
-        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2"])
-    cmd.append(output_path)
-
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode == 0 and os.path.exists(output_path):
-        logger.info(f"✅ [STEP 06 FALLBACK SUCCESS] MusicDrivenEditor rendered fallback master reel -> {output_path}")
-        return {"status": "SUCCESS", "mode": "DSP_FALLBACK", "output_path": output_path}
-    else:
-        logger.error(f"❌ [STEP 06 FALLBACK FAILED] FFmpeg fallback error: {res.stderr[:200]}")
-        return {"status": "FAILED", "mode": "DSP_FALLBACK", "error": res.stderr}
+        from Gemini_Modules.gemini_ffmpeg_synthesis import FFmpegCommandGenerator
+        gen = FFmpegCommandGenerator()
+        extra_inputs = {"micro_shots": micro_shots or []}
+        fallback_plan = gen.build_single_pass_filtergraph(
+            input_path=video_path,
+            output_path=output_path,
+            bgm_path=selected_bgm_path,
+            extra_inputs=extra_inputs,
+            gemini_operations=[]
+        )
+        cmd = fallback_plan["cmd_list"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            logger.info(f"✅ [STEP 06 FALLBACK SUCCESS] Rendered fallback master reel -> {output_path} ({os.path.getsize(output_path)} bytes)")
+            return {"status": "SUCCESS", "mode": "DSP_FALLBACK", "output_path": output_path}
+        else:
+            err_msg = res.stderr[:300] if res.stderr else "Output missing or empty stub"
+            logger.error(f"❌ [STEP 06 FALLBACK FAILED] FFmpeg fallback error: {err_msg}")
+            return {"status": "FAILED", "mode": "DSP_FALLBACK", "error": err_msg}
+    except Exception as e:
+        logger.error(f"❌ [STEP 06 FALLBACK EXCEPTION] {e}")
+        return {"status": "FAILED", "mode": "DSP_FALLBACK", "error": str(e)}
 
 
 def synthesize_editing_plan(

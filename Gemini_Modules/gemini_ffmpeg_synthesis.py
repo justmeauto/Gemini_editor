@@ -392,6 +392,7 @@ class FFmpegCommandGenerator:
         self.ffprobe_path = "ffprobe"
         self.hwaccel = hwaccel.lower() if hwaccel else None
         self._audio_stream_cache: Dict[str, bool] = {}
+        self._media_props_cache: Dict[str, Dict[str, Any]] = {}
 
     def _get_encoder_flags(
         self,
@@ -427,7 +428,8 @@ class FFmpegCommandGenerator:
         if not os.path.exists(path):
             return getattr(self, "_root_input_has_audio", True)
         try:
-            cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "json", path]
+            ffprobe_bin = getattr(self, "ffprobe_path", "ffprobe")
+            cmd = [ffprobe_bin, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "json", path]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             data = json.loads(res.stdout)
             has_a = bool(data.get("streams"))
@@ -435,6 +437,42 @@ class FFmpegCommandGenerator:
             return has_a
         except Exception:
             return getattr(self, "_root_input_has_audio", True)
+
+    def _get_media_properties(self, path: str) -> Dict[str, Any]:
+        """Probes container and streams to extract format duration, dimensions, and stream availability."""
+        if not path or not os.path.exists(path):
+            return {"duration": 0.0, "has_audio": False, "has_video": False, "width": 0, "height": 0}
+        if path in self._media_props_cache:
+            return self._media_props_cache[path]
+        props = {"duration": 0.0, "has_audio": False, "has_video": False, "width": 0, "height": 0}
+        try:
+            ffprobe_bin = getattr(self, "ffprobe_path", "ffprobe")
+            cmd = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", path]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            data = json.loads(res.stdout)
+            format_dur = data.get("format", {}).get("duration")
+            if format_dur is not None:
+                try:
+                    props["duration"] = float(format_dur)
+                except (ValueError, TypeError):
+                    pass
+            for st in data.get("streams", []):
+                ctype = st.get("codec_type")
+                if ctype == "video":
+                    props["has_video"] = True
+                    props["width"] = int(st.get("width") or 0)
+                    props["height"] = int(st.get("height") or 0)
+                elif ctype == "audio":
+                    props["has_audio"] = True
+                    self._audio_stream_cache[path] = True
+            self._media_props_cache[path] = props
+        except Exception as e:
+            logger.debug(f"Media probe error for {path}: {e}")
+        return props
+
+    def _get_media_duration(self, path: str) -> float:
+        """Returns the media duration in seconds (0.0 if invalid or unreadable)."""
+        return self._get_media_properties(path).get("duration", 0.0)
 
     def build_trim_command(self, input_path, output_path, start_time=0.0, end_time=None, duration=None, exact=True, reencode=True, encoding_cfg=None, enforce_min_duration=True):
         # ── MINIMUM DURATION MANDATE (>= 5.0s) GUARD ─────────────────────────
@@ -683,7 +721,18 @@ class FFmpegCommandGenerator:
         Always includes -shortest to prevent final frame freezing on duration mismatch.
         """
         has_video_audio = self._has_audio_stream(video_input)
-        bgm_filter = f"atrim=start={audio_start_time:.4f},asetpts=PTS-STARTPTS,volume={music_volume}" if audio_start_time > 0.0 else f"volume={music_volume}"
+        bgm_dur = self._get_media_duration(music_input)
+        if bgm_dur > 0:
+            if audio_start_time >= bgm_dur:
+                logger.warning(f"⚠️ [BGM_MIX] Clamping audio_start_time ({audio_start_time:.2f}s >= BGM dur {bgm_dur:.2f}s) -> 0.0s")
+                audio_start_time = 0.0
+            elif audio_start_time > max(0.0, bgm_dur - 2.0):
+                audio_start_time = max(0.0, bgm_dur - 2.0)
+
+        if audio_start_time > 0.0:
+            bgm_filter = f"aloop=loop=-1:size=2e+09,atrim=start={audio_start_time:.4f},asetpts=PTS-STARTPTS,volume={music_volume}"
+        else:
+            bgm_filter = f"aloop=loop=-1:size=2e+09,asetpts=PTS-STARTPTS,volume={music_volume}"
         if has_video_audio:
             filter_complex = (
                 f"[0:a]volume={video_volume}[aorig];"
@@ -867,6 +916,16 @@ class FFmpegCommandGenerator:
                 audio_start_time = max(0.0, float(extra_inputs.get("audio_start_time")))
             except (TypeError, ValueError):
                 pass
+
+        if bgm_idx is not None and bgm_path:
+            bgm_dur = self._get_media_duration(bgm_path)
+            if bgm_dur > 0:
+                if audio_start_time >= bgm_dur:
+                    logger.warning(f"⚠️ [SINGLE-PASS] Clamping audio_start_time ({audio_start_time:.2f}s >= BGM dur {bgm_dur:.2f}s) -> 0.0s")
+                    audio_start_time = 0.0
+                elif audio_start_time > max(0.0, bgm_dur - 2.0):
+                    logger.warning(f"⚠️ [SINGLE-PASS] Clamping audio_start_time ({audio_start_time:.2f}s near BGM EOF {bgm_dur:.2f}s) -> {max(0.0, bgm_dur - 2.0):.2f}s")
+                    audio_start_time = max(0.0, bgm_dur - 2.0)
 
         # NOTE: DO NOT re-raise video_volume when no BGM — that caused sticky audio.
 
@@ -1193,28 +1252,40 @@ class FFmpegCommandGenerator:
         if has_bgm:
             logger.info(f"🎵 [SINGLE-PASS AUDIO] BGM atrim: start={audio_start_time:.2f}s, dur={total_visual_dur:.2f}s, vol={music_volume:.2f}")
 
+        # Construct hardened BGM stream expression:
+        # 1. aloop ensures infinite samples so -shortest only triggers when video ends.
+        # 2. atrim cues audio at audio_start_time for total_visual_dur.
+        # 3. asetpts resets timestamps to 0.
+        # 4. apad pads silence to whole_dur in case anything falls short, guaranteeing non-zero packets.
+        bgm_chain = (
+            f"[{bgm_idx}:a]aloop=loop=-1:size=2e+09,"
+            f"atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},"
+            f"asetpts=PTS-STARTPTS,"
+            f"apad=whole_dur={total_visual_dur:.4f}"
+        )
+
         if has_bgm and has_vo and has_src:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"{bgm_chain},volume={min(music_volume, 0.25):.2f}[bgm_v];"
                 f"[ac]volume=0.20[ac_v];"
                 f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
                 f"[bgm_v][ac_v][vo_v]amix=inputs=3:duration=first:dropout_transition=2[aout]"
             )
         elif has_bgm and has_vo:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={min(music_volume, 0.25):.2f}[bgm_v];"
+                f"{bgm_chain},volume={min(music_volume, 0.25):.2f}[bgm_v];"
                 f"[{vo_idx}:a]asetpts=PTS-STARTPTS,volume=1.00[vo_v];"
                 f"[bgm_v][vo_v]amix=inputs=2:duration=first:dropout_transition=2[aout]"
             )
         elif has_bgm and has_src and video_volume > 0.01:
             filter_parts.append(
                 f"[ac]volume={video_volume:.2f}[ac_v];"
-                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[bgm_v];"
+                f"{bgm_chain},volume={music_volume:.2f}[bgm_v];"
                 f"[ac_v][bgm_v]amix=inputs=2:duration=first[aout]"
             )
         elif has_bgm:
             filter_parts.append(
-                f"[{bgm_idx}:a]atrim=start={audio_start_time:.4f}:duration={total_visual_dur:.4f},asetpts=PTS-STARTPTS,volume={music_volume:.2f}[aout]"
+                f"{bgm_chain},volume={music_volume:.2f}[aout]"
             )
         elif has_vo and has_src:
             filter_parts.append(
@@ -1666,6 +1737,29 @@ class GeminiFFmpegEngine:
                     "1. Strictly resolve the human feedback directive above.\n"
                     "2. Only modify cuts or music if explicitly requested or needed to satisfy the directive.\n\n"
                 )
+        # ── Probe Physical Media Boundaries (Strict Reality Canvas) ─────────────
+        v_props = self.cmd_generator._get_media_properties(video_path) if video_path else {}
+        v_dur = v_props.get("duration", 0.0)
+        v_w = v_props.get("width", 1080)
+        v_h = v_props.get("height", 1920)
+
+        bgm_target = (extra_inputs or {}).get("music") or (extra_inputs or {}).get("bgm") or audio_path
+        bgm_dur = self.cmd_generator._get_media_duration(bgm_target) if bgm_target else 0.0
+        max_cue_time = max(0.0, bgm_dur - 2.0) if bgm_dur > 2.0 else 0.0
+
+        canvas_info = {
+            "source_video_duration_seconds": round(v_dur, 2),
+            "source_resolution": f"{v_w}x{v_h}",
+            "bgm_audio_duration_seconds": round(bgm_dur, 2),
+            "max_permitted_audio_start_time_seconds": round(max_cue_time, 2)
+        }
+        prompt_parts.append(
+            f"### PHYSICAL MEDIA BOUNDARIES & CANVAS LIMITS\n"
+            f"{json.dumps(canvas_info, indent=2)}\n"
+            f"CANVAS DIRECTIVE: You have complete creative and artistic freedom over visual cuts, pacing, speed ramps, and styling. "
+            f"Ground your choices in these physical boundaries: ensure visual trims do not exceed {v_dur:.1f}s, and 'audio_start_time' does not exceed {max_cue_time:.1f}s.\n\n"
+        )
+
         prompt_parts.append(f"### Video Semantic & Motion/Beat Context\n{json.dumps(video_context, indent=2, default=str)}\n")
 
         if forensic_context:
@@ -1683,13 +1777,14 @@ class GeminiFFmpegEngine:
                 "shot_directives": lyric_intel.get("shot_directives", []),
                 "lyrics_sample": lyric_intel.get("lyrics", [])[:6]
             }
+            cue_example = f"e.g. at 5.0s, {min(12.0, max_cue_time):.1f}s, or {max_cue_time:.1f}s" if max_cue_time > 0 else "e.g. at 0.0s"
             prompt_parts.append(
                 f"### Audio Lyric & Rhythm Context (Musical Sections & Energy Grid)\n"
                 f"{json.dumps(lyric_summary, indent=2, default=str)}\n"
                 f"AUDIO INTELLIGENCE DIRECTIVE (AUDIO START SELECTION):\n"
                 f"- Examine the musical sections (e.g. intro, verse, chorus, drop) and emotional peak moments above.\n"
-                f"- Professional editors do NOT start every song from 0.0s! Choose the highest energy musical section (such as the chorus or drop point, e.g. at 12.0s, 15.5s, 24.0s) to match the visual hook.\n"
-                f"- You MUST specify 'audio_start_time' in your 'bgm_mix' operation to cue the audio at that exact timestamp.\n\n"
+                f"- Professional editors do NOT start every song from 0.0s! Choose the highest energy musical section (such as the chorus or drop point, {cue_example}) to match the visual hook.\n"
+                f"- You MUST specify 'audio_start_time' in your 'bgm_mix' operation to cue the audio (within 0.0s to {max_cue_time:.1f}s).\n\n"
             )
 
         # ── RTB Mathematical Audio Rhythm & Beat-Snapped Grid ────────────────────
@@ -1897,13 +1992,22 @@ class GeminiFFmpegEngine:
             "rag_examples_count": len(rag_examples)
         }
 
-    def _normalize_gemini_json(self, gemini_json: Dict[str, Any]) -> Dict[str, Any]:
-        """Auto-correct common LLM enum synonyms and filter unsupported operations before schema validation."""
+    def _normalize_gemini_json(
+        self,
+        gemini_json: Dict[str, Any],
+        input_path: Optional[str] = None,
+        extra_inputs: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Auto-correct common LLM enum synonyms, mathematically clamp parameters, and filter unsupported operations."""
         if not isinstance(gemini_json, dict):
             return gemini_json
 
         valid_ops = {"trim", "scale_aspect", "speed_change", "speed_ramp", "watermark_overlay", "drawtext", "brand_watermark", "text_watermark",
                      "delogo_blur", "audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix", "subtitle_burnin", "concat", "transition", "xfade"}
+
+        v_dur = self.cmd_generator._get_media_duration(input_path) if input_path and os.path.exists(input_path) else 0.0
+        bgm_cand = (extra_inputs or {}).get("music") or (extra_inputs or {}).get("bgm")
+        bgm_dur = self.cmd_generator._get_media_duration(bgm_cand) if bgm_cand and os.path.exists(bgm_cand) else 0.0
 
         ops = gemini_json.get("operations", [])
         clean_ops = []
@@ -1925,6 +2029,31 @@ class GeminiFFmpegEngine:
                             op["operation_type"] = "drawtext"
                         elif op_str in ("fashion_caption", "caption", "text_overlay", "subtitles", "subtitle", "title_caption", "custom_caption", "overlay_text") or op_str.endswith("_caption") or op_str.endswith("_subtitles"):
                             op["operation_type"] = "subtitle_burnin"
+
+                    norm_type = op.get("operation_type")
+
+                    # Mathematical Boundary Normalization for Trims
+                    if norm_type == "trim" and v_dur > 0:
+                        try:
+                            st = max(0.0, float(op.get("start_time", 0.0)))
+                            en = float(op.get("end_time", v_dur))
+                            st = min(st, max(0.0, v_dur - 1.0))
+                            en = min(max(st + 0.5, en), v_dur)
+                            op["start_time"] = round(st, 3)
+                            op["end_time"] = round(en, 3)
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Mathematical Boundary Normalization for Audio Cues
+                    elif norm_type in ("bgm_mix", "audio_mix", "audio_ducking_mix") and bgm_dur > 0:
+                        try:
+                            ast = float(op.get("audio_start_time", 0.0) or 0.0)
+                            if ast >= bgm_dur:
+                                op["audio_start_time"] = 0.0
+                            elif ast > max(0.0, bgm_dur - 2.0):
+                                op["audio_start_time"] = round(max(0.0, bgm_dur - 2.0), 3)
+                        except (ValueError, TypeError):
+                            pass
 
                     mode = op.get("mode")
                     if mode:
@@ -1956,7 +2085,7 @@ class GeminiFFmpegEngine:
         output_path: str = "output.mp4",
         extra_inputs: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
-        gemini_json = self._normalize_gemini_json(gemini_json)
+        gemini_json = self._normalize_gemini_json(gemini_json, input_path=input_path, extra_inputs=extra_inputs)
         if not self.validate_schema(gemini_json):
             raise ValueError("Gemini JSON response does not match GEMINI_FFMPEG_SCHEMA")
 
@@ -2150,14 +2279,14 @@ class GeminiFFmpegEngine:
                     if isinstance(shots, (list, tuple)):
                         input_clips = shots
                     else:
-                        input_clips = [current_input]
+                        input_clips = []
 
-                valid_clips = [c for c in input_clips if isinstance(c, str) and c]
-                if valid_clips:
+                valid_clips = [c for c in input_clips if isinstance(c, str) and c and os.path.exists(c)]
+                if len(valid_clips) > 1:
                     res = self.cmd_generator.build_concat_command(valid_clips, step_output, encoding_cfg=encoding_cfg)
                     command_steps.append(res)
                 else:
-                    logger.warning("⚠️ Concat operation requested by Gemini plan but input clip list is empty. Skipping concat step.")
+                    logger.info("ℹ️ [CONCAT SKIP] Concat operation has < 2 valid clips. Skipping redundant concat step.")
                     continue
             elif op_type in ("audio_ducking_mix", "audio_ducking", "bgm_mix", "audio_mix"):
                 vo_file = extra_inputs.get("voiceover")
@@ -2179,6 +2308,12 @@ class GeminiFFmpegEngine:
                         v_vol = float(op.get("video_volume", 0.0))
                         m_vol = float(op.get("music_volume", 0.80))
                     audio_st = float(op.get("audio_start_time") or extra_inputs.get("audio_start_time", 0.0) or 0.0)
+                    bgm_d = self.cmd_generator._get_media_duration(bgm_file)
+                    if bgm_d > 0 and audio_st >= bgm_d:
+                        logger.warning(f"⚠️ [MULTI-STEP BGM] Clamping audio_start_time ({audio_st:.2f}s >= BGM dur {bgm_d:.2f}s) -> 0.0s")
+                        audio_st = 0.0
+                    elif bgm_d > 0 and audio_st > max(0.0, bgm_d - 2.0):
+                        audio_st = max(0.0, bgm_d - 2.0)
                     audio_off = float(op.get("audio_offset", 0.0) or 0.0)
                     res = self.cmd_generator.build_bgm_mix_command(
                         current_input, bgm_file, step_output,
@@ -2868,6 +3003,15 @@ class GeminiFFmpegEngine:
                 try:
                     clean_cmd = [str(arg) for arg in step["cmd_list"]]
                     subprocess.run(clean_cmd, check=True, capture_output=True, timeout=step_to)
+                    out_f = step.get("output")
+                    if out_f:
+                        if not os.path.exists(out_f) or os.path.getsize(out_f) < 1024:
+                            sz = os.path.getsize(out_f) if os.path.exists(out_f) else 0
+                            err_detail = f"Step {idx} ({step.get('operation')}) produced invalid/empty output file ({sz} bytes)"
+                            logger.error(f"❌ {err_detail}")
+                            _cleanup(executed_files)
+                            return {"status": "FAILED", "failed_step": idx, "error": err_detail,
+                                    "terminal_command": step["terminal_command"], "executed_steps": steps}
                 except subprocess.TimeoutExpired:
                     logger.error(f"FFmpeg Step {idx} execution timed out after {step_to}s: {step['terminal_command']}")
                     _cleanup(executed_files)
