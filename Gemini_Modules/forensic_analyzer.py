@@ -316,6 +316,16 @@ class ForensicVideoAnalyzer:
                 res["scene_context"] = scene_context
                 return res
 
+            # ── Step 0: Ensure 480p Proxy Video exists for Gemini & Sampling ──
+            proxy_video_path = None
+            try:
+                from Main_Modules.proxy_encoder import ensure_proxy
+                proxy_video_path = ensure_proxy(video_path)
+                logger.info(f"🔬 ForensicAnalyzer: Using 480p proxy for analysis: {proxy_video_path}")
+            except Exception as pe:
+                logger.debug(f"🔬 ForensicAnalyzer: Proxy encode notice ({pe}); falling back to source video")
+                proxy_video_path = video_path
+
             # ── Step 1: Extract frames (Hook-Dense Strategic Sampler) ─────────
             tmp_dir = None
             own_frames = False
@@ -325,12 +335,13 @@ class ForensicVideoAnalyzer:
             else:
                 tmp_dir = tempfile.mkdtemp(prefix="forensic_frames_")
                 own_frames = True
+                sampling_target = proxy_video_path if (proxy_video_path and os.path.exists(proxy_video_path)) else video_path
                 try:
                     try:
                         from Main_Modules.strategic_frame_sampler import extract_strategic_frame_files
                     except ImportError:
                         from Core_Modules.scene_intel import extract_strategic_frame_files
-                    res_frames = extract_strategic_frame_files(video_path, tmp_dir, return_meta=True)
+                    res_frames = extract_strategic_frame_files(sampling_target, tmp_dir, return_meta=True)
                     if isinstance(res_frames, tuple):
                         frames, sample_meta = res_frames
                         sampling_context = self._build_sampling_note(sample_meta)
@@ -339,7 +350,7 @@ class ForensicVideoAnalyzer:
                     logger.info(f"🔬 ForensicAnalyzer: loaded {len(frames)} strategic hook-dense frames")
                 except Exception as sse:
                     logger.debug(f"Strategic frame extraction notice ({sse}); using ffmpeg frame extraction")
-                    frames = self._extract_frames(video_path, tmp_dir)
+                    frames = self._extract_frames(sampling_target, tmp_dir)
                     sampling_context = None
 
             if not frames:
@@ -348,12 +359,13 @@ class ForensicVideoAnalyzer:
                 res["scene_context"] = scene_context
                 return res
 
-            # ── Step 2: Build Gemini payload with audio candidate table ───────
+            # ── Step 2: Build Gemini payload with audio candidate table + proxy video ───────
             result = self._call_gemini_with_audio(
                 frames,
                 creator_name=creator_name,
                 audio_candidates=audio_candidates,
-                sampling_context=sampling_context
+                sampling_context=sampling_context,
+                video_proxy_path=proxy_video_path
             )
             result["scene_context"] = scene_context
 
@@ -600,7 +612,8 @@ class ForensicVideoAnalyzer:
     def _call_gemini_with_audio(self, frame_paths: List[str],
                                 creator_name: Optional[str] = None,
                                 audio_candidates: Optional[List[dict]] = None,
-                                sampling_context: Optional[str] = None) -> dict:
+                                sampling_context: Optional[str] = None,
+                                video_proxy_path: Optional[str] = None) -> dict:
         """
         Send keyframes + candidate BGM audio metadata table to Gemini 2.5 Flash Vision.
         Gemini selects matching audio track and generates structured creative_possibilities edit plan.
@@ -748,6 +761,17 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
             prompt_text += f"{cbm_block}\n"
 
         payload = [prompt_text]
+        # Attach uploaded proxy video if available
+        if video_proxy_path and os.path.isfile(video_proxy_path):
+            try:
+                if hasattr(self.router, "upload_file"):
+                    uploaded_file = self.router.upload_file(video_proxy_path)
+                    if uploaded_file:
+                        payload.append(uploaded_file)
+                        logger.info(f"🔬 ForensicAnalyzer: Attached multimodal proxy video to Gemini payload -> {os.path.basename(video_proxy_path)}")
+            except Exception as ve:
+                logger.warning(f"🔬 ForensicAnalyzer: Video proxy upload notice ({ve}); proceeding with keyframes only")
+
         try:
             from PIL import Image
             for p in frame_paths:

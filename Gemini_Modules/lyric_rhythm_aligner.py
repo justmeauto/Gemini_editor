@@ -55,7 +55,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from dotenv import load_dotenv
@@ -926,6 +926,295 @@ def get_directive_at(directives: List[Dict], time_sec: float) -> Optional[Dict]:
     return max(active, key=lambda x: int(x.get("priority", 1)))
 
 
+# ── Universal Creative Archetypes & 4D Scoring ──────────────────────────────
+
+CREATIVE_ARCHETYPES: Dict[str, Dict[str, Any]] = {
+    "TALKING_HEAD_PODCAST": {
+        "name": "TALKING_HEAD_PODCAST",
+        "description": "On-camera dialogue, interview, monologue, or educational talking head.",
+        "preferred_vibes": ["chill", "lofi", "ambient", "acoustic", "subtle", "warm", "minimal"],
+        "target_bpm": 90.0,
+        "max_energy": 0.45,
+        "prefer_instrumental": True,
+        "fatal_genres": ["phonk", "hardstyle", "club", "edm", "heavy_bass", "trap", "drill", "aggressive"],
+        "directive": (
+            "This video features on-camera speech or interview dialogue. Vocal clarity is paramount. "
+            "Select an unobtrusive, subtle, low-energy lofi or ambient background track (preferably instrumental). "
+            "Loud dance music, heavy bass drops, phonk, club beats, and aggressive vocals are STRICTLY FORBIDDEN as they clash with spoken speech."
+        )
+    },
+    "GLAMOUR_STRUT_PAPARAZZI": {
+        "name": "GLAMOUR_STRUT_PAPARAZZI",
+        "description": "Candid celebrity/model walk, paparazzi flashes, fashion runway, luxury strut, red carpet arrival.",
+        "preferred_vibes": ["swagger", "bass", "trap", "hip_hop", "luxury", "strut", "phonk", "deep_house", "energetic", "hype"],
+        "target_bpm": 125.0,
+        "min_energy": 0.60,
+        "prefer_instrumental": False,
+        "fatal_genres": ["ambient", "meditation", "chatter", "crowd", "soft_acoustic", "slow_piano", "classical"],
+        "directive": (
+            "This video is a glamorous candid celebrity strut, runway walk, or paparazzi entrance. "
+            "Camera shutter clicks and background chatter will be muted. Select a heavy-bass, swagger-filled, "
+            "head-nodding hip-hop, luxury house, or phonk beat (BPM 115-135, high energy) that gives the subject an irresistible, iconic walk. "
+            "Soft acoustic music, slow piano, and ambient crowd chatter are STRICTLY FORBIDDEN."
+        )
+    },
+    "ADRENALINE_ACTION": {
+        "name": "ADRENALINE_ACTION",
+        "description": "Fitness, gym training, sports, athletics, martial arts, extreme sports, high-velocity movement.",
+        "preferred_vibes": ["phonk", "hardstyle", "aggressive", "motivational", "trap", "hype", "explosive", "fast"],
+        "target_bpm": 135.0,
+        "min_energy": 0.70,
+        "prefer_instrumental": False,
+        "fatal_genres": ["lofi", "chill", "soft_acoustic", "ambient", "meditation", "slow"],
+        "directive": (
+            "This video is an explosive workout or athletic performance. Select a high-octane, adrenaline-pumping "
+            "track with heavy 808 drops, driving rhythm, and peak energy (Brazilian phonk, hardstyle, or aggressive trap). "
+            "Slow, relaxing, or mellow lofi music is STRICTLY FORBIDDEN."
+        )
+    },
+    "ATMOSPHERIC_CINEMATIC": {
+        "name": "ATMOSPHERIC_CINEMATIC",
+        "description": "Travel, landscape, nature, drone vistas, architectural luxury, aesthetic B-roll, cinematic mood.",
+        "preferred_vibes": ["cinematic", "atmospheric", "melodic", "deep", "euphoric", "inspiring", "electronic", "ambient"],
+        "target_bpm": 115.0,
+        "min_energy": 0.35,
+        "prefer_instrumental": True,
+        "fatal_genres": ["phonk", "aggressive_trap", "hardstyle", "screaming", "slapstick", "comedy"],
+        "directive": (
+            "This video is an aesthetic visual journey (travel, nature, or cinematic B-roll). Select a rich, "
+            "atmospheric, melodic, or evocative electronic/cinematic track with emotional depth and sweeping soundscapes. "
+            "Harsh distorted phonk and slapstick comedic music are STRICTLY FORBIDDEN."
+        )
+    },
+    "PLAYFUL_RHYTHMIC": {
+        "name": "PLAYFUL_RHYTHMIC",
+        "description": "Comedy, meme, viral trend, playful lifestyle, dynamic skit, upbeat casual vlog.",
+        "preferred_vibes": ["playful", "funk", "upbeat", "bouncy", "catchy", "pop", "happy", "quirky", "rhythmic"],
+        "target_bpm": 120.0,
+        "min_energy": 0.50,
+        "prefer_instrumental": False,
+        "fatal_genres": ["dark_phonk", "depressing", "melancholic", "horror", "dirge", "sad"],
+        "directive": (
+            "This video is upbeat, playful, humorous, or lifestyle-driven. Select a catchy, bouncy, rhythmic "
+            "groove (funk, upbeat pop, playful bounce) that keeps the viewer engaged and smiling. "
+            "Dark, aggressive, or depressing tracks are STRICTLY FORBIDDEN."
+        )
+    },
+}
+
+
+def classify_video_archetype(
+    visual_ctx: Dict[str, Any],
+    current_audio: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Classifies a clip into one of 5 Universal Creative Archetypes based on
+    visual context, caption, hashtags, detected entities, and audio speech intelligence.
+    """
+    meta = metadata or {}
+    cd = visual_ctx.get("content_director", {})
+
+    intent = str(visual_ctx.get("intent") or cd.get("intent") or "viral_reel").lower()
+    visual_event = str(visual_ctx.get("visual_event") or cd.get("visual_event") or "").lower()
+    tone = str(visual_ctx.get("tone") or cd.get("tone") or "aspirational").lower()
+    caption = str(meta.get("caption") or visual_ctx.get("caption") or "").lower()
+
+    tags_list = meta.get("hashtags") or visual_ctx.get("hashtags") or []
+    if isinstance(tags_list, list):
+        hashtags = " ".join(str(h).lower() for h in tags_list)
+    else:
+        hashtags = str(tags_list).lower()
+
+    entities_list = visual_ctx.get("detected_entities") or cd.get("detected_entities") or []
+    entities = " ".join(str(e).lower() for e in entities_list)
+
+    speech_intel = visual_ctx.get("speech_intelligence") or current_audio.get("context", {})
+    speech_mode = str(speech_intel.get("speech_mode", "")).lower()
+    is_talking = bool(
+        speech_intel.get("is_talking_visually")
+        or visual_ctx.get("is_talking_on_camera")
+        or cd.get("is_talking_on_camera")
+        or intent == "talking_head"
+    )
+
+    combined_text = f"{intent} {visual_event} {tone} {caption} {hashtags} {entities}".lower()
+
+    def _has_kw(text: str, kws: List[str]) -> bool:
+        for kw in kws:
+            if re.search(rf"\b{re.escape(kw)}\b", text):
+                return True
+        return False
+
+    # Priority 1: Explicit high-confidence intent matches
+    if intent in ("comedy", "meme", "skit"):
+        return CREATIVE_ARCHETYPES["PLAYFUL_RHYTHMIC"]
+    if intent in ("fitness", "gym", "workout", "sports", "action", "boxing"):
+        return CREATIVE_ARCHETYPES["ADRENALINE_ACTION"]
+    if intent in ("candid_walk", "paparazzi", "fashion", "runway", "model", "glamour", "street_style"):
+        return CREATIVE_ARCHETYPES["GLAMOUR_STRUT_PAPARAZZI"]
+    if intent in ("talking_head", "podcast", "interview", "monologue"):
+        return CREATIVE_ARCHETYPES["TALKING_HEAD_PODCAST"]
+    if intent in ("travel", "nature", "landscape", "architecture", "cinematic"):
+        return CREATIVE_ARCHETYPES["ATMOSPHERIC_CINEMATIC"]
+
+    # Priority 2: Talking Head / Podcast / Interview
+    podcast_kws = ["podcast", "interview", "talking", "monologue", "speech", "dialogue", "host", "explaining", "ted talk", "qa", "conversation"]
+    if speech_mode in ("on_camera_dialogue", "voiceover_narration") or is_talking or _has_kw(combined_text, podcast_kws):
+        paparazzi_kws = ["paparazzi", "strut", "runway", "model", "fashion show", "candid walk", "red carpet", "arrival"]
+        if not _has_kw(combined_text, paparazzi_kws):
+            return CREATIVE_ARCHETYPES["TALKING_HEAD_PODCAST"]
+
+    # Priority 3: Comedy / Meme / Skit
+    comedy_kws = ["comedy", "funny", "meme", "skit", "joke", "prank", "humor", "laugh", "challenge", "lol", "relatable"]
+    if _has_kw(combined_text, comedy_kws):
+        return CREATIVE_ARCHETYPES["PLAYFUL_RHYTHMIC"]
+
+    # Priority 4: Glamour / Paparazzi / Model Strut
+    paparazzi_kws = ["paparazzi", "strut", "walk", "candid", "runway", "model", "fashion", "arrival", "red carpet", "street style", "spotted", "outfit", "glamour", "celebrity walk"]
+    if _has_kw(combined_text, paparazzi_kws):
+        return CREATIVE_ARCHETYPES["GLAMOUR_STRUT_PAPARAZZI"]
+
+    # Priority 5: Adrenaline / Action / Workout
+    action_kws = ["gym", "workout", "fitness", "bodybuilding", "boxing", "training", "exercise", "bicep", "squat", "deadlift", "action", "athletic", "crossfit", "sprint", "mma"]
+    if _has_kw(combined_text, action_kws):
+        return CREATIVE_ARCHETYPES["ADRENALINE_ACTION"]
+
+    # Priority 6: Atmospheric / Cinematic / Travel
+    cinematic_kws = ["travel", "landscape", "nature", "drone", "vlog", "architecture", "aesthetic", "sunset", "ocean", "mountains", "scenic", "wanderlust", "cityscape"]
+    if _has_kw(combined_text, cinematic_kws):
+        return CREATIVE_ARCHETYPES["ATMOSPHERIC_CINEMATIC"]
+
+    # Default fallback
+    if speech_mode == "on_camera_dialogue":
+        return CREATIVE_ARCHETYPES["TALKING_HEAD_PODCAST"]
+    return CREATIVE_ARCHETYPES["PLAYFUL_RHYTHMIC"]
+
+
+def compute_4d_audio_score(
+    archetype: Dict[str, Any],
+    candidate_meta: Dict[str, Any],
+    candidate_filename: str,
+    visual_ctx: Dict[str, Any],
+    current_audio: Dict[str, Any],
+    clip_metadata: Optional[Dict[str, Any]] = None,
+) -> Tuple[float, float, float, float, float]:
+    """
+    Computes 4-Dimensional Hybrid Score:
+    Score = S_archetype * (0.40 * S_semantic + 0.35 * S_rhythm + 0.25 * S_emotion) * S_fatigue
+
+    Returns (total_score, s_archetype, s_semantic, s_rhythm, s_fatigue)
+    """
+    fn_lower = candidate_filename.lower()
+    c_genre = str(candidate_meta.get("gemini_genre") or candidate_meta.get("genre") or "music").lower()
+    vibes = candidate_meta.get("vibe_tags") or [candidate_meta.get("vibe", "energetic")]
+    c_vibes = [str(v).lower() for v in (vibes if isinstance(vibes, list) else [vibes])]
+    vibe_str = " ".join(c_vibes)
+    c_energy = float(candidate_meta.get("energy") or candidate_meta.get("avg_energy") or 0.6)
+    c_bpm = float(candidate_meta.get("tempo_bpm") or candidate_meta.get("bpm") or 120.0)
+    c_vocals = bool(candidate_meta.get("has_vocals", False))
+    c_emotion = str(candidate_meta.get("dominant_emotion", "hype")).lower()
+
+    arch_name = archetype.get("name", "PLAYFUL_RHYTHMIC")
+    fatal_genres = [g.lower() for g in archetype.get("fatal_genres", [])]
+
+    # ── 1. S_archetype (0.0 to 1.0) ──────────────────────────────────────────
+    s_archetype = 0.5  # Neutral default
+
+    # Fatal genre check
+    for fg in fatal_genres:
+        if fg in c_genre or fg in vibe_str or fg in fn_lower:
+            s_archetype = 0.0
+            break
+
+    if s_archetype > 0.0:
+        if arch_name == "TALKING_HEAD_PODCAST":
+            if c_energy > archetype.get("max_energy", 0.45):
+                s_archetype = 0.0
+            elif c_vocals:
+                s_archetype = 0.1
+            elif any(v in vibe_str for v in archetype.get("preferred_vibes", [])):
+                s_archetype = 1.0
+            else:
+                s_archetype = 0.6
+
+        elif arch_name == "GLAMOUR_STRUT_PAPARAZZI":
+            if c_energy < archetype.get("min_energy", 0.60):
+                s_archetype = 0.0
+            elif any(v in vibe_str for v in ["swagger", "bass", "strut", "hip_hop", "trap", "phonk", "luxury"]):
+                s_archetype = 1.0
+            elif 115.0 <= c_bpm <= 135.0:
+                s_archetype = 0.9
+            else:
+                s_archetype = 0.7
+
+        elif arch_name == "ADRENALINE_ACTION":
+            if c_energy < archetype.get("min_energy", 0.70):
+                s_archetype = 0.0
+            elif any(v in vibe_str for v in ["phonk", "hardstyle", "aggressive", "motivational", "trap"]):
+                s_archetype = 1.0
+            elif c_bpm >= 125.0:
+                s_archetype = 0.85
+            else:
+                s_archetype = 0.6
+
+        elif arch_name == "ATMOSPHERIC_CINEMATIC":
+            if any(v in vibe_str for v in ["cinematic", "atmospheric", "melodic", "deep", "euphoric", "inspiring"]):
+                s_archetype = 1.0
+            else:
+                s_archetype = 0.7
+
+        elif arch_name == "PLAYFUL_RHYTHMIC":
+            if any(v in vibe_str for v in ["playful", "funk", "upbeat", "bouncy", "pop", "happy"]):
+                s_archetype = 1.0
+            else:
+                s_archetype = 0.75
+
+    # If S_archetype is 0.0, instant return with 0.0! (Hard Disqualification)
+    if s_archetype <= 0.0:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # ── 2. S_semantic (0.1 to 1.0) ───────────────────────────────────────────
+    cd = visual_ctx.get("content_director", {})
+    clip_text = f"{visual_ctx.get('intent', '')} {visual_ctx.get('tone', '')} {cd.get('visual_event', '')} {visual_ctx.get('visual_event', '')}".lower()
+    if clip_metadata:
+        clip_text += f" {clip_metadata.get('caption', '')} {' '.join(str(h) for h in clip_metadata.get('hashtags', []))}".lower()
+
+    track_text = f"{c_genre} {vibe_str} {fn_lower} {c_emotion}".lower()
+    clip_words = set(re.findall(r"\w{4,}", clip_text))
+    track_words = set(re.findall(r"\w{4,}", track_text))
+    overlap = len(clip_words.intersection(track_words))
+    s_semantic = min(1.0, 0.20 + (overlap * 0.25))
+
+    # ── 3. S_rhythm (0.1 to 1.0) ─────────────────────────────────────────────
+    clip_math_bpm = float(current_audio.get("math", {}).get("tempo_bpm", 0.0))
+    target_bpm = clip_math_bpm if clip_math_bpm > 30.0 else float(archetype.get("target_bpm", 120.0))
+    bpm_diff = abs(target_bpm - c_bpm)
+    s_rhythm = max(0.1, 1.0 - (bpm_diff / 75.0))
+
+    # ── 4. S_emotion (0.1 to 1.0) ────────────────────────────────────────────
+    target_tone = str(visual_ctx.get("tone") or cd.get("tone") or "aspirational").lower()
+    emotion_match = 1.0 if (c_emotion in target_tone or target_tone in c_emotion) else 0.5
+    energy_diff = abs((archetype.get("max_energy", 0.7) if arch_name == "TALKING_HEAD_PODCAST" else 0.8) - c_energy)
+    s_emotion = min(1.0, max(0.1, (emotion_match * 0.6) + ((1.0 - min(1.0, energy_diff)) * 0.4)))
+
+    # ── 5. S_fatigue (0.05 to 1.0) ───────────────────────────────────────────
+    now = time.time()
+    last_used = float(candidate_meta.get("last_used", 0) or 0)
+    usage_count = int(candidate_meta.get("usage_count", 0) or 0)
+
+    hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
+    recency_factor = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
+    usage_factor = 1.0 / (1.0 + (float(usage_count) ** 2) * 1.2) if usage_count > 0 else 1.0
+    s_fatigue = max(0.08, recency_factor * usage_factor)
+
+    # ── Final 4D Hybrid Formula ──────────────────────────────────────────────
+    core_score = (0.40 * s_semantic) + (0.35 * s_rhythm) + (0.25 * s_emotion)
+    final_score = s_archetype * core_score * s_fatigue
+
+    return (final_score, s_archetype, s_semantic, s_rhythm, s_fatigue)
+
+
 def select_best_audio_for_clip(
     clip_id: str,
     clip_folder: Optional[str] = None,
@@ -933,11 +1222,10 @@ def select_best_audio_for_clip(
     exclude_filenames: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
-    Gemini Call 2 — BGM Selector.
-    Receives current clip's visual_context + audio_data (math + context)
-    + ALL pooled clip audio_data records from ClipIntelligenceStore.
-    Gemini cross-matches visual intent vs pooled audio behavior to select the single best BGM track.
-    Saves decision to clip intelligence JSON and returns selection dict.
+    Gemini Call 2 — Universal Creative Director BGM Selector.
+    Classifies video creative archetype, filters out speech/noise, executes 4D hybrid scoring
+    (S_archetype * (0.40 * S_semantic + 0.35 * S_rhythm + 0.25 * S_emotion) * S_fatigue),
+    and grounds Gemini Call 2 with active visual narrative and director directives.
     """
     from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
 
@@ -947,6 +1235,22 @@ def select_best_audio_for_clip(
     visual_ctx = clip_data.get("visual_context", {})
     current_audio = clip_data.get("audio_data", {})
 
+    local_meta = {}
+    if clip_folder and os.path.isdir(clip_folder):
+        meta_path = os.path.join(clip_folder, "metadata.json")
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    local_meta = json.load(f)
+            except Exception:
+                pass
+
+    # 1. Classify Creative Archetype
+    archetype = classify_video_archetype(visual_ctx, current_audio, metadata=local_meta)
+    arch_name = archetype.get("name", "PLAYFUL_RHYTHMIC")
+    logger.info(f"🎭 [BGM ARCHETYPE] Clip '{clip_id}' classified as: {arch_name} — {archetype.get('description')}")
+
+    # 2. Retrieve Candidate Audio from Telegram Storage Vault
     vault_audio_pool = {}
     try:
         from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
@@ -1023,12 +1327,10 @@ def select_best_audio_for_clip(
         return False
 
     def _is_disqualified_by_size_or_blacklist(fname, meta):
-        # 1. Permanent Blacklist check
         fid = meta.get("file_id") or meta.get("telegram_file_id")
         if _is_bl(audio_filename=fname, telegram_file_id=fid):
             logger.info(f"🚫 [BGM Selector] Track '{fname}' is in rejected_audio_blacklist — excluding.")
             return True
-        # 2. Over 20MB check when MTProto is unconfigured
         fsize = meta.get("file_size") or 0
         try:
             fsize_f = float(fsize)
@@ -1049,28 +1351,8 @@ def select_best_audio_for_clip(
                 return dur_f < 10.0
         except (ValueError, TypeError):
             pass
-        # If duration missing or zero in metadata, probe local disk file if present
-        try:
-            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            search_paths = [
-                fname,
-                os.path.join(repo_root, "assets", "music", fname),
-                os.path.join(repo_root, "Original_audio", "active", fname),
-                os.path.join(repo_root, "Original_audio", fname),
-            ]
-            for sp in search_paths:
-                if sp and os.path.isfile(sp):
-                    import wave
-                    with wave.open(sp, 'rb') as wf:
-                        disk_dur = float(wf.getnframes()) / float(wf.getframerate())
-                        if 0 < disk_dur < 10.0:
-                            return True
-                    break
-        except Exception:
-            pass
         return False
 
-    # Normalized current clip identifiers for self-audio rejection
     clip_stem = (clip_id or "").lower().strip()
     folder_stem = os.path.basename(clip_folder or "").lower().strip()
 
@@ -1090,6 +1372,7 @@ def select_best_audio_for_clip(
             return True
         return False
 
+    # Filter candidate tracks
     all_candidates = [
         fname for fname, meta in pool_files.items()
         if isinstance(meta, dict)
@@ -1097,6 +1380,7 @@ def select_best_audio_for_clip(
         and not _is_pipeline_artifact(fname)
         and not _is_too_short(fname, meta)
         and not _is_disqualified_by_size_or_blacklist(fname, meta)
+        and not _is_self_extracted(fname, meta)
         and fname.lower().endswith((".mp3", ".wav", ".m4a"))
     ]
 
@@ -1120,7 +1404,7 @@ def select_best_audio_for_clip(
         logger.warning("🎶 [BGM Selector] No valid musical candidates found in merged pool index and vault has no audio.")
         return {"selected_audio_track": None, "alignment_score": 0.0, "reasoning": "No valid clean BGM tracks in pool."}
 
-    # ── 6-HOUR USAGE COOLDOWN ENFORCEMENT ────────────────────────────────────
+    # 3. 6-Hour Cooldown Enforcement
     cooldown_hours = float(os.getenv("AUDIO_COOLDOWN_HOURS", "6.0"))
     cooldown_sec = cooldown_hours * 3600.0
     now = time.time()
@@ -1145,8 +1429,6 @@ def select_best_audio_for_clip(
         if c.lower() not in effective_disqualified and os.path.basename(c).lower() not in effective_disqualified
     ]
 
-    # Pool exhaustion safeguard: if excluding tracks under 6 hours leaves 0 candidates,
-    # fall back to the least-recently-used candidate so the editing pipeline does not crash.
     if not fresh_candidates and all_candidates:
         logger.warning(
             f"⚠️ [BGM COOLDOWN] All {len(all_candidates)} candidate tracks were used within the last {cooldown_hours:.1f}h! "
@@ -1161,149 +1443,140 @@ def select_best_audio_for_clip(
     else:
         available_candidates = fresh_candidates if fresh_candidates else all_candidates
 
-    candidate_lines = {}
-    candidate_scores = []
-
-    clip_intent = str(visual_ctx.get("intent", "viral_reel")).lower()
-    clip_tone = str(visual_ctx.get("tone", "aspirational")).lower()
-    clip_bpm = float(current_audio.get("math", {}).get("tempo_bpm", 120.0))
-    now = time.time()
+    # 4. Compute 4D Hybrid Scores & Hard Disqualification
+    scored_candidates = []
+    disqualified_by_archetype = []
 
     for c_file in available_candidates:
         meta = pool_files.get(c_file, {})
-
-        last_used = meta.get("last_used", 0)
-        u_count = meta.get("usage_count", 0)
-
-        c_bpm = float(meta.get("tempo_bpm") or meta.get("bpm") or 120.0)
-        c_emotion = str(meta.get("dominant_emotion", "hype")).lower()
-        c_genre = str(meta.get("gemini_genre") or "music").lower()
-        vibes = meta.get("vibe_tags") or [meta.get("energy_profile", "medium")]
-        c_vibe = ", ".join(vibes) if isinstance(vibes, list) else str(vibes)
-        c_vocals = bool(meta.get("has_vocals", False))
-        c_lang = str(meta.get("language", "unknown"))
-
-        is_own_clip_audio = _is_self_extracted(c_file, meta)
-        is_harvested_audio = (
-            bool(meta.get("is_source_extract", False))
-            or c_file.lower().startswith("bgm_manual_")
-            or c_file.lower().startswith("sess_")
-            or c_file.lower().startswith("vault_bgm_")
-            or (c_file.lower().endswith(".wav") and not meta.get("is_curated_library", False))
+        final_score, s_arch, s_sem, s_rhythm, s_fatigue = compute_4d_audio_score(
+            archetype=archetype,
+            candidate_meta=meta,
+            candidate_filename=c_file,
+            visual_ctx=visual_ctx,
+            current_audio=current_audio,
+            clip_metadata=local_meta,
         )
-        is_curated = (
-            meta.get("is_curated_library", False)
-            or (not is_harvested_audio and not is_own_clip_audio)
-        )
-        # Tier 1 = Real Curated BGM Music Library (.mp3)
-        # Tier 2 = Other non-harvested external audio
-        # Tier 3 = Harvested Audio from OTHER clips
-        # Tier 4 = Harvested Audio from THIS CURRENT clip
-        if is_own_clip_audio:
-            tier = 4
-        elif is_curated:
-            tier = 1
-        elif not is_harvested_audio:
-            tier = 2
-        else:
-            tier = 3
+        c_fid = str(meta.get("file_id") or meta.get("telegram_file_id") or "")
 
-        hrs_since_used = (now - last_used) / 3600.0 if last_used > 0 else 999.0
-        recency_penalty = min(1.0, hrs_since_used / 12.0) if last_used > 0 else 1.0
-        usage_penalty = 1.0 / (1.0 + (float(u_count) ** 2) * 1.5) if u_count > 0 else 1.0
-        tier_discount = 1.0 if tier == 1 else (0.70 if tier == 2 else (0.25 if tier == 3 else 0.01))
+        if s_arch <= 0.0:
+            disqualified_by_archetype.append(c_file)
+            logger.debug(f"🚫 [ARCHETYPE FATAL CLASH] Track '{c_file}' disqualified (S_archetype=0.0) for {arch_name}")
+            continue
 
-        bpm_match = max(0.0, 1.0 - (abs(clip_bpm - c_bpm) / 100.0))
-        emotion_match = 1.0 if c_emotion in clip_tone or clip_tone in c_emotion else 0.5
-        math_score = (bpm_match * 0.35 + emotion_match * 0.45) * max(0.05, recency_penalty) * usage_penalty * tier_discount
+        scored_candidates.append({
+            "filename": c_file,
+            "file_id": c_fid,
+            "score": final_score,
+            "s_arch": s_arch,
+            "s_sem": s_sem,
+            "s_rhythm": s_rhythm,
+            "s_fatigue": s_fatigue,
+            "meta": meta,
+        })
 
-        tier_tag = " [CURATED MASTER BGM]" if tier == 1 else (" [HARVESTED AUDIO]" if tier == 3 else "")
+    # Defensive fallback if all available candidates had fatal archetype clashes
+    if not scored_candidates and available_candidates:
+        logger.warning(f"⚠️ [BGM ARCHETYPE] All {len(available_candidates)} candidates clashed with {arch_name}. Relaxing fatal constraints.")
+        for c_file in available_candidates:
+            meta = pool_files.get(c_file, {})
+            c_fid = str(meta.get("file_id") or meta.get("telegram_file_id") or "")
+            scored_candidates.append({
+                "filename": c_file,
+                "file_id": c_fid,
+                "score": 0.50,
+                "s_arch": 0.5,
+                "s_sem": 0.5,
+                "s_rhythm": 0.5,
+                "s_fatigue": 0.5,
+                "meta": meta,
+            })
 
-        c_fid = str(meta.get("file_id") or "")
-        fid_tag = f", telegram_file_id='{c_fid}'" if c_fid else ""
-
-        candidate_scores.append((math_score, c_file, tier, c_fid))
-        candidate_lines[c_file] = (
-            f"- '{c_file}'{tier_tag}{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, emotion='{c_emotion}', vibe='{c_vibe}', "
-            f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
-        )
-
+    # Sort descending by 4D score with tiny jitter for near-ties
     import random
-    tier1 = [c for c in candidate_scores if c[2] == 1]
-    tier2 = [c for c in candidate_scores if c[2] == 2]
-    tier3 = [c for c in candidate_scores if c[2] == 3]
-    tier4 = [c for c in candidate_scores if c[2] == 4]
+    scored_candidates.sort(key=lambda x: x["score"] + random.uniform(0.0, 0.02), reverse=True)
+    top_candidates = scored_candidates[:15]
 
-    # Apply small diversity jitter (0.0 to 0.03) for tracks with near-identical scores to avoid deterministic repetition
-    tier1.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
-    tier2.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
-    tier3.sort(key=lambda x: x[0], reverse=True)
+    best_math_cand = top_candidates[0] if top_candidates else None
+    selected_track = best_math_cand["filename"] if best_math_cand else ""
+    selected_file_id = best_math_cand["file_id"] if best_math_cand else ""
+    alignment_score = float(best_math_cand["score"]) if best_math_cand else 0.85
+    reasoning = f"Universal 4D Audio Engine Match: Archetype={arch_name} (score={alignment_score:.2f})."
 
-    # When curated Tier-1 tracks exist, NEVER pollute Gemini prompt with the clip's ambient audio
-    if tier1:
-        top_candidates = tier1[:15] + tier2[:3]
-    elif tier2:
-        top_candidates = tier2[:15] + tier3[:3]
-    elif tier3:
-        top_candidates = tier3[:15]
-    else:
-        top_candidates = tier4[:1]
-
-    non_disqualified_top = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
-    if non_disqualified_top:
-        best_math_candidate = non_disqualified_top[0][1]
-        best_math_fid = non_disqualified_top[0][3]
-        best_math_score = float(non_disqualified_top[0][0])
-    else:
-        best_math_candidate = top_candidates[0][1] if top_candidates else (available_candidates[0] if available_candidates else "")
-        best_math_fid = top_candidates[0][3] if top_candidates else ""
-        best_math_score = float(top_candidates[0][0]) if top_candidates else 0.85
-
-    selected_track = best_math_candidate
-    selected_file_id = best_math_fid
-    alignment_score = best_math_score
-    reasoning = f"Smart Mathematical & Semantic Audio Match (score={alignment_score:.2f})."
+    # 5. Build Hollywood Creative Director Prompt for Gemini Call 2
+    cd = visual_ctx.get("content_director", {})
+    main_subject = visual_ctx.get("main_subject") or cd.get("main_subject") or ""
+    visual_event = visual_ctx.get("visual_event") or cd.get("visual_event") or ""
+    clip_tone = visual_ctx.get("tone") or cd.get("tone") or "aspirational"
+    editing_style = visual_ctx.get("editing_style") or "rhythm_driven"
+    caption = local_meta.get("caption") or visual_ctx.get("caption") or ""
+    tags = local_meta.get("hashtags") or visual_ctx.get("hashtags") or []
+    hashtags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
+    speech_mode = current_audio.get("context", {}).get("speech_mode", "silent_broll")
 
     top_lines = []
-    for rank, (sc, fname, is_self, fid) in enumerate(top_candidates, start=1):
-        line = candidate_lines.get(fname, f"- '{fname}': score={sc:.3f}")
-        top_lines.append(f"#{rank} {line}")
+    for rank, cand in enumerate(top_candidates, start=1):
+        c_file = cand["filename"]
+        meta = cand["meta"]
+        c_bpm = float(meta.get("tempo_bpm") or meta.get("bpm") or 120.0)
+        c_energy = float(meta.get("energy") or meta.get("avg_energy") or 0.6)
+        c_genre = str(meta.get("gemini_genre") or meta.get("genre") or "music")
+        vibes = meta.get("vibe_tags") or [meta.get("vibe", "energetic")]
+        vibe_str = ", ".join(vibes) if isinstance(vibes, list) else str(vibes)
+        c_fid = cand["file_id"]
+        fid_tag = f", telegram_file_id='{c_fid}'" if c_fid else ""
+        last_used = float(meta.get("last_used", 0) or 0)
+        hrs_ago = (now - last_used) / 3600.0 if last_used > 0 else 999.0
+
+        top_lines.append(
+            f"#{rank} '{c_file}'{fid_tag}: genre='{c_genre}', bpm={c_bpm:.1f}, energy={c_energy:.2f}, "
+            f"vibes='{vibe_str}', archetype_fit={cand['s_arch']:.2f}, 4d_score={cand['score']:.3f}, last_used={hrs_ago:.1f}h_ago"
+        )
     candidates_str = "\n".join(top_lines)
-    forbidden_str = ", ".join([f"'{t}'" for t in sorted(effective_disqualified)]) or "None"
+    all_forbidden = sorted(effective_disqualified.union(set(disqualified_by_archetype)))
+    forbidden_str = ", ".join([f"'{t}'" for t in all_forbidden[:30]]) or "None"
 
-    num_external = len(top_candidates)
-    prompt = f"""You are an Expert BGM Music Selector for short-form video reels.
+    prompt = f"""You are the Lead Music Supervisor and Creative Director for viral short-form video reels.
 
-Rules:
-- NEVER pick a track from FORBIDDEN list
-- STRICT NOISE REJECTION: STRICTLY REJECT any audio corrupted by speech, crowd babble, shouting, camera clicks, horn blares, or environmental noise. Select ONLY clean, studio-quality, high-energy musical tracks.
-- Select the single best studio music track from the candidates below that matches the reel's mood, rhythm, and pacing.
-- PREFER FRESH & RARELY USED TRACKS: Favor tracks with longer 'last_used' time and lower 'usage_count' to maintain diversity.
-- Return the exact filename in 'selected_audio_track'.
-- Do NOT reference past clips — judge purely on the clip context and track metadata below.
+MISSION:
+Select the SINGLE BEST background music track from the candidates below that elevates this video into a viral masterpiece.
+
+=== CREATIVE ARCHETYPE & EDITING DIRECTIVE ===
+ARCHETYPE: {arch_name} — {archetype.get('description')}
+DIRECTOR DIRECTIVE:
+{archetype.get('directive')}
+
+=== ACTIVE VIDEO SCENE BREAKDOWN ===
+- Main Subject: {main_subject or 'Unknown Creator / Subject'}
+- Visual Event: {visual_event or 'Action sequence'}
+- Visual Style / Pacing: {editing_style}
+- Emotional Tone: {clip_tone}
+- Post Caption: {caption or 'N/A'}
+- Hashtags: {hashtags_str or 'N/A'}
+- Speech Mode: {speech_mode}
+
+=== CRITICAL RULES ===
+1. NEVER pick a track from the FORBIDDEN list.
+2. STRICT SPEECH & NOISE BAN: Never pick crowd babble, microphone static, ambient street chatter, or spoken dialogue as music.
+3. ARCHETYPE ALIGNMENT: Obey the Director Directive above. Match the energy, rhythm, and genre strictly to the archetype.
+4. Return ONLY valid JSON with 'selected_audio_track', 'telegram_file_id', 'alignment_score', and 'reasoning'.
 
 [FORBIDDEN TRACKS — DO NOT SELECT]
 {forbidden_str}
 
-[CURRENT CLIP CONTEXT]
-- Intent: '{visual_ctx.get('intent', 'viral_reel')}'
-- Tone: '{visual_ctx.get('tone', 'aspirational')}'
-- Narrative: '{visual_ctx.get('recommended_narrative', 'lifestyle')}'
-- Target BPM: {clip_bpm}
-- Speech mode: '{current_audio.get('context', {}).get('speech_mode', 'on_camera_dialogue')}'
-
-[TOP CANDIDATE MUSIC TRACKS]
+[TOP CANDIDATE MUSIC PROFILES (Ranked by 4D Intelligence)]
 {candidates_str}
 
 Return ONLY valid JSON:
 {{
-  "selected_audio_track": "chosen_filename.mp3",
+  "selected_audio_track": "exact_candidate_filename.wav",
   "telegram_file_id": "file_id_if_available",
   "alignment_score": 0.95,
-  "reasoning": "One sentence: why this specific track fits or elevates this clip's intent/tone over alternatives."
+  "reasoning": "Creative director explanation: why this track's bass/rhythm/vibe matches the subject's actions and viral impact."
 }}
 """
 
+    # 6. Query Gemini Router
     try:
         try:
             from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
@@ -1325,40 +1598,30 @@ Return ONLY valid JSON:
                 data = json.loads(_clean_json(raw_response))
                 win_track = data.get("selected_audio_track")
                 win_fid = data.get("telegram_file_id")
-                # Validate Gemini's pick against ALL valid pools:
-                all_valid_names = (
-                    set(c.lower() for c in available_candidates)
-                    | set(c[1].lower() for c in top_candidates)
-                    | set(c.lower() for c in all_candidates)
-                )
+
+                all_valid_names = set(c["filename"].lower() for c in top_candidates)
                 if win_track and win_track.lower() in all_valid_names and win_track.lower() not in effective_disqualified:
                     selected_track = win_track
                     reasoning = data.get("reasoning", reasoning)
-                    alignment_score = float(data.get("alignment_score", 0.90))
+                    alignment_score = float(data.get("alignment_score", 0.92))
                     if win_fid:
                         selected_file_id = win_fid
                     else:
                         selected_file_id = pool_files.get(selected_track, {}).get("file_id", selected_file_id)
-                    logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (file_id={selected_file_id}, score={alignment_score:.2f})")
+                    logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (score={alignment_score:.2f})")
                 else:
-                    selected_track = best_math_candidate
-                    selected_file_id = best_math_fid
-                    logger.warning(f"🎶 [BGM Selector] Gemini returned disqualified/invalid track '{win_track}' — forcing fresh math winner '{selected_track}'.")
+                    logger.warning(f"🎶 [BGM Selector] Gemini returned disqualified/unknown track '{win_track}' — forcing top 4D math winner '{selected_track}'.")
     except Exception as e:
-        selected_track = best_math_candidate
-        selected_file_id = best_math_fid
-        logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to smart math match: {e}")
+        logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to top 4D math winner: {e}")
 
     # Compute backup candidates for resilient Step 04 failover
     backup_candidates = [
-        c[1] for c in candidate_scores
-        if c[1] != selected_track and c[1].lower() not in effective_disqualified
+        c["filename"] for c in top_candidates
+        if c["filename"] != selected_track and c["filename"].lower() not in effective_disqualified
     ][:5]
 
     store.patch_bgm_selection(clip_data, selected_track, reasoning, alignment_score)
     store.save(clip_id, clip_data, clip_folder)
-
-    # Note: Usage is registered in Step 04 only after physical verification on disk!
 
     return {
         "selected_audio_track": selected_track,
@@ -1366,6 +1629,7 @@ Return ONLY valid JSON:
         "alignment_score": alignment_score,
         "reasoning": reasoning,
         "backup_candidates": backup_candidates,
+        "archetype": arch_name,
     }
 
 

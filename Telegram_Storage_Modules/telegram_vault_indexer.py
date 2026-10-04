@@ -511,20 +511,54 @@ class TelegramVaultIndexer:
                                     sm_entry.get("extracted_audio_file_id")
                                 )
                                 a_data = sm_entry.get("audio_data") or {}
-                                if ext_fid:
-                                    track_key = f"{sc}.wav"
-                                    pool[track_key] = {
-                                        "shortcode": sc,
-                                        "file_id": ext_fid,
-                                        "telegram_file_id": ext_fid,
-                                        "bpm": float(a_data.get("tempo_bpm") or a_data.get("bpm") or 120.0),
-                                        "energy": float(a_data.get("avg_energy") or a_data.get("energy") or 0.7),
-                                        "vibe": a_data.get("vibe") or "energetic",
-                                        "duration": float(a_data.get("duration") or a_data.get("audio_duration") or 15.0),
-                                        "is_source_extract": True,
-                                        "usage_count": sm_entry.get("usage_count", 0),
-                                        "last_used": sm_entry.get("last_used", 0),
-                                    }
+                                if not ext_fid:
+                                    continue
+
+                                # ── STRICT SPEECH & NOISE GATE ────────────────────────
+                                # Harvested tracks from other clips can only enter the candidate
+                                # BGM pool if they are confirmed musical audio.
+                                # Pure spoken dialogue, podcasts, interviews, crowd noise, and
+                                # low-energy noise must NEVER masquerade as background music.
+                                if sm_entry.get("is_unusable") or a_data.get("is_unusable"):
+                                    continue
+                                if sm_entry.get("is_speech_only") or a_data.get("is_speech_only"):
+                                    continue
+
+                                sp_intel = sm_entry.get("speech_intelligence") or a_data.get("speech_intelligence") or {}
+                                sp_mode = sp_intel.get("speech_mode", "")
+                                if sp_mode in ("on_camera_dialogue", "voiceover_narration") and not a_data.get("has_music", False):
+                                    continue
+
+                                # Check noise keywords in reason or vibes
+                                reason = str(sm_entry.get("unusable_reason", "")).lower()
+                                vibe_str = str(a_data.get("vibe", "")).lower()
+                                vibe_tags = [str(x).lower() for x in (a_data.get("vibe_tags") or [])]
+                                noise_kws = ("crowd", "babble", "screaming", "traffic", "street_noise", "horn", "chatter", "podcast", "interview", "static")
+                                if any(kw in reason for kw in noise_kws) or any(kw in vibe_str for kw in noise_kws) or any(any(kw in vt for kw in noise_kws) for vt in vibe_tags):
+                                    continue
+
+                                bpm_val = float(a_data.get("tempo_bpm") or a_data.get("bpm") or 120.0)
+                                energy_val = float(a_data.get("avg_energy") or a_data.get("energy") or 0.7)
+
+                                # Reject if flagged as spoken vocal without musical tempo
+                                if a_data.get("is_speech_vocal") and bpm_val <= 0:
+                                    continue
+
+                                track_key = f"{sc}.wav"
+                                pool[track_key] = {
+                                    "shortcode": sc,
+                                    "file_id": ext_fid,
+                                    "telegram_file_id": ext_fid,
+                                    "bpm": bpm_val,
+                                    "energy": energy_val,
+                                    "vibe": a_data.get("vibe") or "energetic",
+                                    "vibe_tags": a_data.get("vibe_tags") or [a_data.get("vibe", "energetic")],
+                                    "genre": a_data.get("genre") or a_data.get("gemini_genre") or "music",
+                                    "duration": float(a_data.get("duration") or a_data.get("audio_duration") or 15.0),
+                                    "is_source_extract": True,
+                                    "usage_count": sm_entry.get("usage_count", 0),
+                                    "last_used": sm_entry.get("last_used", 0),
+                                }
             except Exception as _pme:
                 logger.debug("Local pool metadata read notice: %s", _pme)
 

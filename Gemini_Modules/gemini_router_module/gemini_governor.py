@@ -1292,6 +1292,79 @@ class GeminiGovernor:
 
         raise TimeoutError("Gemini API call timed out after 10s")
 
+    def upload_file(self, file_path: str, mime_type: Optional[str] = None) -> Any:
+        """
+        Uploads a media file (e.g. 480p proxy video) to the Gemini File API.
+        Supports modern google.genai and legacy google.generativeai SDKs.
+        Polls until file is in ACTIVE state (up to 25s for video processing).
+        Returns the uploaded File object on success, or None on failure/missing SDK.
+        """
+        if not file_path or not os.path.isfile(file_path):
+            logger.warning(f"📤 [GeminiGovernor] upload_file: file does not exist: {file_path}")
+            return None
+
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "").strip()
+        if not api_key:
+            logger.debug("📤 [GeminiGovernor] upload_file skipped — no API key set.")
+            return None
+
+        fname = os.path.basename(file_path)
+        fsize_mb = os.path.getsize(file_path) / (1024 * 1024)
+
+        # 1. Modern google.genai SDK
+        if hasattr(genai, "Client"):
+            try:
+                client = genai.Client(
+                    api_key=api_key,
+                    http_options=types.HttpOptions(timeout=60_000) if (types and hasattr(types, "HttpOptions")) else None
+                )
+                logger.info(f"📤 [GeminiGovernor] Uploading media to Gemini File API: {fname} ({fsize_mb:.2f} MB)...")
+                uploaded = client.files.upload(file=file_path)
+
+                # Wait for video processing if not immediately active
+                start_t = time.time()
+                while time.time() - start_t < 25.0:
+                    info = client.files.get(name=uploaded.name)
+                    state = getattr(info, "state", None)
+                    state_name = getattr(state, "name", str(state))
+                    if state_name == "ACTIVE":
+                        logger.info(f"✅ [GeminiGovernor] Video proxy ready & ACTIVE on Gemini: {uploaded.name}")
+                        return uploaded
+                    elif state_name == "FAILED":
+                        logger.warning(f"❌ [GeminiGovernor] Video processing failed on Gemini server: {info}")
+                        return None
+                    time.sleep(1.0)
+
+                logger.info(f"✅ [GeminiGovernor] Video proxy uploaded: {uploaded.name}")
+                return uploaded
+            except Exception as e:
+                logger.warning(f"⚠️ [GeminiGovernor] genai.Client upload_file failed for {fname}: {e}")
+                return None
+
+        # 2. Legacy google.generativeai SDK fallback
+        elif hasattr(genai, "upload_file"):
+            try:
+                genai.configure(api_key=api_key)
+                logger.info(f"📤 [GeminiGovernor] (Legacy) Uploading media: {fname} ({fsize_mb:.2f} MB)...")
+                uploaded = genai.upload_file(file_path, mime_type=mime_type)
+                start_t = time.time()
+                while time.time() - start_t < 25.0:
+                    if getattr(uploaded.state, "name", "") == "ACTIVE":
+                        logger.info(f"✅ [GeminiGovernor] (Legacy) Video ready: {uploaded.name}")
+                        return uploaded
+                    elif getattr(uploaded.state, "name", "") == "FAILED":
+                        logger.warning("❌ [GeminiGovernor] (Legacy) Video processing failed.")
+                        return None
+                    time.sleep(1.0)
+                    uploaded = genai.get_file(uploaded.name)
+                return uploaded
+            except Exception as e:
+                logger.warning(f"⚠️ [GeminiGovernor] Legacy upload_file failed for {fname}: {e}")
+                return None
+
+        logger.debug("📤 [GeminiGovernor] No supported SDK found for upload_file.")
+        return None
+
 
 
     def generate(
