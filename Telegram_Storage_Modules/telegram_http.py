@@ -101,6 +101,10 @@ def _group_id() -> str:
     return g
 
 
+def _api_url(method: str) -> str:
+    return f"https://api.telegram.org/bot{_token()}/{method}"
+
+
 def is_mtproto_configured() -> bool:
     """Returns True if valid TELEGRAM_API_ID and TELEGRAM_API_HASH are configured for MTProto."""
     api_id = os.getenv("TELEGRAM_API_ID")
