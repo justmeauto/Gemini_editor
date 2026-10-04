@@ -188,6 +188,14 @@ def run_scheduled_scraper_batch(max_accounts: int = 2) -> List[str]:
     4. Audits master clips using pool_metadata.json intelligence (duration >= 5s, watermark, engagement).
     5. Publishes up to target quota, writes clean flat pointer JSON, and syncs to Telegram Vault.
     """
+    # Hydrate vault databases (master index, pool_metadata, source_accounts, scraper pointer) from Telegram
+    try:
+        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+        logger.info("📡 [SCHEDULED BATCH] Hydrating vault index & pool_metadata.json from Telegram...")
+        TelegramVaultIndexer().hydrate_all_vault_jsons_on_startup()
+    except Exception as _vh_err:
+        logger.warning(f"⚠️ [SCHEDULED BATCH] Vault hydration notice: {_vh_err}")
+
     target_accounts = get_rotated_max_two_accounts(max_accounts=max_accounts)
     logger.info(f"🚀 [SCHEDULED BATCH] Triggering Apify scraper for accounts: {target_accounts}")
 

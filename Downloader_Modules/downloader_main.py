@@ -421,9 +421,7 @@ def run_phase1_ingestion(
                     # Deduplication check across Vault, Disk, and Content Ledger
                     dedup_info = check_deduplication(shortcode, owner=owner, downloads_dir=downloads_dir)
                     if dedup_info.get("is_duplicate"):
-                        logger.info(f"♻️ [DEDUP SKIP] Reel {clip_folder_name} already exists in Vault/Disk/Ledger")
-                        if dedup_info.get("video_path") and os.path.exists(dedup_info["video_path"]):
-                            downloaded_files.append(os.path.abspath(dedup_info["video_path"]))
+                        logger.info(f"♻️ [DEDUP SKIP] Reel {clip_folder_name} already exists in Vault/Disk/Ledger. Skipping from download queue.")
                         continue
 
                     os.makedirs(clip_dir, exist_ok=True)

@@ -20,6 +20,8 @@ venv/
 # Data & cache
 data/*
 !data/rejected_audio_blacklist.json
+!data/published_registry.json
+!data/scraper_rotation_pointer.json
 user_sessions/
 downloads/
 Processed Shorts/

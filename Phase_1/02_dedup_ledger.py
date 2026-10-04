@@ -63,21 +63,60 @@ def check_deduplication(
     # 2. SECONDARY: Local Disk presence check
     already_on_disk = os.path.exists(meta_path) and os.path.exists(video_path)
 
-    # 3. TERTIARY: Scan pool_metadata.json for shortcode / URL match
+    # Extract clean normalized shortcode for high-precision matching
+    clean_sc = str(shortcode or "").strip()
+    if "/" in clean_sc:
+        import re
+        m = re.search(r"/(?:reel|reels|p)/([A-Za-z0-9_-]+)", clean_sc)
+        if m:
+            clean_sc = m.group(1)
+        else:
+            clean_sc = clean_sc.rstrip("/").split("/")[-1]
+    if clean_sc.startswith("manual_"):
+        clean_sc = clean_sc[7:]
+    clean_sc_lower = clean_sc.lower()
+
+    # 3. TERTIARY: Scan pool_metadata.json schema (files.social_media_id, clips)
     pool_hit = False
     try:
         pool_path = os.path.join(_REPO_ROOT, "Original_audio", "pool_metadata.json")
         if os.path.exists(pool_path):
             with open(pool_path, "r", encoding="utf-8") as pf:
                 pool_data = json.load(pf)
-            ig_url = f"https://www.instagram.com/reel/{shortcode}/"
-            entries = pool_data if isinstance(pool_data, list) else list(pool_data.values())
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                sc = entry.get("shortcode", "") or entry.get("shortCode", "")
-                url_field = entry.get("url", "") or entry.get("videoUrl", "")
-                if sc == shortcode or ig_url in str(url_field) or shortcode in str(url_field):
+
+            files_dict = pool_data.get("files", {}) if isinstance(pool_data, dict) else {}
+            social_dict = files_dict.get("social_media_id", {}) if isinstance(files_dict, dict) else {}
+            clips_dict = pool_data.get("clips", {}) if isinstance(pool_data, dict) else {}
+
+            candidate_entries = []
+            if isinstance(social_dict, dict):
+                for k, v in social_dict.items():
+                    if isinstance(v, dict):
+                        candidate_entries.append((str(k), v))
+                    elif isinstance(v, str):
+                        candidate_entries.append((str(k), {"shortcode": v}))
+            if isinstance(clips_dict, dict):
+                for k, v in clips_dict.items():
+                    if isinstance(v, dict):
+                        candidate_entries.append((str(k), v))
+            if isinstance(files_dict, dict):
+                for k, v in files_dict.items():
+                    if k != "social_media_id" and isinstance(v, dict):
+                        candidate_entries.append((str(k), v))
+
+            ig_url_core = f"/reel/{clean_sc_lower}"
+            ig_p_core = f"/p/{clean_sc_lower}"
+
+            for key_str, entry in candidate_entries:
+                sc = str(entry.get("shortcode") or entry.get("shortCode") or "").lower().strip()
+                url_val = str(entry.get("url") or entry.get("videoUrl") or entry.get("social_media_id") or "").lower()
+                k_lower = key_str.lower()
+
+                if (
+                    (clean_sc_lower and clean_sc_lower == sc)
+                    or (clean_sc_lower and (clean_sc_lower in k_lower or clean_sc_lower in url_val))
+                    or (clean_sc_lower and (ig_url_core in k_lower or ig_p_core in k_lower or ig_url_core in url_val or ig_p_core in url_val))
+                ):
                     pool_hit = True
                     logger.info(f"📋 [STEP 02 - TERTIARY] Shortcode '{shortcode}' found in pool_metadata.json. Flagging as duplicate.")
                     break
@@ -95,13 +134,24 @@ def check_deduplication(
             try:
                 with open(p_file, "r", encoding="utf-8") as f:
                     p_content = f.read()
-                    if shortcode in p_content:
+                    if shortcode in p_content or (clean_sc and clean_sc in p_content):
                         published_check = True
                         break
             except Exception:
                 pass
 
-    is_duplicate = bool(vault_hit) or already_on_disk or pool_hit or published_check
+    # 5. QUINARY: Content Ledger (military-grade dedup) check
+    ledger_hit = False
+    try:
+        from Content_Scraper_Modules.content_ledger import get_ledger
+        ledger = get_ledger()
+        if clean_sc and ledger.shortcode_seen(clean_sc):
+            ledger_hit = True
+            logger.info(f"📜 [STEP 02 - QUINARY] Shortcode '{shortcode}' found in ContentLedger. Flagging as duplicate.")
+    except Exception as _cle:
+        logger.debug(f"[STEP 02] ContentLedger scan notice: {_cle}")
+
+    is_duplicate = bool(vault_hit) or already_on_disk or pool_hit or published_check or ledger_hit
 
     res = {
         "step": "step_02",

@@ -159,8 +159,6 @@ def run_phase1_pipeline(
                 dedup_info = check_deduplication(shortcode, owner=owner, downloads_dir=downloads_dir, callback=event_callback)
                 if dedup_info.get("is_duplicate"):
                     logger.info(f"♻️ [DEDUP SKIP] Reel '{shortcode}' already processed/published. Skipping stream download & Phase 1 processing.")
-                    if dedup_info.get("video_path") and os.path.exists(dedup_info["video_path"]):
-                        downloaded_files.append(os.path.abspath(dedup_info["video_path"]))
                     continue
                 clip_dir = dedup_info["clip_dir"]
 
