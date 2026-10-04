@@ -1078,6 +1078,8 @@ class AudioPoolManager:
         if not candidate_pool_files:
             return None
 
+        cooldown_skipped = []
+
         for filename in candidate_pool_files:
             try:
                 fn_lower = filename.lower()
@@ -1108,18 +1110,25 @@ class AudioPoolManager:
                     logger.debug(f"[POOL] Skipping unusable/speech audio: {filename}")
                     continue
 
-                # ── UNIFIED COOLDOWN ENFORCEMENT ──────────────────────────────────────────
-                cooldown_sec = self.reuse_cooldown_seconds
-                last_used = self._parse_timestamp(meta.get("last_used", 0))
-                if last_used > 0 and (time.time() - last_used) < cooldown_sec:
-                    hrs_ago = (time.time() - last_used) / 3600.0
-                    logger.info(f"[POOL] Skipping '{filename}' — used {hrs_ago:.1f}h ago (under {cooldown_sec/3600:.1f}h cooldown limit).")
-                    continue
+                # Check if file is known to exceed 20MB Bot API download limit
+                fid = meta.get("file_id") or meta.get("telegram_file_id")
+                try:
+                    from Telegram_Storage_Modules.telegram_http import is_file_oversized, is_mtproto_configured
+                    if fid and is_file_oversized(fid) and not is_mtproto_configured():
+                        logger.debug(f"[POOL] Skipping known oversized candidate: {filename}")
+                        continue
+                except Exception:
+                    pass
 
                 dur = self._safe_float(meta.get("duration") or meta.get("duration_sec") or meta.get("audio_duration", 0.0), 0.0)
                 if 0.0 < dur < 10.0:
                     logger.debug(f"[POOL] Skipping short audio snippet (<10s): {filename}")
                     continue
+
+                # ── UNIFIED COOLDOWN ENFORCEMENT ──────────────────────────────────────────
+                cooldown_sec = self.reuse_cooldown_seconds
+                last_used = self._parse_timestamp(meta.get("last_used", 0))
+                in_cooldown = last_used > 0 and (time.time() - last_used) < cooldown_sec
 
                 recent_penalty = (filename in recent_history)
 
@@ -1192,6 +1201,12 @@ class AudioPoolManager:
 
                 score += random.uniform(0, 0.05)
 
+                if in_cooldown:
+                    hrs_ago = (time.time() - last_used) / 3600.0
+                    logger.info(f"[POOL] Skipping '{filename}' — used {hrs_ago:.1f}h ago (under {cooldown_sec/3600:.1f}h cooldown limit). Recording for LRU fallback.")
+                    cooldown_skipped.append((last_used, filename, score))
+                    continue
+
                 if score > best_score:
                     best_score = score
                     best_audio = filename
@@ -1199,23 +1214,51 @@ class AudioPoolManager:
                 logger.warning(f"⚠️ [POOL] Error scoring candidate '{filename}': {_cand_err}. Skipping.")
                 continue
 
+        # Sort all cooldown-skipped tracks by LRU (oldest last_used first, then highest score)
+        if cooldown_skipped:
+            cooldown_skipped.sort(key=lambda x: (x[0], -x[2]))
+
+        # If all candidates are in cooldown, fall back to least-recently-used track
+        if not best_audio and cooldown_skipped:
+            logger.warning(
+                f"⚠️ [POOL COOLDOWN] All {len(cooldown_skipped)} valid candidates were used within the last "
+                f"{self.reuse_cooldown_seconds/3600:.1f}h cooldown limit! "
+                f"Falling back to least-recently-used track to avoid pipeline failure."
+            )
+            best_audio = cooldown_skipped[0][1]
+
         if not best_audio:
             return None
 
-        src = os.path.join(self.active_dir, best_audio)
-        if not os.path.exists(src):
-            try:
-                from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-                vault = TelegramVaultIndexer()
-                hydrated = vault.hydrate_bgm_track_from_vault(best_audio, self.active_dir)
-                if hydrated and os.path.exists(hydrated):
-                    src = hydrated
-                    logger.info(f"📥 [POOL - PRIMARY] Hydrated selected track '{best_audio}' directly from Telegram Storage Vault.")
-            except Exception as _he:
-                logger.warning(f"⚠️ [POOL] Hydration warning for '{best_audio}': {_he}")
+        # Build ordered list of candidates to try hydrating
+        candidates_to_try_hydrate = [best_audio]
+        if cooldown_skipped:
+            for _, alt_fn, _ in cooldown_skipped:
+                if alt_fn != best_audio and alt_fn not in candidates_to_try_hydrate:
+                    candidates_to_try_hydrate.append(alt_fn)
 
-        if not os.path.exists(src):
-            logger.warning(f"❌ [POOL] Selected track '{best_audio}' does not exist on disk and could not be hydrated from vault.")
+        src = None
+        for cand_audio in candidates_to_try_hydrate:
+            test_src = os.path.join(self.active_dir, cand_audio)
+            if not os.path.exists(test_src):
+                try:
+                    from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                    vault = TelegramVaultIndexer()
+                    hydrated = vault.hydrate_bgm_track_from_vault(cand_audio, self.active_dir)
+                    if hydrated and os.path.exists(hydrated):
+                        test_src = hydrated
+                        logger.info(f"📥 [POOL - PRIMARY] Hydrated selected track '{cand_audio}' directly from Telegram Storage Vault.")
+                except Exception as _he:
+                    logger.warning(f"⚠️ [POOL] Hydration warning for '{cand_audio}': {_he}")
+
+            if os.path.exists(test_src) and os.path.getsize(test_src) > 1024:
+                src = test_src
+                best_audio = cand_audio
+                break
+            else:
+                logger.warning(f"❌ [POOL] Candidate track '{cand_audio}' does not exist on disk and could not be hydrated from vault.")
+
+        if not src or not os.path.exists(src):
             return None
 
         with self.lock:

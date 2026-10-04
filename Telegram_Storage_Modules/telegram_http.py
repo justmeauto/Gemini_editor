@@ -365,6 +365,15 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
         return False
 
 
+_OVERSIZED_FILE_IDS = set()
+
+def is_file_oversized(file_id: Optional[str]) -> bool:
+    """Returns True if the file_id was flagged as exceeding Telegram's 20MB Bot API getFile limit."""
+    if not file_id:
+        return False
+    return file_id in _OVERSIZED_FILE_IDS
+
+
 def download_file_by_id(file_id: str, dest_path: str) -> bool:
     """
     Downloads a Telegram file by file_id to dest_path.
@@ -385,6 +394,7 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
             timeout=15,
         )
         if r.status_code == 400:
+            _OVERSIZED_FILE_IDS.add(file_id)
             if not is_mtproto_configured():
                 logger.warning("[telegram_http] 20MB getFile limit hit for file_id=%s and MTProto is not configured. Download impossible via Bot API.", file_id[:12])
                 return False

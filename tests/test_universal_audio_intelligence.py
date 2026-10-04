@@ -10,6 +10,9 @@ Tests:
 import unittest
 import os
 import sys
+import tempfile
+import json
+from unittest.mock import patch
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
@@ -214,6 +217,87 @@ class TestUniversalAudioIntelligence(unittest.TestCase):
             self.assertNotIn("SpeechOnly.wav", pool)
             self.assertNotIn("PodcastDialogue.wav", pool)
             self.assertNotIn("CrowdNoise.wav", pool)
+
+    def test_pool_manager_lru_fallback_under_all_cooldown(self):
+        """When all candidate tracks are in cooldown, pool manager must fall back to LRU track instead of None."""
+        from Audio_Modules.audio_pool_manager import AudioPoolManager
+        import time
+
+        now = time.time()
+        mock_data = {
+            "version": 3,
+            "files": {
+                "TrackRecent.mp3": {
+                    "filename": "TrackRecent.mp3",
+                    "bpm": 120.0,
+                    "energy": 0.8,
+                    "duration": 30.0,
+                    "last_used": now - 3600,  # 1h ago
+                    "usage_count": 2
+                },
+                "TrackOlder.mp3": {
+                    "filename": "TrackOlder.mp3",
+                    "bpm": 120.0,
+                    "energy": 0.8,
+                    "duration": 30.0,
+                    "last_used": now - (5 * 3600),  # 5h ago (LRU)
+                    "usage_count": 1
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            oa_dir = os.path.join(td, "Original_audio")
+            act_dir = os.path.join(oa_dir, "active")
+            os.makedirs(act_dir, exist_ok=True)
+            mock_pm = os.path.join(oa_dir, "pool_metadata.json")
+            with open(mock_pm, "w", encoding="utf-8") as f:
+                json.dump(mock_data, f)
+            # Create physical mock files in active/
+            with open(os.path.join(act_dir, "TrackRecent.mp3"), "wb") as f:
+                f.write(b"MOCK_AUDIO_DATA_FOR_RECENT" * 100)
+            with open(os.path.join(act_dir, "TrackOlder.mp3"), "wb") as f:
+                f.write(b"MOCK_AUDIO_DATA_FOR_OLDER" * 100)
+
+            with patch("Telegram_Storage_Modules.telegram_vault_indexer._REPO_ROOT", td):
+                pool = AudioPoolManager(base_dir=oa_dir)
+                selected = pool.select_best_audio()
+            self.assertIsNotNone(selected)
+            self.assertIn("TrackOlder.mp3", selected)
+
+    def test_vault_hydration_resolves_from_social_media_id(self):
+        """hydrate_bgm_track_from_vault must find extracted_audio_file_id inside social_media_id dictionary."""
+        from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+
+        indexer = TelegramVaultIndexer()
+        mock_data = {
+            "version": 3,
+            "files": {
+                "social_media_id": {
+                    "https://www.instagram.com/reel/DeHarvest123/": {
+                        "shortcode": "DeHarvest123",
+                        "media_file_ids": {
+                            "extracted_audio_file_id": "FID_RESOLVED_FROM_SM"
+                        }
+                    }
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            oa_dir = os.path.join(td, "Original_audio")
+            os.makedirs(oa_dir, exist_ok=True)
+            mock_pm = os.path.join(oa_dir, "pool_metadata.json")
+            with open(mock_pm, "w", encoding="utf-8") as f:
+                json.dump(mock_data, f)
+
+            with patch("Telegram_Storage_Modules.telegram_vault_indexer._REPO_ROOT", td), \
+                 patch.object(indexer, "download_vault_file_by_id", return_value=True) as mock_dl:
+                dest_dir = os.path.join(td, "dest")
+                res = indexer.hydrate_bgm_track_from_vault("DeHarvest123.wav", dest_dir=dest_dir)
+                self.assertIsNotNone(res)
+                mock_dl.assert_called_once()
+                self.assertEqual(mock_dl.call_args[0][0], "FID_RESOLVED_FROM_SM")
 
 
 if __name__ == "__main__":

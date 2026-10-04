@@ -1600,7 +1600,7 @@ Return ONLY valid JSON:
                 win_fid = data.get("telegram_file_id")
 
                 all_valid_names = set(c["filename"].lower() for c in top_candidates)
-                if win_track and win_track.lower() in all_valid_names and win_track.lower() not in effective_disqualified:
+                if win_track and win_track.lower() in all_valid_names:
                     selected_track = win_track
                     reasoning = data.get("reasoning", reasoning)
                     alignment_score = float(data.get("alignment_score", 0.92))
@@ -1610,15 +1610,24 @@ Return ONLY valid JSON:
                         selected_file_id = pool_files.get(selected_track, {}).get("file_id", selected_file_id)
                     logger.info(f"🎶 [BGM Selector - Gemini Call 2] Winner: '{selected_track}' (score={alignment_score:.2f})")
                 else:
-                    logger.warning(f"🎶 [BGM Selector] Gemini returned disqualified/unknown track '{win_track}' — forcing top 4D math winner '{selected_track}'.")
+                    logger.warning(f"🎶 [BGM Selector] Gemini returned unknown track '{win_track}' — forcing top 4D math winner '{selected_track}'.")
     except Exception as e:
         logger.warning(f"🎶 [BGM Selector - Gemini Call 2] Router fallback to top 4D math winner: {e}")
 
-    # Compute backup candidates for resilient Step 04 failover
+    # Compute backup candidates for resilient Step 04 failover (never empty when candidates exist)
     backup_candidates = [
         c["filename"] for c in top_candidates
-        if c["filename"] != selected_track and c["filename"].lower() not in effective_disqualified
-    ][:5]
+        if c["filename"] != selected_track
+    ][:10]
+
+    # Map candidate filenames to their Telegram file_ids for direct hydration
+    cand_fids = {}
+    for c in top_candidates:
+        fn = c.get("filename")
+        if fn:
+            fid = pool_files.get(fn, {}).get("file_id") or pool_files.get(fn, {}).get("telegram_file_id")
+            if fid:
+                cand_fids[fn] = fid
 
     store.patch_bgm_selection(clip_data, selected_track, reasoning, alignment_score)
     store.save(clip_id, clip_data, clip_folder)
@@ -1629,6 +1638,7 @@ Return ONLY valid JSON:
         "alignment_score": alignment_score,
         "reasoning": reasoning,
         "backup_candidates": backup_candidates,
+        "candidate_file_ids": cand_fids,
         "archetype": arch_name,
     }
 

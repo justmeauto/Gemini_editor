@@ -102,9 +102,26 @@ def select_clip_bgm(
     from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
     vault = TelegramVaultIndexer()
 
+    # Pre-map file IDs from lyric_rhythm_aligner
+    cand_fids = dict(res.get("candidate_file_ids") or {})
+    if selected_track_name and "telegram_file_id" in res and selected_track_name not in cand_fids:
+        cand_fids[selected_track_name] = res["telegram_file_id"]
+
+    # Supplement candidate list from vault audio pool if pool is small
+    try:
+        vault_pool = vault.get_vault_audio_pool(current_clip_id=clip_id) or {}
+        for vtrack, vmeta in vault_pool.items():
+            if vtrack not in candidates_to_try and (not exclude_filenames or vtrack not in exclude_filenames):
+                candidates_to_try.append(vtrack)
+                if vtrack not in cand_fids and isinstance(vmeta, dict) and vmeta.get("file_id"):
+                    cand_fids[vtrack] = vmeta["file_id"]
+    except Exception as _vp_err:
+        logger.debug(f"[STEP 04] Notice fetching vault audio pool candidates: {_vp_err}")
+
+    failed_candidates = set()
     for cand_name in candidates_to_try:
         try:
-            cand_fid = res.get("telegram_file_id") if cand_name == selected_track_name else None
+            cand_fid = cand_fids.get(cand_name)
             resolved_path = vault.hydrate_bgm_track_from_vault(
                 cand_name,
                 target_dest,
@@ -117,9 +134,11 @@ def select_clip_bgm(
                 break
             else:
                 logger.warning(f"⚠️ [STEP 04] Failed to hydrate BGM candidate '{cand_name}'. Trying next candidate...")
+                failed_candidates.add(cand_name)
                 resolved_path = None
         except Exception as _vh_err:
             logger.debug(f"[STEP 04] Vault BGM track hydration notice for '{cand_name}': {_vh_err}")
+            failed_candidates.add(cand_name)
             resolved_path = None
 
     # Fallback to pool manager if Gemini's primary and backup candidates failed to hydrate
@@ -127,8 +146,11 @@ def select_clip_bgm(
         logger.warning("⚠️ [STEP 04] Primary and backup candidates unavailable. Resorting to pool manager emergency fallback.")
         try:
             pool = AudioPoolManager(base_dir=audio_dir)
-            all_excludes = set(exclude_filenames or set()) | set(candidates_to_try)
+            all_excludes = set(exclude_filenames or set()) | failed_candidates
             resolved_path = pool.select_best_audio(exclude_filenames=all_excludes)
+            if not resolved_path and failed_candidates:
+                # If everything was excluded, retry excluding only failed candidates
+                resolved_path = pool.select_best_audio(exclude_filenames=failed_candidates)
             if resolved_path and os.path.isfile(resolved_path) and os.path.getsize(resolved_path) > 1024:
                 selected_track_name = os.path.basename(resolved_path)
                 res["selected_audio_track"] = selected_track_name

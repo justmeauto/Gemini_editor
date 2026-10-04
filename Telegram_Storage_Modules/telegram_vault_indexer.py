@@ -447,6 +447,24 @@ class TelegramVaultIndexer:
                             break
                 if not resolved_file_id:
                     resolved_file_id = meta.get("file_id")
+
+                # Also search harvested clips in social_media_id dictionary
+                if not resolved_file_id and isinstance(files, dict) and "social_media_id" in files:
+                    sm_dict = files.get("social_media_id") or {}
+                    stem = os.path.splitext(filename.lower())[0] if filename else ""
+                    for sm_url, sm_entry in sm_dict.items():
+                        if not isinstance(sm_entry, dict):
+                            continue
+                        sc = (sm_entry.get("shortcode") or "").lower()
+                        if (sc and (sc == stem or sc in stem)) or (stem and stem in sm_url.lower()):
+                            meta = sm_entry
+                            resolved_file_id = (
+                                sm_entry.get("media_file_ids", {}).get("extracted_audio_file_id") or
+                                sm_entry.get("extracted_audio_file_id") or
+                                sm_entry.get("file_id")
+                            )
+                            if resolved_file_id:
+                                break
             except Exception as _pe:
                 logger.debug("Notice on pool_metadata BGM lookup: %s", _pe)
 
@@ -467,8 +485,18 @@ class TelegramVaultIndexer:
                 logger.debug("Failed copying from active pool: %s", _cp_err)
                 return active_path
 
-
         if resolved_file_id:
+            try:
+                from Telegram_Storage_Modules.telegram_http import is_file_oversized, is_mtproto_configured
+                if is_file_oversized(resolved_file_id) and not is_mtproto_configured():
+                    logger.warning(
+                        "⚠️ [VAULT BGM HYDRATION] File '%s' (file_id: %s) exceeds Telegram 20MB Bot API limit without MTProto. Skipping hydration.",
+                        filename, resolved_file_id[:15]
+                    )
+                    return None
+            except Exception:
+                pass
+
             logger.info("📥 [VAULT BGM HYDRATION] Fetching BGM '%s' from Telegram Storage Group (file_id: %s)...", filename, resolved_file_id[:15])
             if self.download_vault_file_by_id(resolved_file_id, local_path):
                 logger.info("✅ [VAULT BGM HYDRATION SUCCESS] Downloaded BGM '%s' from Telegram Storage Group!", filename)
@@ -544,6 +572,26 @@ class TelegramVaultIndexer:
                                 if a_data.get("is_speech_vocal") and bpm_val <= 0:
                                     continue
 
+                                # Reject if file is known to exceed 20MB Bot API limit without MTProto
+                                try:
+                                    from Telegram_Storage_Modules.telegram_http import is_file_oversized, is_mtproto_configured
+                                    if is_file_oversized(ext_fid) and not is_mtproto_configured():
+                                        continue
+                                except Exception:
+                                    pass
+
+                                audio_fsize = float(
+                                    sm_entry.get("media_file_ids", {}).get("extracted_audio_file_size") or
+                                    sm_entry.get("extracted_audio_file_size") or
+                                    a_data.get("file_size") or 0.0
+                                )
+                                try:
+                                    from Telegram_Storage_Modules.telegram_http import is_mtproto_configured
+                                    if audio_fsize > 20 * 1024 * 1024 and not is_mtproto_configured():
+                                        continue
+                                except Exception:
+                                    pass
+
                                 track_key = f"{sc}.wav"
                                 pool[track_key] = {
                                     "shortcode": sc,
@@ -555,6 +603,7 @@ class TelegramVaultIndexer:
                                     "vibe_tags": a_data.get("vibe_tags") or [a_data.get("vibe", "energetic")],
                                     "genre": a_data.get("genre") or a_data.get("gemini_genre") or "music",
                                     "duration": float(a_data.get("duration") or a_data.get("audio_duration") or 15.0),
+                                    "file_size": audio_fsize,
                                     "is_source_extract": True,
                                     "usage_count": sm_entry.get("usage_count", 0),
                                     "last_used": sm_entry.get("last_used", 0),
