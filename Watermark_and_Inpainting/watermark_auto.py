@@ -11,12 +11,11 @@ import logging
 from typing import List, Dict, Tuple, Optional
 
 # Shared Modules
-# Shared Modules
 try:
-    from Visual_Refinement_Modules import hybrid_watermark
-    from Visual_Refinement_Modules.import_gate import ImportGate
-    from Visual_Refinement_Modules.opencv_watermark import inpaint_video, check_watermark_residue, MaskVerifier, verify_visual_guarantee
-    from Visual_Refinement_Modules.watermark_enhancers import MicroTextureBlender
+    from Watermark_and_Inpainting import hybrid_watermark
+    from Watermark_and_Inpainting.import_gate import ImportGate
+    from Watermark_and_Inpainting.opencv_watermark import inpaint_video, check_watermark_residue, MaskVerifier, verify_visual_guarantee
+    from Watermark_and_Inpainting.watermark_enhancers import MicroTextureBlender
 except ImportError:
     import hybrid_watermark
     from import_gate import ImportGate
@@ -27,7 +26,7 @@ except ImportError:
         MicroTextureBlender = None
 
 try:
-    from Visual_Refinement_Modules.static_patch_engine import StaticPatchReuseEngine
+    from Watermark_and_Inpainting.static_patch_engine import StaticPatchReuseEngine
 except ImportError:
     try:
         from static_patch_engine import StaticPatchReuseEngine

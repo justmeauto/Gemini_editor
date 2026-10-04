@@ -1183,15 +1183,18 @@ def select_best_audio_for_clip(
             f"vocals={c_vocals}, lang='{c_lang}', last_used={hrs_since_used:.1f}h_ago, usage_count={u_count}"
         )
 
+    import random
     tier1 = [c for c in candidate_scores if c[2] == 1]
     tier2 = [c for c in candidate_scores if c[2] == 2]
     tier3 = [c for c in candidate_scores if c[2] == 3]
 
-    tier1.sort(key=lambda x: x[0], reverse=True)
-    tier2.sort(key=lambda x: x[0], reverse=True)
+    # Apply small diversity jitter (0.0 to 0.03) for tracks with near-identical scores to avoid deterministic repetition
+    tier1.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
+    tier2.sort(key=lambda x: x[0] + random.uniform(0.0, 0.03), reverse=True)
     tier3.sort(key=lambda x: x[0], reverse=True)
 
-    top_candidates = (tier1[:7] + tier2[:2] + tier3[:1]) if tier1 else (tier2[:8] + tier3[:1])
+    # Allow up to 20 candidate tracks into Gemini context (15 tier-1 + 4 tier-2 + 1 tier-3 fallback)
+    top_candidates = (tier1[:15] + tier2[:4] + tier3[:1]) if tier1 else (tier2[:19] + tier3[:1])
 
     non_disqualified_top = [c for c in top_candidates if c[1].lower() not in disqualified_tracks]
     if non_disqualified_top:
@@ -1215,12 +1218,13 @@ def select_best_audio_for_clip(
     candidates_str = "\n".join(top_lines)
     forbidden_str = ", ".join([f"'{t}'" for t in sorted(effective_disqualified)]) or "None"
 
+    num_external = len(tier1[:15]) if tier1 else len(tier2[:19])
     prompt = f"""You are an Expert BGM Music Selector for short-form video reels.
 
 Rules:
 - NEVER pick a track from FORBIDDEN list
 - STRICT NOISE REJECTION: STRICTLY REJECT and NEVER select audio tracks corrupted by heavy background noise, car/traffic sounds, crowd babble, shouting, camera shutter clicks, horn blares, or environmental noise pollution. Select ONLY clean, studio-quality, high-energy musical tracks or high-fidelity musical scores.
-- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{len(tier1[:7]) if tier1 else len(tier2[:8])}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
+- FIRST PRIORITY: Select from the EXTERNAL candidate tracks (#1 to #{num_external}). Choose a fresh external BGM track that elevates, enhances, or brings a higher-quality musical energy to the reel.
 - LAST RESORT FALLBACK: The very last option ('[CLIP'S ORIGINAL HARVESTED AUDIO - LAST RESORT FALLBACK ONLY]') MUST ONLY be selected if ALL external candidate tracks above are completely incompatible in BPM, genre, or vibe.
 - Prioritize musical style, emotional vibe, and BPM alignment with the video.
 - PREFER FRESH & RARELY USED TRACKS (WITH HIGH CONFIDENCE OVERRIDE): Favor tracks with longer 'last_used' time and lower 'usage_count' to maintain diversity. HOWEVER, if a track is a perfect musical/visual fit with alignment confidence ≥ 90% (0.90+ match for BPM, mood, and rhythm), that high alignment confidence OVERRIDES recency preference and the track may be selected.

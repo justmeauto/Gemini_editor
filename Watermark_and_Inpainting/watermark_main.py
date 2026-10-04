@@ -36,8 +36,8 @@ logger = logging.getLogger("watermark_main")
 
 # ─── MODULE IMPORTS ────────────────────────────────────────────────────────────
 try:
-    from Visual_Refinement_Modules.watermark_auto import process_video_with_watermark
-    from Visual_Refinement_Modules.hybrid_watermark import HybridWatermarkDetector
+    from Watermark_and_Inpainting.watermark_auto import process_video_with_watermark
+    from Watermark_and_Inpainting.hybrid_watermark import HybridWatermarkDetector
 except ImportError:
     from watermark_auto import process_video_with_watermark
     from hybrid_watermark import HybridWatermarkDetector
@@ -46,7 +46,14 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════════════
 # CORE PROCESSING FUNCTION (shared by CLI and Gradio)
 # ═══════════════════════════════════════════════════════════════════════════════
-def run_watermark_removal(input_path: str, output_path: str = None, keywords: str = "", retry_level: int = 0):
+def run_watermark_removal(
+    input_path: str,
+    output_path: str = None,
+    keywords: str = "",
+    retry_level: int = 0,
+    predetected_watermarks: list = None,
+    **kwargs
+):
     """
     Full watermark detection + removal pipeline.
     Returns (output_path, status_log) or raises on fatal error.
@@ -71,12 +78,16 @@ def run_watermark_removal(input_path: str, output_path: str = None, keywords: st
     log(f"📦 Output: {os.path.basename(output_path)}")
 
     # Step 1: AI Detection
-    log("🔭 Step 1: Initiating AI Forensic Detection...")
-    detector = HybridWatermarkDetector()
-    detection_res_json = detector.process_video(input_path, keywords=keywords, retry_level=retry_level)
-    detection_data = json.loads(detection_res_json)
-    watermarks = detection_data.get("watermarks", [])
-    log(f"✅ Detection finished. Found {len(watermarks)} watermarks.")
+    if predetected_watermarks is not None:
+        log(f"💎 Step 1: Reusing {len(predetected_watermarks)} pre-detected watermark bounding box(es) (duplicate detection skipped).")
+        watermarks = predetected_watermarks
+    else:
+        log("🔭 Step 1: Initiating AI Forensic Detection...")
+        detector = HybridWatermarkDetector()
+        detection_res_json = detector.process_video(input_path, keywords=keywords, retry_level=retry_level)
+        detection_data = json.loads(detection_res_json)
+        watermarks = detection_data.get("watermarks", [])
+        log(f"✅ Detection finished. Found {len(watermarks)} watermarks.")
 
     if not watermarks:
         log("⏹️ No watermarks detected. Copying source to destination...")

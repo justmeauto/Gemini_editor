@@ -1382,6 +1382,8 @@ async def process_yt_auth_code_input(msg, raw_text: str):
 # ── Telegram Message & Media Handler ─────────────────────────────────────────
 
 ACTIVE_PIPELINE_JOBS = set()
+_MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_PIPELINE_JOBS", "2"))
+_PIPELINE_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_JOBS)
 
 async def _check_and_notify_busy_state(msg, user_id_str: str):
     """If another job is actively rendering and user has no personal API key, prompt them to add key for high speed."""
@@ -1404,13 +1406,16 @@ async def _check_and_notify_busy_state(msg, user_id_str: str):
             logger.debug("Notice on busy state check: %s", _e)
 
 def _dispatch_pipeline_in_background(**kwargs):
-    """Spawns non-blocking daemon thread so Telegram bot loop never freezes."""
+    """Spawns non-blocking daemon thread with bounded concurrency so Telegram bot loop never freezes."""
     job_id = f"{kwargs.get('requestor_chat_id')}_{time.time()}"
     ACTIVE_PIPELINE_JOBS.add(job_id)
     logger.info(f"🚀 [PIPELINE DISPATCH] Spawning background worker thread for requestor {kwargs.get('requestor_chat_id')} (mode={kwargs.get('mode')}, url={kwargs.get('url')})")
     def _worker():
+        acquired = False
         try:
-            logger.info(f"▶️ [PIPELINE WORKER START] Worker thread executing job '{job_id}'")
+            _PIPELINE_SEMAPHORE.acquire()
+            acquired = True
+            logger.info(f"▶️ [PIPELINE WORKER START] Worker thread executing job '{job_id}' (active concurrency slot acquired)")
             run_master_pipeline(**kwargs)
         except Exception as _pe:
             logger.error(f"❌ Background pipeline error: {_pe}", exc_info=True)
@@ -1426,6 +1431,8 @@ def _dispatch_pipeline_in_background(**kwargs):
                 except Exception as _ne:
                     logger.debug(f"Notice sending background error notification: {_ne}")
         finally:
+            if acquired:
+                _PIPELINE_SEMAPHORE.release()
             ACTIVE_PIPELINE_JOBS.discard(job_id)
             logger.info(f"🏁 [PIPELINE WORKER FINISHED] Worker thread finished job '{job_id}' (active remaining: {len(ACTIVE_PIPELINE_JOBS)})")
             sys.stdout.flush()

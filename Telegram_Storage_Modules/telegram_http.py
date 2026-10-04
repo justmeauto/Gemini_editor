@@ -134,8 +134,11 @@ def upload_file_with_pyrogram(
         from pyrogram import Client
 
         token = _token()
-        api_id = os.getenv("TELEGRAM_API_ID") or 6
-        api_hash = os.getenv("TELEGRAM_API_HASH") or "eb6e06484e316e2d0be2d4177051c2b1"
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        if not api_id or not api_hash or str(api_id).strip() == "6":
+            logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto upload.")
+            return None
 
         async def _async_upload():
             async with Client(
@@ -310,8 +313,11 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
         from pyrogram import Client
 
         token = _token()
-        api_id = os.getenv("TELEGRAM_API_ID") or 6
-        api_hash = os.getenv("TELEGRAM_API_HASH") or "eb6e06484e316e2d0be2d4177051c2b1"
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        if not api_id or not api_hash or str(api_id).strip() == "6":
+            logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto download.")
+            return False
 
         async def _async_download():
             async with Client(

@@ -29,8 +29,8 @@ logger = logging.getLogger("opencv_watermark")
 
 # Local Imports
 try:
-    from Visual_Refinement_Modules.import_gate import ImportGate
-    from Visual_Refinement_Modules.quality_orchestrator import human_guard
+    from Watermark_and_Inpainting.import_gate import ImportGate
+    from Watermark_and_Inpainting.quality_orchestrator import human_guard
 except ImportError:
     try:
         from import_gate import ImportGate
@@ -40,7 +40,7 @@ except ImportError:
         human_guard = None
 
 try:
-    from Visual_Refinement_Modules.static_patch_engine import StaticPatchReuseEngine
+    from Watermark_and_Inpainting.static_patch_engine import StaticPatchReuseEngine
 except ImportError:
     try:
         from static_patch_engine import StaticPatchReuseEngine
@@ -101,7 +101,7 @@ def get_brand_logo_image(brand_name: Optional[str] = None, platform: Optional[st
                             return img
     return None
 try:
-    from Visual_Refinement_Modules.watermark_enhancers import AlphaNeutralizer, ContrastHealer, EdgeIntegrator, MicroTextureBlender
+    from Watermark_and_Inpainting.watermark_enhancers import AlphaNeutralizer, ContrastHealer, EdgeIntegrator, MicroTextureBlender
     ENHANCERS_AVAILABLE = True
 except ImportError:
     try:

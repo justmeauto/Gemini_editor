@@ -22,16 +22,16 @@ import time
 import uuid
 import shutil
 try:
-    from Visual_Refinement_Modules.import_gate import ImportGate
+    from Watermark_and_Inpainting.import_gate import ImportGate
 except ImportError:
     from import_gate import ImportGate
 
 # Import FaceProtector for strict safety overrides
 try:
-    from Visual_Refinement_Modules.opencv_watermark import FaceProtector
+    from Watermark_and_Inpainting.opencv_watermark import FaceProtector
 except ImportError:
     try:
-        from Visual_Refinement_Modules.opencv_watermark import FaceProtector
+        from opencv_watermark import FaceProtector
     except ImportError:
         class FaceProtector:
             @staticmethod
@@ -191,7 +191,7 @@ class HybridWatermarkDetector:
         if title and title.strip():
             _title_clean = title.strip()
             try:
-                from Visual_Refinement_Modules.gemini_enhance_for_watermark import NICHE_LIST
+                from Watermark_and_Inpainting.gemini_enhance_for_watermark import NICHE_LIST
             except ImportError:
                 try:
                     from gemini_enhance_for_watermark import NICHE_LIST
@@ -695,7 +695,10 @@ class HybridWatermarkDetector:
 
             # --- TEMPORAL SMART REFINEMENT ---
             try:
-                from Visual_Refinement_Modules.opencv_watermark import TemporalSmartRefiner
+                try:
+                    from Watermark_and_Inpainting.opencv_watermark import TemporalSmartRefiner
+                except ImportError:
+                    from opencv_watermark import TemporalSmartRefiner
 
                 refined_box = TemporalSmartRefiner.refine_box_temporal(video_path, box)
                 box = refined_box  # Accept the tight fit (includes micro-pad)

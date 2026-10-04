@@ -176,6 +176,7 @@ def run_phase2_pipeline(
                     inpainted_path, _ = run_watermark_removal(
                         input_path=video_path,
                         output_path=clean_raw_path,
+                        predetected_watermarks=items,
                         retry_level=0
                     )
                     if inpainted_path and os.path.exists(inpainted_path) and os.path.getsize(inpainted_path) > 1024:

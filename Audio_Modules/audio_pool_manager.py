@@ -16,6 +16,25 @@ logger = logging.getLogger("audio_pool_manager")
 # Thread-safe guard flag: prevents recursive vault hydration loops.
 _VAULT_HYDRATION_IN_PROGRESS = False
 _hydration_lock = threading.Lock()
+_GLOBAL_POOL_LOCK = threading.RLock()
+
+
+def _safe_replace(src: str, dst: str, max_retries: int = 5, delay: float = 0.1) -> None:
+    """Safely replaces dst with src, handling Windows file lock contention."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except (PermissionError, OSError) as e:
+            if attempt == max_retries:
+                try:
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    os.replace(src, dst)
+                    return
+                except Exception:
+                    raise e
+            time.sleep(delay * attempt)
 
 PIPELINE_BLOCKED_EXACT = {
     "video.wav", "video.mp4", "video_extracted.wav"
@@ -67,7 +86,7 @@ class AudioPoolManager:
         self.beats_dir = os.path.join(self.base_dir, "beats")
         self.meta_path = os.path.join(self.base_dir, "pool_metadata.json")
 
-        self.lock = threading.RLock()
+        self.lock = _GLOBAL_POOL_LOCK
         self._cache_lock = threading.Lock()
         self._beat_cache = {}
         self.MAX_CACHE_SIZE = 20
@@ -485,7 +504,7 @@ class AudioPoolManager:
                 
                 with open(temp_path, "w", encoding="utf-8") as f:
                     json.dump(self.metadata, f, indent=2, ensure_ascii=False)
-                os.replace(temp_path, self.meta_path)
+                _safe_replace(temp_path, self.meta_path)
 
                 if sync_to_vault:
                     self._sync_to_telegram_vault()

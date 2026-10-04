@@ -185,6 +185,10 @@ def synthesize_editing_plan(
         extra_inputs["lyric_intel"] = forensic_context["lyric_intel"]
 
     if forensic_context:
+        # Pass inpainted_upfront flag explicitly to prevent duplicate delogo runs
+        if forensic_context.get("inpainted_upfront"):
+            extra_inputs["inpainted_upfront"] = True
+
         # IMPORTANT: forensic_context["watermarks"] is an INTEGER COUNT (e.g. 1, 2).
         # We MUST only pass actual {x, y, w, h} coordinate dicts.
         # Never pass the integer count — it breaks build_single_pass_filtergraph().
