@@ -125,6 +125,21 @@ def build_rhythm_timeline(
     # Compute routing parameters with final verified audio
     route_params = compute_routing_parameters(lyric_intel, forensic_context, active_bgm_path)
 
+    # Protect dialogue and apply audio strategy constraints
+    try:
+        from Audio_Modules.audio_strategy import routing_for_strategy
+        _strategy = (forensic_context or {}).get("audio_strategy", {})
+        if _strategy:
+            route_params = routing_for_strategy(_strategy, route_params)
+            logger.info(
+                f"🛡️ [STEP 05 AUDIO STRATEGY APPLIED] mode='{_strategy.get('mode')}' | "
+                f"speed={route_params.get('speed_factor')}x | "
+                f"cut_on='{route_params.get('cut_on')}' | "
+                f"music_vol={route_params.get('music_volume')}"
+            )
+    except Exception as _as_err:
+        logger.warning(f"Audio strategy routing notice: {_as_err}")
+
     # Full psycho-acoustic timeline construction using RhythmTimelineBuilder
     try:
         v_dur = builder._get_duration(video_path)

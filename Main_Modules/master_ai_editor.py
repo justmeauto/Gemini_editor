@@ -187,6 +187,52 @@ class MasterAIEditor:
                 f"selected_bgm='{selected_track_name}'"
             )
 
+            # ── STEP 3.1: Audio Strategy Determination (Speech vs B-Roll vs Ambient) ──
+            if "audio_strategy" not in forensic_context:
+                try:
+                    from Audio_Modules.audio_strategy import speech_stats, decide_audio_strategy
+                    v_dur = 0.0
+                    try:
+                        v_dur = self.rhythm_timeline_builder._get_duration(video_path)
+                    except Exception:
+                        pass
+                    whisper_data = None
+                    clip_dir = os.path.dirname(video_path)
+                    meta_file = os.path.join(clip_dir, "metadata.json")
+                    if os.path.isfile(meta_file):
+                        try:
+                            with open(meta_file, "r", encoding="utf-8") as _mf:
+                                _md = json.load(_mf)
+                                whisper_data = _md.get("whisper_transcript") or _md.get("whisper")
+                        except Exception:
+                            pass
+                    if not whisper_data:
+                        for _wf in [f"{os.path.splitext(os.path.basename(video_path))[0]}_whisper.json", "whisper.json"]:
+                            _wp = os.path.join(clip_dir, _wf)
+                            if os.path.isfile(_wp):
+                                try:
+                                    with open(_wp, "r", encoding="utf-8") as _wf_f:
+                                        whisper_data = json.load(_wf_f)
+                                        break
+                                except Exception:
+                                    pass
+
+                    _stats = speech_stats(whisper_data, v_dur)
+                    _strategy = decide_audio_strategy(
+                        visual_ctx=forensic_context,
+                        stats=_stats,
+                        audio_type=forensic_context.get("audio_type"),
+                        has_audio=forensic_context.get("has_audio", True)
+                    )
+                    forensic_context["audio_strategy"] = _strategy
+                    forensic_context["speech_stats"] = _stats
+                    logger.info(
+                        f"   ✓ Audio Strategy: action='{_strategy['action']}' | "
+                        f"mode='{_strategy['mode']}' | reason='{_strategy['reason']}'"
+                    )
+                except Exception as _as_err:
+                    logger.warning(f"Audio strategy determination notice: {_as_err}")
+
             # ── STEP 3.5: Resolve selected BGM to file path + pool rotation ──
             # 1. Match Gemini Vision's selected_audio_track from candidate list
             selected_bgm_path = None
@@ -206,7 +252,27 @@ class MasterAIEditor:
                             logger.info(f"🎶 [GEMINI_AUDIO_MATCH] Matched Gemini pick '{selected_track_name}' -> '{os.path.basename(fp)}'")
                             break
 
-            # 2. Algorithmic Pool Selection Fallback if Gemini Vision didn't pick a matching track
+            # 2. Multi-factor Semantic Ranking Fallback if Gemini Vision didn't pick a track from candidate list
+            if not selected_bgm_path and audio_candidates:
+                try:
+                    from Audio_Modules.audio_strategy import clip_card, rank_candidates
+                    clip_text = clip_card(forensic_context)
+                    ranked_cands = rank_candidates(audio_candidates, clip_text=clip_text)
+                    if ranked_cands:
+                        top_c = ranked_cands[0]
+                        fp = top_c.get("file_path", "")
+                        if fp and os.path.isfile(fp):
+                            selected_bgm_path = fp
+                            selected_bgm_bpm = top_c.get("bpm", 120.0)
+                            selected_bgm_beats = top_c.get("drops", []) or top_c.get("beats", [])
+                            logger.info(
+                                f"🎶 [SEMANTIC_RANKED_BGM] Winner '{top_c.get('track_name')}' "
+                                f"(score={top_c.get('score', 0.0):.3f}, semantic={top_c.get('semantic', 0.0):.3f})"
+                            )
+                except Exception as _rank_err:
+                    logger.debug(f"Semantic audio candidate ranking notice: {_rank_err}")
+
+            # 3. Algorithmic Pool Selection Fallback if Gemini Vision & Semantic Ranking didn't pick a matching track
             if not selected_bgm_path:
                 try:
                     from Audio_Modules.audio_pool_manager import AudioPoolManager
@@ -351,6 +417,16 @@ class MasterAIEditor:
 
             # Unified Semantic Understanding & Route Parameter Calculation
             route_params = compute_routing_parameters(lyric_intel, forensic_context, selected_bgm_path)
+
+            # Apply Audio Strategy Constraints (Dialogue Protection & Speech Cut Boundaries)
+            try:
+                from Audio_Modules.audio_strategy import routing_for_strategy
+                _strat = forensic_context.get("audio_strategy", {})
+                if _strat:
+                    route_params = routing_for_strategy(_strat, route_params)
+            except Exception as _rfs_err:
+                logger.warning(f"Audio strategy routing notice: {_rfs_err}")
+
             logger.info(
                 f"   ✓ Unified Route Selected: '{route_params['strategy_name']}' | "
                 f"speed={route_params['speed_factor']}x | "

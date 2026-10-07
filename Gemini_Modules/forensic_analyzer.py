@@ -36,7 +36,8 @@ import re
 import subprocess
 import tempfile
 import shutil
-from typing import List, Optional
+import copy
+from typing import List, Optional, Any, Dict
 try:
     from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router
 except ImportError:
@@ -47,14 +48,18 @@ except ImportError:
 
 from dotenv import load_dotenv
 
-# Load env
-if os.path.exists(".env"):
-    load_dotenv(".env", override=True)
-else:
-    load_dotenv("Credentials/.env", override=True)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Load .env first, then Credentials/.env with override=False so real env vars win,
+# and .env takes precedence over Credentials/.env
+for env_candidate in [
+    os.path.join(_REPO_ROOT, ".env"),
+    os.path.join(_REPO_ROOT, "Credentials", ".env"),
+]:
+    if os.path.exists(env_candidate):
+        load_dotenv(env_candidate, override=False)
 
 logger = logging.getLogger("forensic_analyzer")
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -203,10 +208,14 @@ Number of frames provided: {frame_count}
 # ── Default fallback ──────────────────────────────────────────────────────────
 
 DEFAULT_RESULT = {
-    "watermarks": [],
-    "intent":        "unknown",
-    "confidence":    0.0,
-    "editing_style": "cinematic",
+    "_failed":                   True,
+    "watermarks":                [],
+    "intent":                    "unknown",
+    "confidence":                0.0,
+    "editing_style":             "cinematic",
+    "main_subject":              "",
+    "is_talking_on_camera":      False,
+    "content_director":          {},
     "feature_flags": {
         "enable_price_tags":      False,
         "enable_fashion_caption": False,
@@ -258,21 +267,9 @@ class ForensicVideoAnalyzer:
 
     def __init__(self):
         self.router = gemini_router
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            for env_candidate in [
-                os.path.join(_REPO_ROOT, ".env"),
-                os.path.join(_REPO_ROOT, "Credentials", ".env"),
-                ".env",
-                "Credentials/.env"
-            ]:
-                if os.path.exists(env_candidate):
-                    load_dotenv(env_candidate, override=True)
-            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-        self._available = True if (gemini_router or api_key) else False
+        self._available = bool(self.router is not None)
         if not self._available:
-            logger.warning("🔬 ForensicAnalyzer: GEMINI_API_KEY not set and gemini_router unavailable — will return defaults")
+            logger.warning("🔬 ForensicAnalyzer: gemini_router unavailable — will return defaults")
             return
 
         model_name = os.getenv("GEMINI_MODEL")
@@ -293,9 +290,14 @@ class ForensicVideoAnalyzer:
             creator_name:     Optional creator handle/title hint for face cache RAG.
             audio_candidates: Optional list of candidate BGM audio metadata dicts.
         """
+        clip_folder = os.path.dirname(os.path.abspath(video_path))
+        clip_id = os.path.basename(clip_folder)
+        scene_context = {}
+        tmp_dir = None
+        own_frames = False
+
         try:
             # ── Pre-Pipeline Scene & Face Intelligence ─────────────────────────
-            scene_context = {}
             try:
                 try:
                     from Core_Modules.scene_intel import analyze_scene_pre_pipeline
@@ -312,8 +314,9 @@ class ForensicVideoAnalyzer:
 
             if not self._available:
                 logger.info("🔬 ForensicAnalyzer skipped (unavailable)")
-                res = DEFAULT_RESULT.copy()
+                res = copy.deepcopy(DEFAULT_RESULT)
                 res["scene_context"] = scene_context
+                res.pop("_failed", None)
                 return res
 
             # ── Step 0: Ensure 480p Proxy Video exists for Gemini & Sampling ──
@@ -327,8 +330,6 @@ class ForensicVideoAnalyzer:
                 proxy_video_path = video_path
 
             # ── Step 1: Extract frames (Hook-Dense Strategic Sampler) ─────────
-            tmp_dir = None
-            own_frames = False
             sampling_context = None
             if frame_paths and all(os.path.exists(p) for p in frame_paths):
                 frames = frame_paths
@@ -355,19 +356,27 @@ class ForensicVideoAnalyzer:
 
             if not frames:
                 logger.warning("🔬 ForensicAnalyzer: no frames extracted — returning default")
-                res = DEFAULT_RESULT.copy()
+                res = copy.deepcopy(DEFAULT_RESULT)
                 res["scene_context"] = scene_context
+                res.pop("_failed", None)
                 return res
 
             # ── Step 2: Build Gemini payload with audio candidate table + proxy video ───────
             result = self._call_gemini_with_audio(
                 frames,
                 creator_name=creator_name,
+                clip_dir=clip_folder,
                 audio_candidates=audio_candidates,
                 sampling_context=sampling_context,
                 video_proxy_path=proxy_video_path
             )
             result["scene_context"] = scene_context
+
+            # Skip persistence if analysis failed to avoid store pollution
+            is_failed = bool(result.pop("_failed", False)) or (result.get("confidence", 0.0) == 0.0 and result.get("intent") == "unknown")
+            if is_failed:
+                logger.warning(f"🔬 ForensicAnalyzer: Analysis flagged as failed — skipping persistence for '{clip_id}'.")
+                return result
 
             # ── Step 2.5: Save to Master ClipIntelligenceStore (Schema v3) ──
             try:
@@ -375,9 +384,6 @@ class ForensicVideoAnalyzer:
                 from Audio_Modules.audio_extractor import load_audio_analysis
 
                 store = ClipIntelligenceStore()
-                clip_folder = os.path.dirname(video_path)
-                clip_id = os.path.basename(clip_folder)
-
                 clip_data = store.load(clip_id, clip_folder) or store.create_blank(clip_id, clip_folder)
 
                 # 1. Fill audio_data.math FIRST from Phase 1 DSP audio_analysis.json
@@ -517,8 +523,14 @@ class ForensicVideoAnalyzer:
                 if isinstance(social_entries, dict):
                     for url_key, entry_dict in social_entries.items():
                         if isinstance(entry_dict, dict):
-                            shortcode = entry_dict.get("shortcode", "")
-                            if clip_id and (clip_id in url_key or clip_id in shortcode or shortcode in clip_id):
+                            sc = str(entry_dict.get("shortcode", "")).strip()
+                            # 1. Exact non-empty shortcode match against clip_id
+                            sc_match = bool(sc and sc == clip_id)
+                            # 2. Exact URL path segment match (prevents 1-2 char substring collision)
+                            url_segments = [p for p in re.split(r'[/_\\?&=]', url_key) if p]
+                            url_match = bool(clip_id and clip_id in url_segments)
+
+                            if sc_match or url_match:
                                 entry_dict["gemini_semantic_visual_intelligence"] = _semantic_payload
                                 logger.info(f"📊 [ForensicAnalyzer] Injected gemini_semantic_visual_intelligence into files['social_media_id']['{url_key}']")
 
@@ -530,16 +542,20 @@ class ForensicVideoAnalyzer:
             except Exception as _pm_err:
                 logger.warning(f"📊 [ForensicAnalyzer] pool_metadata write warning: {_pm_err}")
 
-            # ── Step 3: Cleanup ───────────────────────────────────────────────
-            if own_frames and tmp_dir and os.path.isdir(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-
             return result
 
         except Exception as e:
             import traceback
             logger.error(f"🔬 ForensicAnalyzer: unexpected error — {e}\n{traceback.format_exc()}")
-            return DEFAULT_RESULT.copy()
+            res = copy.deepcopy(DEFAULT_RESULT)
+            res["scene_context"] = scene_context
+            res.pop("_failed", None)
+            return res
+
+        finally:
+            # ── Step 3: Cleanup temporary extracted frames ────────────────────
+            if own_frames and tmp_dir and os.path.isdir(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _build_sampling_note(self, sample_meta: dict) -> str:
         """Build a factual sampling-zone note from actual sampler output."""
@@ -570,16 +586,21 @@ class ForensicVideoAnalyzer:
             return []
 
         try:
-            # Get duration via ffprobe (fixed: 'streams' plural)
+            # Get duration via ffprobe (checking format=duration and stream=duration for v:0)
             probe = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "stream=duration",
+                 "-show_entries", "format=duration:stream=duration",
                  "-of", "json", video_path],
                 capture_output=True, text=True, timeout=15
             )
             dur_data = json.loads(probe.stdout)
+            fmt_dur = dur_data.get("format", {}).get("duration")
             streams = dur_data.get("streams", [])
-            duration = float(streams[0].get("duration", 10.0)) if streams else 10.0
+            stream_dur = streams[0].get("duration") if streams else None
+            try:
+                duration = float(fmt_dur or stream_dur or 10.0)
+            except (ValueError, TypeError):
+                duration = 10.0
         except Exception as pe:
             logger.warning(f"🔬 Frame extraction: duration probe failed — {pe}")
             duration = 10.0
@@ -609,8 +630,39 @@ class ForensicVideoAnalyzer:
         logger.info(f"🔬 Extracted {len(frame_paths)}/{n} forensic frames")
         return frame_paths
 
+    def _cleanup_uploaded_file(self, uploaded_file: Any) -> None:
+        """Deletes uploaded media file from the Gemini File API to prevent resource leakage."""
+        if not uploaded_file:
+            return
+        try:
+            fname = getattr(uploaded_file, "name", None)
+            if not fname:
+                return
+            if hasattr(self.router, "delete_file"):
+                self.router.delete_file(fname)
+            else:
+                try:
+                    import google.genai as genai_mod
+                    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+                    if api_key and hasattr(genai_mod, "Client"):
+                        client = genai_mod.Client(api_key=api_key)
+                        client.files.delete(name=fname)
+                        logger.debug(f"🗑️ Deleted uploaded file {fname} from Gemini File API.")
+                        return
+                except Exception:
+                    pass
+                try:
+                    import google.generativeai as genai_legacy
+                    genai_legacy.delete_file(fname)
+                    logger.debug(f"🗑️ (Legacy) Deleted uploaded file {fname} from Gemini File API.")
+                except Exception:
+                    pass
+        except Exception as cle:
+            logger.debug(f"File API cleanup notice: {cle}")
+
     def _call_gemini_with_audio(self, frame_paths: List[str],
                                 creator_name: Optional[str] = None,
+                                clip_dir: Optional[str] = None,
                                 audio_candidates: Optional[List[dict]] = None,
                                 sampling_context: Optional[str] = None,
                                 video_proxy_path: Optional[str] = None) -> dict:
@@ -637,6 +689,14 @@ class ForensicVideoAnalyzer:
             prompt_text += f"\n\n{sampling_context}\n"
         prompt_text += f"\nCreator Handle Hint: '{creator_name or 'unknown'}'\n"
 
+        if video_proxy_path and os.path.isfile(video_proxy_path):
+            prompt_text += (
+                "\n\n[MULTIMODAL VIDEO ATTACHMENT NOTICE]\n"
+                "A 480p proxy of the complete video with audio is attached to this request alongside the sampled frames. "
+                "Use the video and its audio as primary evidence for scene pacing, speech detection, and rhythm, "
+                "and treat the sampled frames as high-fidelity visual reference checkpoints.\n"
+            )
+
         if audio_table_str:
             prompt_text += f"""
 ---
@@ -661,12 +721,8 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
         target_clip_meta_block = ""
         cbm_block = ""
 
-        if frame_paths:
-            clip_dir = os.path.dirname(frame_paths[0])
+        if clip_dir and os.path.isdir(clip_dir):
             folder_name = os.path.basename(clip_dir)
-            clean_sc = folder_name.replace("manual_", "").strip() if folder_name.startswith("manual_") else folder_name
-            if "_" in clean_sc:
-                clean_sc = clean_sc.split("_", 1)[1]
 
             # 1. Load local clip metadata.json
             local_meta = {}
@@ -693,6 +749,33 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                     except Exception as _pm_e:
                         logger.debug(f"🔬 Could not load pool_metadata ({pmp}): {_pm_e}")
 
+            # Safe shortcode resolution order:
+            # 1) metadata.json shortcode
+            # 2) exact match against known shortcode values in pool_metadata
+            # 3) suffix after underscore if in pool_metadata or as fallback
+            clean_sc = str(local_meta.get("shortcode", "")).strip()
+
+            known_pool_shortcodes = set()
+            if pool_data and isinstance(pool_data, dict):
+                social_entries = pool_data.get("files", {}).get("social_media_id", {})
+                if isinstance(social_entries, dict):
+                    for k, v in social_entries.items():
+                        if isinstance(v, dict) and v.get("shortcode"):
+                            known_pool_shortcodes.add(str(v["shortcode"]).strip())
+
+            if not clean_sc:
+                base_name = folder_name[len("manual_"):] if folder_name.startswith("manual_") else folder_name
+                if folder_name in known_pool_shortcodes:
+                    clean_sc = folder_name
+                elif base_name in known_pool_shortcodes:
+                    clean_sc = base_name
+                elif "_" in base_name and base_name.split("_", 1)[1] in known_pool_shortcodes:
+                    clean_sc = base_name.split("_", 1)[1]
+                elif "_" in base_name and len(base_name.split("_", 1)[1]) >= 5:
+                    clean_sc = base_name.split("_", 1)[1]
+                else:
+                    clean_sc = base_name
+
             # 3. Locate the specific clip entry in pool_metadata
             clip_entry = {}
             if pool_data and isinstance(pool_data, dict):
@@ -700,8 +783,10 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                 if isinstance(social_entries, dict):
                     for k, v in social_entries.items():
                         if isinstance(v, dict):
-                            sc = v.get("shortcode") or ""
-                            if (clean_sc and (clean_sc in k or clean_sc == sc)) or (folder_name in k):
+                            sc = str(v.get("shortcode", "")).strip()
+                            sc_match = bool(clean_sc and sc and clean_sc == sc)
+                            folder_match = bool(folder_name and folder_name in k)
+                            if sc_match or folder_match:
                                 clip_entry = v
                                 break
 
@@ -761,86 +846,82 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
             prompt_text += f"{cbm_block}\n"
 
         payload = [prompt_text]
-        # Attach uploaded proxy video if available
-        if video_proxy_path and os.path.isfile(video_proxy_path):
+        uploaded_file = None
+        pil_images = []
+
+        try:
+            # Attach uploaded proxy video if available
+            if video_proxy_path and os.path.isfile(video_proxy_path):
+                try:
+                    if hasattr(self.router, "upload_file"):
+                        uploaded_file = self.router.upload_file(video_proxy_path)
+                        if uploaded_file:
+                            payload.append(uploaded_file)
+                            logger.info(f"🔬 ForensicAnalyzer: Attached multimodal proxy video to Gemini payload -> {os.path.basename(video_proxy_path)}")
+                except Exception as ve:
+                    logger.warning(f"🔬 ForensicAnalyzer: Video proxy upload notice ({ve}); proceeding with keyframes only")
+
             try:
-                if hasattr(self.router, "upload_file"):
-                    uploaded_file = self.router.upload_file(video_proxy_path)
-                    if uploaded_file:
-                        payload.append(uploaded_file)
-                        logger.info(f"🔬 ForensicAnalyzer: Attached multimodal proxy video to Gemini payload -> {os.path.basename(video_proxy_path)}")
-            except Exception as ve:
-                logger.warning(f"🔬 ForensicAnalyzer: Video proxy upload notice ({ve}); proceeding with keyframes only")
+                from PIL import Image
+                for p in frame_paths:
+                    try:
+                        img = Image.open(p)
+                        pil_images.append(img)
+                    except Exception as ie:
+                        logger.debug(f"🔬 Could not open frame {p}: {ie}")
+                payload.extend(pil_images)
+            except ImportError:
+                logger.warning("🔬 PIL not available — sending text-only prompt")
 
-        try:
-            from PIL import Image
-            for p in frame_paths:
+            attempt_err = None
+            try:
+                res_txt = self.router.generate(
+                    task_type="vision",
+                    prompt=payload,
+                    module_name="forensic_analyzer",
+                    gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
+                )
+                if res_txt:
+                    parsed = self._parse_response(res_txt)
+                    if parsed:
+                        return parsed
+            except Exception as e:
+                attempt_err = e
+                logger.warning(f"🔬 Multimodal video perception error: {e}")
+
+            # Check if error is quota / rate limit — DO NOT retry on quota exhaustion
+            is_quota_error = False
+            if attempt_err:
+                err_msg = str(attempt_err).lower()
+                status_code = getattr(attempt_err, "code", None) or getattr(attempt_err, "status_code", None)
+                if status_code == 429 or re.search(r'\b429\b', err_msg) or any(term in err_msg for term in ["quota", "resource_exhausted", "rate_limit", "rate limit", "credits"]):
+                    logger.warning("🔬 API Quota/Rate-limit encountered — skipping keyframe retry to preserve quota.")
+                    is_quota_error = True
+
+            # Attempt 2: If proxy video was attached AND router raised an exception that is NOT quota,
+            # retry ONCE with keyframes only (omitting video proxy attachment)
+            if uploaded_file and pil_images and attempt_err is not None and not is_quota_error:
+                logger.info("🔬 Retrying perception with keyframes only (omitting video proxy attachment)...")
                 try:
-                    img = Image.open(p)
-                    payload.append(img)
-                except Exception as ie:
-                    logger.debug(f"🔬 Could not open frame {p}: {ie}")
-        except ImportError:
-            logger.warning("🔬 PIL not available — sending text-only prompt")
+                    retry_payload = [prompt_text] + pil_images
+                    res_txt = self.router.generate(
+                        task_type="vision",
+                        prompt=retry_payload,
+                        module_name="forensic_analyzer",
+                        gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
+                    )
+                    if res_txt:
+                        parsed = self._parse_response(res_txt)
+                        if parsed:
+                            return parsed
+                except Exception as retry_err:
+                    logger.error(f"🔬 Keyframe fallback attempt also failed: {retry_err}")
 
-        try:
-            res_txt = self.router.generate(
-                task_type="vision",
-                prompt=payload,
-                module_name="forensic_analyzer",
-                gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
-            )
-            if not res_txt:
-                return self._call_gemini(frame_paths, sampling_context=sampling_context)
-            parsed = self._parse_response(res_txt)
-            return parsed if parsed else self._call_gemini(frame_paths, sampling_context=sampling_context)
-        except Exception as e:
-            logger.error(f"Multimodal perception error: {e}")
-            return self._call_gemini(frame_paths, sampling_context=sampling_context)
+            return copy.deepcopy(DEFAULT_RESULT)
 
-    def _call_gemini(self, frame_paths: List[str], sampling_context: Optional[str] = None) -> dict:
-        """
-        Send frames + micro-crops + prompt to Gemini Vision, parse and validate JSON response.
-        Falls back gracefully to DEFAULT_RESULT on any error.
-        """
-        global_frames = [p for p in frame_paths if "detail_crop" not in p]
-        micro_crops   = [p for p in frame_paths if "detail_crop" in p]
-
-        # Build prompt with frame metadata
-        prompt_text = FORENSIC_PROMPT.format(
-            width=self.FRAME_WIDTH,
-            height=self.FRAME_HEIGHT,
-            frame_count=len(global_frames)
-        )
-        if sampling_context:
-            prompt_text += f"\n\n{sampling_context}\n"
-
-        # Build payload: prompt text + PIL images
-        payload = [prompt_text]
-        try:
-            from PIL import Image
-            for p in frame_paths:
-                try:
-                    img = Image.open(p)
-                    payload.append(img)
-                except Exception as ie:
-                    logger.debug(f"🔬 Could not open frame {p}: {ie}")
-        except ImportError:
-            logger.warning("🔬 PIL not available — sending text-only forensic prompt")
-
-        # Model fallback list
-        try:
-            res_txt = self.router.generate(
-                task_type="vision",
-                prompt=payload,
-                module_name="forensic_analyzer",
-                gen_config={"temperature": 0.2, "response_mime_type": "application/json"}
-            )
-            if not res_txt: return DEFAULT_RESULT.copy()
-            return self._parse_response(res_txt)
-        except Exception as e:
-            logger.error(f"Forensic error: {e}")
-            return DEFAULT_RESULT.copy()
+        finally:
+            if uploaded_file:
+                self._cleanup_uploaded_file(uploaded_file)
     def _parse_response(self, raw: str) -> Optional[dict]:
         """
         Parse and validate Gemini JSON response.
@@ -965,7 +1046,11 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                     for f in allowed_flags:
                         feature_commands.setdefault(f, False)
 
+                    main_subj = _str("main_subject")
+                    is_talking = bool(cd_raw.get("is_talking_on_camera", False))
+
                     result["content_director"] = {
+                        "main_subject":          main_subj,
                         "detected_entities":     _lst("detected_entities"),
                         "visual_event":          _str("visual_event"),
                         "viewer_attention":      _str("viewer_attention"),
@@ -974,11 +1059,16 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                         "recommended_narrative": _str("recommended_narrative"),
                         "tone":                  _str("tone"),
                         "editing_style":         _str("editing_style"),
+                        "is_talking_on_camera":  is_talking,
                         "engagement_hook":       _str("engagement_hook"),
                         "feature_commands":      feature_commands,
                     }
+                    result["main_subject"] = main_subj
+                    result["is_talking_on_camera"] = is_talking
+                    result["_failed"] = False
                     logger.info(
-                        f"🎬 ContentDirector: narrative={result['content_director']['recommended_narrative']} "
+                        f"🎬 ContentDirector: subject='{main_subj}' "
+                        f"narrative={result['content_director']['recommended_narrative']} "
                         f"style={result['content_director']['editing_style']} "
                         f"tone={result['content_director']['tone']} "
                         f"hook='{result['content_director']['engagement_hook'][:60]}'"
@@ -986,9 +1076,15 @@ Include `selected_audio_track` and `creative_possibilities` in your returned JSO
                 else:
                     logger.info("🎬 ContentDirector: no block in Gemini response — using defaults")
                     result["content_director"] = {}
+                    result["main_subject"] = ""
+                    result["is_talking_on_camera"] = False
+                    result["_failed"] = False
             except Exception as _cde:
                 logger.warning(f"🎬 ContentDirector parse error (non-critical): {_cde}")
                 result["content_director"] = {}
+                result["main_subject"] = ""
+                result["is_talking_on_camera"] = False
+                result["_failed"] = False
 
             logger.info(
                 f"🔬 Forensic result: intent={intent} "
@@ -1021,12 +1117,28 @@ def get_analyzer() -> ForensicVideoAnalyzer:
     return _analyzer
 
 
-def analyze_video(video_path: str, frame_paths: Optional[List[str]] = None, intelligence_cache=None) -> dict:
+def analyze_video(video_path: str,
+                  frame_paths: Optional[List[str]] = None,
+                  creator_name: Optional[str] = None,
+                  audio_candidates: Optional[List[dict]] = None,
+                  intelligence_cache=None) -> dict:
     """
     Main Orchestrator for Forensic Analysis.
     Auto-extracts strategic frames if frame_paths is None.
+
+    Args:
+        video_path:         Path to source video file.
+        frame_paths:        Optional pre-extracted frame image paths.
+        creator_name:       Optional creator handle/title hint for face cache RAG.
+        audio_candidates:   Optional list of candidate BGM audio metadata dicts.
+        intelligence_cache: Deprecated: unused legacy parameter preserved for caller backward-compatibility.
     """
-    return get_analyzer().analyze(video_path, frame_paths=frame_paths)
+    return get_analyzer().analyze(
+        video_path,
+        frame_paths=frame_paths,
+        creator_name=creator_name,
+        audio_candidates=audio_candidates
+    )
 
 # Alias for legacy support
 analyze = analyze_video
