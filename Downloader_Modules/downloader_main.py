@@ -361,7 +361,7 @@ def run_phase1_ingestion(
     # ── WORKER 1: Automated Account Harvester ─────────────────────────────────
     else:
         logger.info("🤖 [WORKER 1 - AUTOMATED] Resolving target accounts...")
-        accounts_file = os.path.join(_REPO_ROOT, "Downloader_Modules", "Content_Scraper_Modules", "source_accounts.json")
+        accounts_file = os.path.join(_REPO_ROOT, "Content_Scraper_Modules", "source_accounts.json")
         sources = []
 
         if target_accounts and isinstance(target_accounts, list):

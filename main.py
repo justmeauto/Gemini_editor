@@ -252,12 +252,12 @@ def build_platform_selection_keyboard():
         return None
 
 
-def build_active_accounts_keyboard_and_text():
-    """Builds text summary and inline buttons for active accounts list with 30-day expiration info."""
+def build_active_accounts_keyboard_and_text(chat_id: Optional[Any] = None):
+    """Builds text summary and inline buttons for active accounts list with 30-day expiration info, filtered per user."""
     from Downloader_Modules.scheduled_scraper_manager import get_active_accounts_metadata
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    meta = get_active_accounts_metadata()
+    meta = get_active_accounts_metadata(for_chat_id=chat_id)
     if not meta:
         text = (
             "📋 **Active Target Accounts (0):**\n\n"
@@ -424,7 +424,7 @@ async def _send_video_safe_main(
 
 
 async def _async_trigger_immediate_batch(bot, chat_id: int):
-    """Triggers an immediate background scraper batch and notifies Telegram chat."""
+    """Triggers an immediate background scraper batch for the requesting user and notifies Telegram chat."""
     import asyncio
     from Downloader_Modules.scheduled_scraper_manager import run_scheduled_scraper_batch, get_rotated_max_two_accounts
     try:
@@ -434,9 +434,12 @@ async def _async_trigger_immediate_batch(bot, chat_id: int):
             logger.error("❌ No active Telegram Bot instance available for immediate batch.")
             return
 
-        targets = get_rotated_max_two_accounts(max_accounts=2)
+        targets = get_rotated_max_two_accounts(max_accounts=2, for_chat_id=chat_id)
         if not targets:
-            await effective_bot.send_message(chat_id=chat_id, text="⚠️ No active accounts configured for scraping.")
+            await effective_bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ No active accounts configured for scraping. Please use ⚙️ **Auto Input Setup** or `/addaccount @handle` to add accounts first."
+            )
             return
 
         await effective_bot.send_message(
@@ -445,12 +448,12 @@ async def _async_trigger_immediate_batch(bot, chat_id: int):
         )
         
         loop = asyncio.get_running_loop()
-        rendered = await loop.run_in_executor(None, lambda: run_scheduled_scraper_batch(max_accounts=2))
+        rendered = await loop.run_in_executor(None, lambda: run_scheduled_scraper_batch(max_accounts=2, for_chat_id=chat_id))
         
         if rendered:
             for r_file in rendered:
                 try:
-                    sess_id = session_manager.create_session(video_path=r_file)
+                    sess_id = session_manager.create_session(video_path=r_file, requestor_chat_id=chat_id)
                     keyboard = build_telegram_session_keyboard(session_id=sess_id)
                     sent_msg = await _send_video_safe_main(
                         effective_bot,
@@ -576,25 +579,28 @@ async def handle_telegram_callback(update, context):
         return
 
     if data == "menu_list_accounts":
-        text, kbd = build_active_accounts_keyboard_and_text()
+        text, kbd = build_active_accounts_keyboard_and_text(chat_id=chat_id)
         await query.edit_message_text(text=text, reply_markup=kbd)
         return
 
     if data.startswith("remove_acc_"):
         handle = data.replace("remove_acc_", "").strip()
         from Downloader_Modules.scheduled_scraper_manager import remove_source_account
-        remove_source_account(handle)
-        text, kbd = build_active_accounts_keyboard_and_text()
-        await query.edit_message_text(text=f"🗑️ Removed `@{handle}`!\n\n" + text, reply_markup=kbd)
+        removed = remove_source_account(handle, requestor_chat_id=chat_id)
+        text, kbd = build_active_accounts_keyboard_and_text(chat_id=chat_id)
+        notice = f"🗑️ Removed `@{handle}`!\n\n" if removed else f"⚠️ Could not remove `@{handle}` (permission denied or account not found).\n\n"
+        await query.edit_message_text(text=notice + text, reply_markup=kbd)
         return
 
     if data == "menu_run_batch_now":
-        import asyncio
-        asyncio.create_task(_async_trigger_immediate_batch(context.bot, chat_id))
-        await query.edit_message_text(
-            text="🚀 **Scraper Batch Triggered!**\n\nProcessing top reels for active accounts now...\nYou will receive master reel review cards here shortly.",
-            reply_markup=build_platform_selection_keyboard()
-        )
+        from Downloader_Modules.scheduled_scraper_manager import get_rotated_max_two_accounts
+        targets = get_rotated_max_two_accounts(max_accounts=2, for_chat_id=chat_id)
+        if targets:
+            goal = f"Ingest reels for creator accounts: {', '.join(['@' + t for t in targets])}, edit each with beat-synced rhythm and BGM, and audit quality."
+        else:
+            goal = "Run scheduled content scraper batch for active creator accounts, render reels, and audit."
+        logger.info(f"🤖 [UNIVERSAL AGENT] Routing batch scrape trigger to Gemini Director: '{goal}'")
+        await _dispatch_agent_goal(update, goal, context=context)
         return
 
     # ── ⚙️ Auto Input Setup Wizard ────────────────────────────────────────────
@@ -1105,7 +1111,9 @@ async def handle_telegram_callback(update, context):
 
         if opt_type in preset_directives:
             directive = preset_directives[opt_type]
-            await execute_reedit_with_directive(query, context, session_id, directive, chat_id)
+            goal = f"Re-edit session '{session_id}' with directive: '{directive}'"
+            logger.info(f"🤖 [UNIVERSAL AGENT] Routing retry button '{opt_type}' directly to Gemini Director: '{goal}'")
+            await _dispatch_agent_goal(update, goal, context=context)
         elif opt_type == "custom":
             user_pending_reedit_session[chat_id] = session_id
             await context.bot.send_message(
@@ -1137,162 +1145,15 @@ async def handle_telegram_callback(update, context):
             )
             logger.info(f"🗑️ Purged all assets for rejected session {session_id}: {purge_res.get('purged_count')} items removed")
 async def execute_reedit_with_directive(query, context, session_id: str, directive: str, chat_id: int):
-    """Executes aggressive re-edit with human directive injected into Gemini Call 3."""
-    logger.info(f"🎬 [EXECUTE RE-EDIT] Requested re-edit for session '{session_id}' | Directive: '{directive}' | Chat ID: {chat_id}")
-    sess = session_manager.get_session(session_id)
-    curr_text = (query.message.caption or query.message.text or "Master Reel") if (query and query.message) else "Master Reel"
-    new_text = f"{curr_text}\n\n⚡ **RE-EDITING WITH AGGRESSIVE DIRECTIVE:**\n*\"{directive}\"*\n\nGemini is polishing cuts & filtergraph..."
-
-    try:
-        if query and query.message and (query.message.video or query.message.document or query.message.photo):
-            await query.edit_message_caption(caption=new_text)
-        elif query and query.message:
-            await query.edit_message_text(text=new_text)
-    except Exception:
-        pass
-
-    if not sess:
-        logger.error(f"❌ [RE-EDIT ABORT] Session '{session_id}' not found in TelegramSessionManager! Available: {list(session_manager.sessions.keys())}")
-        if context and context.bot:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ **Re-edit failed:** Session `{session_id}` could not be found. Please submit the URL again to start fresh.")
-            except Exception:
-                pass
-        return
-
-    raw_input = sess.get("raw_video_path")
-    clip_id = sess.get("clip_id") or ""
-    if not raw_input and clip_id and clip_id != "Processed Shorts":
-        possible_raw = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id, "video.mp4")
-        if os.path.exists(possible_raw):
-            raw_input = possible_raw
-
-    video_path = sess.get("video_path")
-    logger.info(f"🔍 [RE-EDIT SOURCE CHECK] sess_id={session_id} | clip_id='{clip_id}' | raw_input='{raw_input}' (exists={bool(raw_input and os.path.exists(raw_input))}) | video_path='{video_path}' (exists={bool(video_path and os.path.exists(video_path))})")
-
-    # 🛡️ Double-Mix Prevention: never re-edit _master.mp4 directly
-    target_input = raw_input
-    if not target_input and video_path and "_master.mp4" not in video_path and os.path.exists(video_path):
-        target_input = video_path
-
-    if target_input and "_master.mp4" in target_input:
-        logger.warning(f"⚠️ [DOUBLE-MIX GUARD] Target is rendered master '{target_input}' — searching downloads for raw source...")
-        bname = os.path.basename(target_input).replace("_master.mp4", "")
-        d_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
-        recovered_local = None
-        if os.path.isdir(d_dir):
-            for d in os.listdir(d_dir):
-                if bname in d or d in bname:
-                    candidate = os.path.join(d_dir, d, "video.mp4")
-                    if os.path.exists(candidate):
-                        recovered_local = candidate
-                        logger.info(f"✅ [DOUBLE-MIX GUARD] Recovered raw source video: {candidate}")
-                        break
-        target_input = recovered_local
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # 📡 VAULT RECOVERY: If local disk is wiped (ephemeral clean or runner restart),
-    # recover raw_video_file_id or wm_clean_file_id from Telegram Vault Storage Group.
-    # ─────────────────────────────────────────────────────────────────────────
-    if (not target_input or not os.path.exists(str(target_input))) and context and context.bot:
-        logger.info(f"📡 [VAULT RECOVERY] Local raw source missing on disk for session '{session_id}'. Initiating Telegram Vault recovery...")
-        try:
-            clean_sc = clip_id.replace("manual_", "").strip() if clip_id else ""
-            social_url = sess.get("social_url") or (f"https://instagram.com/reel/{clean_sc}" if clean_sc else "")
-
-            # 1. Check session for stored raw_video_file_id
-            raw_fid = sess.get("raw_video_file_id")
-
-            # 2. Check pool_metadata and vault index by shortcode / URL
-            if not raw_fid:
-                vault_entry = (
-                    (vault_indexer.find_entry_by_shortcode(clean_sc) if clean_sc else None)
-                    or (vault_indexer.find_entry_by_shortcode(clip_id) if clip_id else None)
-                    or (vault_indexer.lookup_downloaded_source(social_url) if social_url else None)
-                    or vault_indexer.lookup_processed_reel(session_id=session_id)
-                )
-                if vault_entry:
-                    logger.info(f"📌 [VAULT RECOVERY] Found vault entry via shortcode '{clean_sc or clip_id}'")
-                    raw_fid = (
-                        vault_entry.get("media_file_ids", {}).get("wm_clean_file_id")
-                        or vault_entry.get("wm_clean_file_id")
-                        or vault_entry.get("media_file_ids", {}).get("raw_video_file_id")
-                        or vault_entry.get("raw_video_file_id")
-                        or vault_entry.get("raw_file_id")
-                    )
-
-            if raw_fid:
-                recovery_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads", clip_id or f"manual_{clean_sc}" or f"recovered_{session_id}")
-                os.makedirs(recovery_dir, exist_ok=True)
-                recovery_path = os.path.join(recovery_dir, "video.mp4")
-                logger.info(f"📥 [VAULT RECOVERY] Downloading raw source from Telegram Vault (file_id={raw_fid[:20]}...) -> {recovery_path}")
-                tg_file = await context.bot.get_file(raw_fid)
-                await tg_file.download_to_drive(custom_path=recovery_path)
-                if os.path.exists(recovery_path) and os.path.getsize(recovery_path) > 1024:
-                    target_input = recovery_path
-                    logger.info(f"✅ [VAULT RECOVERY SUCCESS] Raw source recovered from Telegram Vault → {recovery_path}")
-
-                    # Also hydrate extracted audio from vault into recovery_dir
-                    try:
-                        logger.info(f"🎵 [VAULT RECOVERY] Hydrating extracted audio from vault for '{clean_sc or clip_id}'...")
-                        vault_indexer.hydrate_extracted_audio_from_vault(clean_sc or clip_id, dest_dir=recovery_dir)
-                    except Exception as _ea_e:
-                        logger.debug(f"Extracted audio recovery notice: {_ea_e}")
-
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"📡 **[VAULT RECOVERY]** Raw source video recovered from Telegram Vault!\nRe-editing now with your directive: *\"{directive}\"*",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    logger.warning(f"⚠️ [VAULT RECOVERY] Downloaded file is too small or missing: {recovery_path}")
-            else:
-                logger.warning(f"⚠️ [VAULT RECOVERY] No raw_video_file_id found in session or vault index for session '{session_id}' (clip_id='{clip_id}')")
-        except Exception as _vr_err:
-            logger.error(f"❌ [VAULT RECOVERY ERROR] Failed to recover raw source from Telegram Vault: {_vr_err}", exc_info=True)
-
-    if not target_input or not os.path.exists(str(target_input)):
-        logger.error(f"❌ [RE-EDIT ABORT] Could not locate source video for session '{session_id}' even after Vault Recovery. Aborting.")
-        if context and context.bot:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text="❌ **Re-edit failed:** Source video not found on disk or in Telegram Vault. Please submit the URL again to start fresh.")
-            except Exception:
-                pass
-        return
-
-    # Check if directive is music-related
-    is_music_directive = any(kw in directive.lower() for kw in ["music", "bgm", "song", "track", "rhythm", "soundtrack", "audio", "beat"])
-    curr_audio = sess.get("selected_audio") if sess else None
-    if not curr_audio and clip_id:
-        try:
-            from Gemini_Modules.clip_intelligence_store import ClipIntelligenceStore
-            _st = ClipIntelligenceStore(clip_id=clip_id)
-            _prev_aud = _st.get("audio_data") or {}
-            curr_audio = _prev_aud.get("selected_bgm_track") or _prev_aud.get("selected_audio_track")
-        except Exception:
-            pass
-
-    if is_music_directive and curr_audio:
-        try:
-            from Audio_Modules.rejected_audio_blacklist import add as blacklist_add
-            blacklist_add(
-                audio_filename=curr_audio,
-                audio_shortcode=clip_id,
-                reason="user_requested_music_change"
-            )
-            logger.info(f"🚫 [RE-EDIT] Added '{curr_audio}' to rejected_audio_blacklist on music re-edit request.")
-        except Exception as _bl_err:
-            logger.warning(f"Failed to blacklist rejected audio: {_bl_err}")
-
-    # Non-blocking dispatch so Telegram event loop remains alive and responsive
-    logger.info(f"🚀 [RE-EDIT DISPATCH] Launching master pipeline in background worker for session '{session_id}' with input '{target_input}' (excluded_audio={curr_audio if is_music_directive else None})")
-    _dispatch_pipeline_in_background(
-        mode="manual",
-        input_path=target_input,
-        requestor_chat_id=sess.get("requestor_chat_id") or chat_id,
-        user_edit_directive=directive,
-        excluded_audio=curr_audio if is_music_directive else None
-    )
+    """Executes re-edit by dispatching directly through the Autonomous Gemini Director."""
+    logger.info(f"🎬 [EXECUTE RE-EDIT] Delegating re-edit for session '{session_id}' to Gemini Director | Directive: '{directive}'")
+    goal = f"Re-edit session '{session_id}' with directive: '{directive}'"
+    fake_update = type("FakeUpdate", (), {
+        "message": (query.message if (query and hasattr(query, "message")) else None),
+        "callback_query": query,
+        "effective_message": (query.message if (query and hasattr(query, "message")) else None)
+    })()
+    await _dispatch_agent_goal(fake_update, goal, context=context)
 
 
 # ── Telegram Command Handlers ─────────────────────────────────────────────────
@@ -1324,6 +1185,9 @@ async def handle_telegram_start(update, context):
         "• Rendered reels are broadcast at `07:30` & `19:30` across YouTube, Instagram, & Facebook.\n\n"
         "🔑 **4. Personal API Keys (Optional):**\n"
         "• `/setapify <token>` | `/setgemini <key>`\n\n"
+        "🤖 **5. Autonomous Gemini Director:**\n"
+        "• `/agent <your goal>` — Run autonomous multi-step scraping, rendering, and publishing with Gemini 2.5 Flash.\n"
+        "  *(Example: `/agent Scrape @nike 1 reel, edit with cinematic beats and publish`)*\n\n"
         "👇 **Select your target platform below to begin:**",
         reply_markup=keyboard
     )
@@ -1530,6 +1394,90 @@ def _dispatch_phase4_publishing_in_background(
     t.start()
 
 
+def parse_target_accounts_input(text: str) -> List[Dict[str, str]]:
+    """
+    Flexibly extracts up to 2 target accounts from user text.
+    Handles:
+    - Direct handles: '@nike', 'nike', 'nike, adidas'
+    - Platform prefixes: 'instagram @nike', 'youtube @channel', 'tiktok @user'
+    - Full profile URLs: 'https://www.instagram.com/nike/', 'https://youtube.com/@channel', 'tiktok.com/@user'
+    - Multi-line, comma-separated, space-separated.
+    """
+    import re
+    accounts = []
+    seen = set()
+
+    lines = text.strip().splitlines()
+    tokens = []
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+        if "," in l:
+            tokens.extend([part.strip() for part in l.split(",") if part.strip()])
+        else:
+            tokens.append(l)
+
+    for item in tokens:
+        item = item.strip().lstrip("/")
+        if not item:
+            continue
+
+        platform = "instagram"
+        handle = ""
+
+        # 1. Check for URL patterns
+        m_ig_url = re.search(r"instagram\.com/(?:[a-zA-Z0-9_\.]+/)?([a-zA-Z0-9_\.]+)", item, re.IGNORECASE)
+        if m_ig_url:
+            candidate = m_ig_url.group(1).rstrip("/").split("?")[0].strip()
+            if candidate and candidate not in ("p", "reel", "reels", "stories", "explore"):
+                platform = "instagram"
+                handle = candidate
+        
+        if not handle:
+            m_yt_url = re.search(r"youtube\.com/(?:@|c/|channel/)?([a-zA-Z0-9_\-\.]+)", item, re.IGNORECASE)
+            if m_yt_url:
+                platform = "youtube"
+                handle = m_yt_url.group(1).rstrip("/").split("?")[0].strip()
+
+        if not handle:
+            m_tt_url = re.search(r"tiktok\.com/@?([a-zA-Z0-9_\.]+)", item, re.IGNORECASE)
+            if m_tt_url:
+                platform = "tiktok"
+                handle = m_tt_url.group(1).rstrip("/").split("?")[0].strip()
+
+        # 2. Check for explicit platform prefix (e.g., 'instagram @nike' or 'youtube @channel')
+        if not handle:
+            for p in ["instagram", "youtube", "tiktok", "ig", "yt"]:
+                if item.lower().startswith(p):
+                    remainder = item[len(p):].strip().lstrip(":").strip().lstrip("@").strip()
+                    if remainder:
+                        platform = "instagram" if p in ("instagram", "ig") else ("youtube" if p in ("youtube", "yt") else "tiktok")
+                        handle = remainder.split()[0].rstrip("/").split("?")[0]
+                        break
+
+        # 3. Handle raw handle / space separated tokens (e.g. '@nike @adidas')
+        if not handle:
+            parts = item.split()
+            for part in parts:
+                clean_p = part.strip().lstrip("@").rstrip("/").split("?")[0]
+                if clean_p and clean_p.lower() not in seen and len(clean_p) >= 2:
+                    seen.add(clean_p.lower())
+                    accounts.append({"platform": "instagram", "handle": clean_p})
+                    if len(accounts) >= 2:
+                        return accounts
+            continue
+
+        clean_h = handle.strip().lstrip("@").rstrip("/").split("?")[0]
+        if clean_h and clean_h.lower() not in seen and len(clean_h) >= 2:
+            seen.add(clean_h.lower())
+            accounts.append({"platform": platform, "handle": clean_h})
+            if len(accounts) >= 2:
+                break
+
+    return accounts[:2]
+
+
 async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
     """Advances the Auto Input Setup wizard through steps 1-6."""
     sess = _wizard_sessions.get(chat_id)
@@ -1540,21 +1488,15 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
     back_kbd = build_back_button_keyboard()
 
     if step == 1:
-        # Parse platform IDs like "/instagram @handle" or "instagram @handle"
-        lines = text.strip().splitlines()
-        added = []
-        for line in lines:
-            line = line.strip().lstrip("/")
-            for plat in ["instagram", "youtube", "tiktok"]:
-                if line.lower().startswith(plat):
-                    handle = line[len(plat):].strip().lstrip("@").strip()
-                    if handle:
-                        added.append({"platform": plat, "handle": handle})
+        added = parse_target_accounts_input(text)
         if not added:
             await msg.reply_text(
                 "⚠️ Could not parse any account IDs.\n\n"
-                "Please use the format:\n"
-                "`instagram @creator_handle`  or  `youtube @ChannelName`  or  `tiktok @tiktokuser`"
+                "You can send:\n"
+                "• Account handles: `@creator_handle` (or `@nike, @adidas`)\n"
+                "• Profile links: `https://www.instagram.com/creator_handle/`\n"
+                "• With platform: `instagram @handle`, `youtube @channel`, `tiktok @user`\n\n"
+                "Please send your creator handle(s) again 👇"
             )
             return True
         data["accounts"] = added[:2]  # max 2
@@ -1563,7 +1505,7 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
         try:
             from Downloader_Modules.scheduled_scraper_manager import add_source_account
             for acc in data["accounts"]:
-                add_source_account(acc["handle"], acc["platform"])
+                add_source_account(acc["handle"], acc["platform"], owner_chat_id=chat_id)
             logger.info("⚙️ [AUTO SETUP] Chat %s Step 1: Immediately saved %d account(s) to source_accounts.json & synced to Telegram Vault: %s", chat_id, len(data["accounts"]), [a["handle"] for a in data["accounts"]])
         except Exception as _sa_err:
             logger.warning("⚠️ add_source_account Step 1 immediate save notice: %s", _sa_err)
@@ -1652,9 +1594,26 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
             days = 7
         data["days_per_week"] = days
         logger.info("⚙️ [AUTO SETUP] Chat %s Step 6: Active days per week set to: %d. Committing full configuration...", chat_id, days)
-        # Save everything
+
+        # 1. Save to Telegram User Manager (Per-User Isolation)
+        try:
+            from Telegram_Storage_Modules.telegram_user_manager import set_user_schedule_times, load_all_users, save_all_users
+            set_user_schedule_times(str(chat_id), data["scrape_times"])
+            users = load_all_users()
+            u_rec = users.setdefault(str(chat_id), {})
+            u_rec["auto_input_schedule_times"] = data["scrape_times"]
+            u_rec["publish_times"] = data["publish_times"]
+            u_rec["clips_per_account"] = data["clips_per_account"]
+            u_rec["max_publish_per_day"] = data["max_publish_per_day"]
+            u_rec["days_per_week"] = data["days_per_week"]
+            save_all_users(users)
+        except Exception as _um_err:
+            logger.warning(f"Notice saving user schedule times: {_um_err}")
+
+        # 2. Update .env and in-memory environment safely
         env_path = os.path.join(_REPO_ROOT, "Credentials", ".env")
         try:
+            os.makedirs(os.path.dirname(env_path), exist_ok=True)
             lines_env = open(env_path).readlines() if os.path.exists(env_path) else []
             existing = {l.split("=")[0]: l for l in lines_env if "=" in l}
             existing["SCRAPING_AUTO_INPUT_TIMES"] = f'SCRAPING_AUTO_INPUT_TIMES="{data["scrape_times"]}"\n'
@@ -1666,13 +1625,18 @@ async def _wizard_auto_setup_step(msg, chat_id: int, text: str, bot=None):
                 f.writelines(existing.values())
         except Exception as _env_err:
             logger.error(f"Failed to write auto-setup to .env: {_env_err}")
-        # Save source accounts
+
+        os.environ["AUTO_INPUT_SCHEDULE_TIMES"] = data["scrape_times"]
+        os.environ["SCRAPING_AUTO_INPUT_TIMES"] = data["scrape_times"]
+
+        # 3. Save source accounts with owner_chat_id
         try:
             from Downloader_Modules.scheduled_scraper_manager import add_source_account
             for acc in data.get("accounts", []):
-                add_source_account(acc["handle"], acc["platform"])
+                add_source_account(acc["handle"], acc["platform"], owner_chat_id=chat_id)
         except Exception as _sa_err:
             logger.warning(f"⚠️ add_source_account notice: {_sa_err}")
+
         _wizard_sessions.pop(chat_id, None)
         accs = "\n".join([f"  • `{a['platform'].title()}`: `@{a['handle']}`" for a in data.get("accounts", [])])
         
@@ -1845,11 +1809,154 @@ async def _wizard_credentials_step(msg, chat_id: int, text: str):
     return False
 
 
+async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None, context=None):
+    """
+    Universal dispatcher that hands off any user goal, UI button click, or custom prompt to the Gemini Autonomous Director
+    in a non-blocking background task with real-time Telegram progress updates and interactive reel delivery.
+    """
+    query = getattr(update, "callback_query", None)
+    msg = getattr(update, "message", None) or (query.message if query else None)
+    chat_id = (msg.chat_id if msg else None) or (query.from_user.id if (query and query.from_user) else None)
+
+    if not chat_id:
+        logger.error("❌ [_dispatch_agent_goal] Unable to resolve chat_id from update.")
+        return
+
+    global _global_bot_instance
+    effective_bot = (context.bot if (context and hasattr(context, "bot")) else None) or _global_bot_instance
+
+    if query:
+        try:
+            await query.answer("🤖 Agent activated...", show_alert=False)
+        except Exception:
+            pass
+
+    if not existing_status_msg:
+        try:
+            if query and query.message:
+                status_msg = await query.message.reply_text(
+                    f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n"
+                    f"🎯 *Goal:* `{user_goal[:300]}`\n"
+                    f"⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                )
+            elif msg:
+                status_msg = await msg.reply_text(
+                    f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n"
+                    f"🎯 *Goal:* `{user_goal[:300]}`\n"
+                    f"⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                )
+            else:
+                status_msg = await effective_bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n🎯 *Goal:* `{user_goal[:300]}`\n⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                )
+        except Exception as _sm_err:
+            logger.warning(f"Failed to post initial agent status: {_sm_err}")
+            status_msg = None
+    else:
+        status_msg = existing_status_msg
+
+    async def _run_agent_task():
+        try:
+            from Agentic_Core.run_agent import run_agentic_goal_async
+
+            last_edit_time = 0
+
+            async def _async_notify(event, data):
+                nonlocal last_edit_time
+                now = time.time()
+                # Throttle updates to avoid Telegram flood limits (once every 3 seconds)
+                if now - last_edit_time > 3.0 and status_msg:
+                    last_edit_time = now
+                    evt_text = f"🔄 *Status:* `{event}`"
+                    if "tool" in data:
+                        evt_text += f"\n⚙️ *Running Tool:* `{data['tool']}`"
+                    elif "turn" in data:
+                        evt_text += f"\n🧠 *Turn:* {data['turn']}/{data.get('max_turns', 10)}"
+                    try:
+                        await status_msg.edit_text(
+                            f"🤖 **[AGENT IN PROGRESS]**\n\n"
+                            f"🎯 *Goal:* `{user_goal[:300]}`\n"
+                            f"{evt_text}"
+                        )
+                    except Exception:
+                        pass
+
+            loop = asyncio.get_running_loop()
+
+            def _progress_cb(event, data):
+                asyncio.run_coroutine_threadsafe(_async_notify(event, data), loop)
+
+            res = await run_agentic_goal_async(
+                goal=user_goal,
+                max_turns=10,
+                progress_callback=_progress_cb
+            )
+
+            status = res.get("status", "completed")
+            summary = res.get("final_summary") or res.get("message") or "Goal execution completed."
+            turns = res.get("turns_executed", 0)
+            elapsed = res.get("execution_time_sec", 0.0)
+            rendered_vid = res.get("rendered_video_path")
+            sess_id = res.get("session_id")
+
+            final_report = (
+                f"✅ **[AGENT PRODUCTION COMPLETE]**\n\n"
+                f"🎯 *Goal:* `{user_goal[:300]}`\n"
+                f"⚡ *Status:* `{status}`\n"
+                f"⏱️ *Duration:* `{elapsed}s` ({turns} turns)\n\n"
+                f"📋 *Summary:*\n{summary[:3000]}"
+            )
+            if status_msg:
+                try:
+                    await status_msg.edit_text(final_report)
+                except Exception:
+                    pass
+
+            # ── If the Agent rendered or re-edited a video, deliver interactive review card ──
+            if rendered_vid and os.path.exists(rendered_vid) and effective_bot:
+                try:
+                    sess = session_manager.get_session(sess_id) if sess_id else None
+                    if not sess:
+                        sess_id = session_manager.create_session(
+                            video_path=rendered_vid,
+                            requestor_chat_id=chat_id
+                        )
+                        sess = session_manager.get_session(sess_id)
+
+                    clip_id = (sess.get("clip_id") if sess else None) or os.path.splitext(os.path.basename(rendered_vid))[0].replace("_master", "")
+                    count = (sess.get("retry_count") if sess else 1) or 1
+                    keyboard = build_telegram_session_keyboard(session_id=sess_id, shortcode=clip_id)
+
+                    sent_video_msg = await _send_video_safe_main(
+                        effective_bot,
+                        chat_id,
+                        rendered_vid,
+                        caption=f"🎉 **AI Master Edit Delivered by Agent!** (Attempt #{count})\n📁 `{os.path.basename(rendered_vid)}`\n🆔 `Session: {sess_id}`",
+                        reply_markup=keyboard,
+                        supports_streaming=True
+                    )
+                    if sent_video_msg and sess_id:
+                        session_manager.update_message_id(sess_id, sent_video_msg.message_id)
+                except Exception as _v_err:
+                    logger.error(f"❌ Failed to deliver agent-rendered video to chat {chat_id}: {_v_err}")
+
+        except Exception as e:
+            logger.error(f"❌ [AGENT ERROR] Failed: {e}", exc_info=True)
+            if status_msg:
+                try:
+                    await status_msg.edit_text(f"❌ **Agent execution failed:**\n`{str(e)}`")
+                except Exception:
+                    pass
+
+    asyncio.create_task(_run_agent_task())
+
+
 async def handle_telegram_incoming_msg(update, context):
     """
     Handles user messages sent to Telegram bot:
       1. Active Session Title Capture: If user is replying to an approved reel, captures title & dispatches to PublishQueue.
-      2. Creator ID / URL / File Upload: Ingests & edits video manually.
+      2. Universal Agent Route: Routes all URLs, creator handles, and goals directly to Gemini Director.
     """
     msg = update.message
     if not msg:
@@ -1914,8 +2021,9 @@ async def handle_telegram_incoming_msg(update, context):
     if chat_id in user_pending_reedit_session and msg.text and not msg.text.startswith("/"):
         session_id = user_pending_reedit_session.pop(chat_id)
         custom_directive = msg.text.strip()
-        await msg.reply_text(f"🚀 **Received Custom Directive**: *\"{custom_directive}\"*\n\nStarting aggressive AI re-edit with your feedback...")
-        await execute_reedit_with_directive(None, context, session_id, custom_directive, chat_id)
+        goal = f"Re-edit session '{session_id}' with custom user directive: '{custom_directive}'"
+        logger.info(f"🤖 [UNIVERSAL AGENT] Routing custom prompt directly to Gemini Director: '{goal}'")
+        await _dispatch_agent_goal(update, goal, context=context)
         return
 
     # Check if we are waiting for a custom title / hint / affiliate URL from user
@@ -2128,135 +2236,34 @@ async def handle_telegram_incoming_msg(update, context):
                 await handle_telegram_start(update, context)
             return
 
-        elif text.startswith("http://") or text.startswith("https://") or "instagram.com" in text or "youtube.com" in text or "youtu.be" in text or "tiktok.com" in text:
-            target_url = text
-            await _check_and_notify_busy_state(msg, str(from_user.get("id") or chat_id))
-
-            # ── Check Telegram Vault Index FIRST before starting pipeline / downloaders ──
-            vault_hit = None
-            try:
-                vault_hit = vault_indexer.find_entry_by_shortcode(target_url) or vault_indexer.lookup_downloaded_source(target_url)
-            except Exception as _ve:
-                logger.debug(f"Notice during incoming URL vault check: {_ve}")
-
-            media_ids = (vault_hit or {}).get("media_file_ids", {})
-            has_raw = bool(media_ids.get("raw_video_file_id") or (vault_hit or {}).get("raw_video_file_id"))
-            has_clean = bool(media_ids.get("wm_clean_file_id"))
-            has_master = bool(media_ids.get("processed_output_file_id"))
-
-            if has_raw or has_clean or has_master:
-                sc = (vault_hit or {}).get("shortcode") or "vault"
-                perks = []
-                if has_clean:
-                    perks.append("🧼 Clean Clip (Skip Inpainting)")
-                elif has_raw:
-                    perks.append("📥 Raw Source (Skip Download)")
-                if has_master:
-                    perks.append("🎬 Rendered Master")
-
-                perks_str = " • ".join(perks)
-                await msg.reply_text(
-                    f"⚡ **[TELEGRAM VAULT CACHE HIT]** Clip `{sc}` found in Storage Vault!\n\n"
-                    f"🔗 **Target URL**: `{target_url}`\n"
-                    f"🌐 **Platform**: `{chosen_platform.title()}`\n"
-                    f"⚡ **Cached Assets**: `{perks_str}`\n"
-                    f"⚙️ **Status**: Retrieving directly from vault & launching AI Master Editor instantly..."
-                )
-            else:
-                await msg.reply_text(
-                    f"📥 **[STEP 1/3] Direct Video URL Received!**\n\n"
-                    f"🔗 **Target URL**: `{target_url}`\n"
-                    f"🌐 **Platform**: `{chosen_platform.title()}`\n"
-                    f"⚙️ **Status**: Ingesting video & starting AI Master Editor..."
-                )
-
-            # Execute pipeline in non-blocking background thread
-            _dispatch_pipeline_in_background(
-                mode="manual",
-                url=target_url,
-                platform=chosen_platform,
-                requestor_chat_id=chat_id
-            )
+        # Handle simple greetings by showing the help menu
+        if text.lower() in GREETINGS:
+            await handle_telegram_start(update, context)
             return
 
-        elif text.startswith("@") or text.lower().startswith("scrape:") or text.lower().startswith("account:"):
-            clean_handle = text.replace("scrape:", "").replace("account:", "").strip().lstrip("@")
-            target_accs = [clean_handle]
-            await _check_and_notify_busy_state(msg, str(from_user.get("id") or chat_id))
-            await msg.reply_text(
-                f"🎯 **[STEP 1/3] Target Creator Handle Received!**\n\n"
-                f"👤 **Creator**: `@{clean_handle}`\n"
-                f"🌐 **Platform**: `{chosen_platform.title()}`\n"
-                f"⚙️ **Status**: Scraping top reels & launching AI editing pipeline... Please wait!"
-            )
-            # Execute pipeline in non-blocking background thread
-            _dispatch_pipeline_in_background(
-                mode="auto",
-                target_accounts=target_accs,
-                platform=chosen_platform,
-                requestor_chat_id=chat_id
-            )
-            return
-
-        elif has_platform_choice:
-            clean_handle = text.strip().lstrip("@")
-            target_accs = [clean_handle]
-            await _check_and_notify_busy_state(msg, str(from_user.get("id") or chat_id))
-            await msg.reply_text(
-                f"🎯 **[STEP 1/3] Target Creator Handle Received!**\n\n"
-                f"👤 **Creator**: `@{clean_handle}`\n"
-                f"🌐 **Platform**: `{chosen_platform.title()}`\n"
-                f"⚙️ **Status**: Scraping top reels for {chosen_platform.title()} & launching AI pipeline..."
-            )
-            # Execute pipeline in non-blocking background thread
-            _dispatch_pipeline_in_background(
-                mode="auto",
-                target_accounts=target_accs,
-                platform=chosen_platform,
-                requestor_chat_id=chat_id
-            )
-            return
-
-        else:
-            clean_id = text.strip().lstrip("@")
-            user_pending_text[chat_id] = clean_id
-            keyboard = build_platform_selection_keyboard()
-            await msg.reply_text(
-                f"🎯 **Target ID Received**: `@{clean_id}`\n\n"
-                f"👇 **Please select which platform `@{clean_id}` belongs to:**",
-                reply_markup=keyboard
-            )
-            return
+        # ── UNIVERSAL AGENTIC ROUTING ──────────────────────────────────────────
+        # Every user text input (URL, account handle, natural language prompt)
+        # routes directly through the Gemini Autonomous Director without needing /agent.
+        logger.info(f"🤖 [UNIVERSAL AGENT] Routing user text directly to Gemini Director: '{text[:80]}'")
+        await _dispatch_agent_goal(update, text)
+        return
 
     elif msg.video or msg.document:
         await _check_and_notify_busy_state(msg, str(from_user.get("id") or chat_id))
-        await msg.reply_text(
-            f"📥 **[STEP 1/3] Video File Upload Received!**\n\n"
-            f"📁 **File**: Saved successfully\n"
-            f"⚙️ **Status**: Launching AI Master Editing Pipeline..."
+        status_msg = await msg.reply_text(
+            "📥 **[VIDEO UPLOAD RECEIVED]**\n\n"
+            "📁 **Status**: Downloading uploaded video file to local staging..."
         )
         file_obj = await (msg.video or msg.document).get_file()
         temp_dir = os.path.join(_REPO_ROOT, "downloads", f"telegram_{chat_id}_{int(time.time())}")
         os.makedirs(temp_dir, exist_ok=True)
         local_video_path = os.path.join(temp_dir, "video.mp4")
         await file_obj.download_to_drive(custom_path=local_video_path)
-        # Execute pipeline in non-blocking background thread
-        _dispatch_pipeline_in_background(
-            mode="manual",
-            input_path=local_video_path,
-            platform=chosen_platform,
-            requestor_chat_id=chat_id
-        )
-        return
 
-    # Fallback: No valid input detected
-    await msg.reply_text(
-        "⚠️ **Invalid Input**\n\n"
-        "Please send:\n"
-        "• A video URL (Instagram, YouTube, TikTok)\n"
-        "• A creator handle (e.g., @username)\n"
-        "• Upload a video file directly"
-    )
+        upload_goal = f"Process uploaded video at '{local_video_path}', edit with beat-synced rhythm and BGM, audit quality, and publish to social platforms."
+        logger.info(f"🤖 [UNIVERSAL AGENT] Routing uploaded video to Gemini Director: '{upload_goal}'")
+        await _dispatch_agent_goal(update, upload_goal, existing_status_msg=status_msg)
+        return
 
 
 # ── Full End-to-End Execution Pipeline ───────────────────────────────────────
@@ -2656,16 +2663,32 @@ def normalize_time_slot(slot_str: str) -> Optional[str]:
 
 def parse_scraping_auto_input_times() -> List[str]:
     """
-    Parses AUTO_INPUT_SCHEDULE_TIMES from .env (e.g., '06:00,19:00').
+    Parses AUTO_INPUT_SCHEDULE_TIMES from .env and aggregates per-user schedule times
+    from telegram_users.json so any registered user's configured schedule slot fires.
     Defaults to ['06:00', '19:00'].
     """
     raw = os.getenv("AUTO_INPUT_SCHEDULE_TIMES") or os.getenv("SCRAPING_AUTO_INPUT_TIMES") or os.getenv("APIFY_SCRAPE_SCHEDULE_TIMES") or "06:00,19:00"
-    slots = []
+    slots = set()
     for piece in raw.split(","):
         norm = normalize_time_slot(piece)
         if norm:
-            slots.append(norm)
-    return slots or ["06:00", "19:00"]
+            slots.add(norm)
+
+    # Hydrate per-user schedule times from telegram_users.json
+    try:
+        from Telegram_Storage_Modules.telegram_user_manager import load_all_users
+        users = load_all_users()
+        for u in users.values():
+            u_sched = u.get("auto_input_schedule_times") or ""
+            if u_sched:
+                for piece in str(u_sched).split(","):
+                    norm = normalize_time_slot(piece)
+                    if norm:
+                        slots.add(norm)
+    except Exception as _ue:
+        logger.debug("Notice parsing user schedule times: %s", _ue)
+
+    return sorted(list(slots)) if slots else ["06:00", "19:00"]
 
 
 def parse_static_publish_times() -> List[str]:
@@ -2772,7 +2795,7 @@ def run_scheduled_pipeline_loop():
 async def _async_static_scheduler_task(bot_app=None):
     """
     Async background task running alongside Telegram Bot polling.
-    Rotates max 2 accounts per scheduled slot, renders reels, creates sessions, and sends to Telegram.
+    Rotates max 2 accounts per scheduled slot, renders reels, creates sessions, and delivers to the account owner and admin.
     """
     import asyncio
     logger.info("⏰ [ASYNC SCRAPER SCHEDULER] Async scraper scheduler task active...")
@@ -2798,32 +2821,45 @@ async def _async_static_scheduler_task(bot_app=None):
         try:
             rendered = run_scheduled_scraper_batch(max_accounts=2)
             if bot_app and rendered:
+                from Downloader_Modules.scheduled_scraper_manager import get_account_owner_for_file
                 admin_raw = os.getenv("TELEGRAM_ADMIN_ID")
-                if admin_raw:
-                    admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()]
-                    for r_file in rendered:
-                        try:
-                            sess_id = session_manager.create_session(video_path=r_file)
-                            keyboard = build_telegram_session_keyboard(session_id=sess_id)
-                            for aid in admin_ids:
-                                try:
-                                    sent_msg = await _send_video_safe_main(
-                                        bot_app.bot,
-                                        aid,
-                                        r_file,
-                                        caption=(
-                                            f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
-                                            f"📁 `{os.path.basename(r_file)}`\n"
-                                            f"🆔 `Session: {sess_id}`"
-                                        ),
-                                        reply_markup=keyboard
-                                    )
-                                    if sent_msg:
-                                        session_manager.update_message_id(sess_id, sent_msg.message_id)
-                                except Exception as _push_e:
-                                    logger.warning(f"Failed to send scheduled video to admin {aid}: {_push_e}")
-                        except Exception as _e:
-                            logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
+                admin_ids = [x.strip() for x in str(admin_raw).split(",") if x.strip()] if admin_raw else []
+
+                for r_file in rendered:
+                    try:
+                        owner_id = get_account_owner_for_file(r_file)
+                        req_chat = int(owner_id) if (owner_id and str(owner_id).isdigit()) else None
+                        sess_id = session_manager.create_session(video_path=r_file, requestor_chat_id=req_chat)
+                        keyboard = build_telegram_session_keyboard(session_id=sess_id)
+
+                        # Determine list of target chats to notify:
+                        # 1. Normal user who configured the account receives the review card directly!
+                        target_recipients = set()
+                        if req_chat:
+                            target_recipients.add(str(req_chat))
+                        # 2. Admins also receive copy
+                        for aid in admin_ids:
+                            target_recipients.add(str(aid))
+
+                        for target_chat in target_recipients:
+                            try:
+                                sent_msg = await _send_video_safe_main(
+                                    bot_app.bot,
+                                    target_chat,
+                                    r_file,
+                                    caption=(
+                                        f"⏰ **[SCHEDULED SLOT {next_slot}]** Master Edit Complete!\n"
+                                        f"📁 `{os.path.basename(r_file)}`\n"
+                                        f"🆔 `Session: {sess_id}`"
+                                    ),
+                                    reply_markup=keyboard
+                                )
+                                if sent_msg and (str(target_chat) == str(req_chat) or not req_chat):
+                                    session_manager.update_message_id(sess_id, sent_msg.message_id)
+                            except Exception as _push_e:
+                                logger.warning(f"Failed to send scheduled video to recipient {target_chat}: {_push_e}")
+                    except Exception as _e:
+                        logger.warning(f"Failed to process scheduled video {r_file}: {_e}")
         except Exception as e:
             logger.error(f"❌ [ASYNC SCHEDULER] Error during scheduled run: {e}")
 
@@ -2939,11 +2975,11 @@ def start_telegram_bot_service():
             sess.update({"wizard": "auto_setup", "step": 1, "data": {}})
             await update.message.reply_text(
                 "⚙️ **Auto Input Setup — Step 1/6: Source Account IDs**\n\n"
-                "Send the platform handles you want to scrape.\n\n"
-                "📌 **Format** (one per line or all together):\n"
-                "  `instagram @creator_handle`\n"
-                "  `youtube @ChannelName`\n"
-                "  `tiktok @tiktokuser`\n\n"
+                "Send the creator handles or profile URLs you want to scrape.\n\n"
+                "📌 **Accepted Formats**:\n"
+                "  • `@creator_handle` (or `@nike, @adidas`)\n"
+                "  • `https://www.instagram.com/creator_handle/`\n"
+                "  • `instagram @handle`, `youtube @channel`, `tiktok @user`\n\n"
                 "You can add up to **2 accounts total** across any mix of platforms.\n"
                 "Send them now 👇",
                 reply_markup=build_back_button_keyboard()
@@ -2951,27 +2987,32 @@ def start_telegram_bot_service():
         async def _cmd_addaccount(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             if not args_text:
-                await update.message.reply_text("Usage: `/addaccount @handle` or use ⚙️ Auto Input Setup from the menu.")
+                await update.message.reply_text("Usage: `/addaccount @handle` (or `/addaccount https://instagram.com/handle`)")
                 return
-            handle = args_text.lstrip("@").strip()
+            parsed = parse_target_accounts_input(args_text)
+            handle = parsed[0]["handle"] if parsed else args_text.lstrip("@").strip()
+            plat = parsed[0]["platform"] if parsed else "instagram"
             try:
                 from Downloader_Modules.scheduled_scraper_manager import add_source_account
-                add_source_account(handle, "instagram")
+                add_source_account(handle, plat, owner_chat_id=update.effective_chat.id)
             except Exception as _e:
                 logger.debug(f"addaccount: {_e}")
-            await update.message.reply_text(f"✅ Account `@{handle}` added! Use ⚙️ Auto Input Setup to configure full schedule.")
+            await update.message.reply_text(f"✅ Account `@{handle}` ({plat.title()}) added! Use ⚙️ Auto Input Setup to configure full schedule.")
         async def _cmd_removeaccount(update, context):
             args_text = " ".join(context.args).strip() if context.args else ""
             handle = args_text.lstrip("@").strip()
             try:
                 from Downloader_Modules.scheduled_scraper_manager import remove_source_account
-                remove_source_account(handle)
-                await update.message.reply_text(f"🗑️ Account `@{handle}` removed!")
+                removed = remove_source_account(handle, requestor_chat_id=update.effective_chat.id)
+                if removed:
+                    await update.message.reply_text(f"🗑️ Account `@{handle}` removed!")
+                else:
+                    await update.message.reply_text(f"⚠️ Could not remove `@{handle}` (permission denied or account not found).")
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Could not remove `@{handle}`: {_e}")
         async def _cmd_listaccounts(update, context):
             try:
-                text, kbd = build_active_accounts_keyboard_and_text()
+                text, kbd = build_active_accounts_keyboard_and_text(chat_id=update.effective_chat.id)
                 await update.message.reply_text(text=text, reply_markup=kbd)
             except Exception as _e:
                 await update.message.reply_text(f"⚠️ Could not list accounts: {_e}")
@@ -3160,6 +3201,30 @@ def start_telegram_bot_service():
                 user_pending_reedit_session.pop(chat_id, None)
                 await update.message.reply_text("↩️ Cancelled active operation.")
 
+        async def _cmd_agent(update, context):
+            """
+            /agent <goal>
+            Autonomous ReAct agent powered by Gemini 2.5 Flash.
+            Dispatches non-blocking async pipeline task with live progress reporting.
+            """
+            user_goal = " ".join(context.args).strip() if context.args else ""
+            if not user_goal:
+                await update.message.reply_text(
+                    "🤖 **Autonomous Creative Director (Gemini 2.5 Flash)**\n\n"
+                    "Instruct the agent with any video production goal:\n\n"
+                    "📌 **Usage:**\n"
+                    "`/agent <your goal description>`\n\n"
+                    "💡 **Examples:**\n"
+                    "• `/agent Scrape @nike top 1 reel, edit with cinematic beats and publish`\n"
+                    "• `/agent Ingest https://instagram.com/reel/Cxxxxxx/ and render with high energy hook`\n"
+                    "• `/agent Scrape @cristiano 1 reel and audit dopamine retention`"
+                )
+                return
+
+            await _dispatch_agent_goal(update, user_goal)
+
+        app.add_handler(CommandHandler("agent", _cmd_agent))
+        app.add_handler(CommandHandler("director", _cmd_agent))
         app.add_handler(CommandHandler("autosetup", _cmd_auto_setup))
         app.add_handler(CommandHandler("addaccount", _cmd_addaccount))
         app.add_handler(CommandHandler("removeaccount", _cmd_removeaccount))
@@ -3222,6 +3287,7 @@ if __name__ == "__main__":
         parser.add_argument("--url", "-u", type=str, default=None, help="Target video URL for manual ingestion")
         parser.add_argument("--target-accounts", "-t", type=str, default=None, help="Target Instagram handle(s) to scrape (comma-separated, max 2)")
         parser.add_argument("--bot", action="store_true", help="Launch Telegram Bot polling listener mode + timed auto-input scheduler")
+        parser.add_argument("--legacy", action="store_true", help="Force legacy procedural pipeline instead of Universal Agent")
 
         args = parser.parse_args()
 
@@ -3277,7 +3343,15 @@ if __name__ == "__main__":
             except Exception as _sw_err:
                 logger.debug(f"Startup disk sweeper notice: {_sw_err}")
 
-            run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
+            if not args.legacy:
+                from Agentic_Core.run_agent import run_agentic_goal
+                agent_goal = target_input
+                if not agent_goal and target_accs:
+                    agent_goal = f"Scrape {', '.join(target_accs)}, edit with dynamic rhythm, audit quality, and publish"
+                logger.info(f"🤖 [CLI UNIVERSAL AGENT] Dispatching autonomous goal: '{agent_goal}'")
+                run_agentic_goal(agent_goal)
+            else:
+                run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
 
     except KeyboardInterrupt:
         logger.info("\n🛑 [SHUTDOWN] Ctrl+C / KeyboardInterrupt received. System stopped gracefully.")
