@@ -187,6 +187,18 @@ class AutonomousDirector:
             # Reliable model execution with quota rotation delegated to Governor
             while True:
                 try:
+                    # Auto-inject thought_signature sentinel into any function_call part missing it in chat history (Gemini 3.x requirement)
+                    for attr in ("_curated_history", "_comprehensive_history"):
+                        hist = getattr(chat, attr, None)
+                        if hist and isinstance(hist, list):
+                            for content in hist:
+                                for part in getattr(content, "parts", []) or []:
+                                    if getattr(part, "function_call", None) is not None and not getattr(part, "thought_signature", None):
+                                        try:
+                                            part.thought_signature = b"skip_thought_signature_validator"
+                                        except Exception:
+                                            pass
+
                     response = chat.send_message(current_input)
                     turn_response = response
 
@@ -320,6 +332,16 @@ class AutonomousDirector:
                     "audit_passed": audit_passed
                 }
 
+            # Extract any thought_signatures emitted by the model on its function_call parts
+            tool_signatures = {}
+            if getattr(response, "candidates", None) and response.candidates:
+                c_content = getattr(response.candidates[0], "content", None)
+                if c_content and getattr(c_content, "parts", None):
+                    for p in c_content.parts:
+                        fc = getattr(p, "function_call", None)
+                        if fc and getattr(p, "thought_signature", None):
+                            tool_signatures[fc.name] = p.thought_signature
+
             # Dispatch tool calls
             tool_response_parts = []
             for call in function_calls:
@@ -361,12 +383,16 @@ class AutonomousDirector:
                 _notify("tool_completed", {"tool": tool_name, "status": tool_result.get("status")})
 
                 # Format part response for Gemini
-                tool_response_parts.append(
-                    types.Part.from_function_response(
-                        name=tool_name,
-                        response={"result": tool_result}
-                    )
+                resp_part = types.Part.from_function_response(
+                    name=tool_name,
+                    response={"result": tool_result}
                 )
+                sig = tool_signatures.get(tool_name) or b"skip_thought_signature_validator"
+                try:
+                    resp_part.thought_signature = sig
+                except Exception:
+                    pass
+                tool_response_parts.append(resp_part)
 
             # Feed tool results back into the chat
             current_input = tool_response_parts
