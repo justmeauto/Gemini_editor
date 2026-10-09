@@ -100,3 +100,79 @@ def test_dispatch_agent_goal_routing():
             mock_query.answer.assert_called_once()
 
         asyncio.run(_test_coro())
+
+
+def test_director_initialization_from_governor():
+    """Verify director delegates initial model selection to gemini_router Governor."""
+    with patch("Agentic_Core.director.gemini_router") as mock_router:
+        mock_router.get_available_model.return_value = "gemini-2.0-flash"
+        director = AutonomousDirector(api_key="test_key_abc")
+        assert director.model_name == "gemini-2.0-flash"
+        mock_router.get_available_model.assert_called_with(task_type="reasoning")
+
+
+def test_director_quota_rotation_delegation():
+    """Verify that on 429 quota exhaustion, director marks model banned in Governor and rotates."""
+    with patch("Agentic_Core.director.gemini_router") as mock_router:
+        # Initial model
+        mock_router.get_available_model.side_effect = [
+            "gemini-2.5-flash",  # initial in __init__
+            "gemini-2.5-flash",  # in run_goal start
+            "gemini-2.0-flash",  # after 429 rotation
+        ]
+
+        director = AutonomousDirector(api_key="test_key_abc")
+        director.client = MagicMock()
+
+        # Mock client.chats.create
+        mock_chat1 = MagicMock()
+        # First send_message raises 429
+        mock_chat1.send_message.side_effect = Exception("429 Resource has been exhausted (e.g. check quota).")
+
+        mock_chat2 = MagicMock()
+        # Second send_message returns successful finish
+        mock_resp = MagicMock()
+        mock_resp.function_calls = []
+        mock_resp.text = "Goal accomplished with rotated model."
+        mock_chat2.send_message.return_value = mock_resp
+
+        director.client.chats.create.side_effect = [mock_chat1, mock_chat2]
+
+        result = director.run_goal(goal="Ingest and edit video", max_turns=3)
+
+        assert result["status"] == "success"
+        assert director.model_name == "gemini-2.0-flash"
+        mock_router.mark_model_banned.assert_called_with("gemini-2.5-flash", error_type="429")
+
+
+def test_director_deprecated_model_rotation_delegation():
+    """Verify that on 404 NOT_FOUND, director marks model permanently banned in Governor and rotates."""
+    with patch("Agentic_Core.director.gemini_router") as mock_router:
+        mock_router.get_available_model.side_effect = [
+            "gemini-2.5-pro",    # initial
+            "gemini-2.5-pro",    # in run_goal start
+            "gemini-2.5-flash",  # after 404 rotation
+        ]
+
+        director = AutonomousDirector(api_key="test_key_abc")
+        director.client = MagicMock()
+
+        mock_chat1 = MagicMock()
+        mock_chat1.send_message.side_effect = Exception("404 NOT_FOUND. Model models/gemini-2.5-pro is no longer available.")
+
+        mock_chat2 = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.function_calls = []
+        mock_resp.text = "Goal accomplished with active model."
+        mock_chat2.send_message.return_value = mock_resp
+
+        director.client.chats.create.side_effect = [mock_chat1, mock_chat2]
+
+        result = director.run_goal(goal="Process clip", max_turns=2)
+
+        assert result["status"] == "success"
+        assert director.model_name == "gemini-2.5-flash"
+        mock_router.mark_model_banned.assert_called_with("gemini-2.5-pro", error_type="model_deprecated")
+
+
+

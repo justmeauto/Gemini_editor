@@ -27,18 +27,10 @@ from .tool_adapters import get_agent_tools, TOOL_DISPATCH_MAP
 
 try:
     from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router, GeminiGovernor
-    from Gemini_Modules.gemini_router_module.list_models import (
-        get_active_models_and_ratings,
-        refresh_gemini_models_cache,
-        get_models_by_capability,
-    )
     _HAS_GOVERNOR = True
 except ImportError:
     gemini_router = None
     GeminiGovernor = None
-    get_active_models_and_ratings = None
-    refresh_gemini_models_cache = None
-    get_models_by_capability = None
     _HAS_GOVERNOR = False
 
 # RPM guard: Minimum delay between director turns to prevent hitting 15 RPM burst limit
@@ -115,7 +107,7 @@ class AutonomousDirector:
         # Resolve initial model dynamically from governor if not explicitly specified
         if not model_name:
             if _HAS_GOVERNOR and gemini_router is not None:
-                model_name = gemini_router.get_available_model(task_type="reasoning_tools")
+                model_name = gemini_router.get_available_model(task_type="reasoning")
             if not model_name:
                 model_name = "gemini-2.5-flash"
 
@@ -156,8 +148,7 @@ class AutonomousDirector:
         # Resolve best available model from governor for this session
         if _HAS_GOVERNOR and gemini_router is not None:
             active_model = gemini_router.get_available_model(
-                task_type="reasoning_tools",
-                session_id="director_session"
+                task_type="reasoning"
             )
             if active_model:
                 self.model_name = active_model
@@ -193,7 +184,7 @@ class AutonomousDirector:
             turn_response = None
             turn_tried_models: set = set()
 
-            # Reliable model execution with quota rotation
+            # Reliable model execution with quota rotation delegated to Governor
             while True:
                 try:
                     response = chat.send_message(current_input)
@@ -213,6 +204,8 @@ class AutonomousDirector:
                     err_str = str(api_err).lower()
                     is_quota = any(k in err_str for k in ("429", "quota", "resource_exhausted", "rate_limit"))
                     is_auth = any(k in err_str for k in ("api key", "unauthorized", "permission_denied"))
+                    is_server_error = any(k in err_str for k in ("503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error", "deadline_exceeded", "timed out"))
+                    is_deprecated = any(k in err_str for k in ("404", "not_found", "not found", "no longer available", "unsupported", "bidigeneratecontent", "thought_signature"))
 
                     if is_auth and not is_quota:
                         logger.error(f"❌ [DIRECTOR] Fatal API authentication error: {api_err}")
@@ -223,169 +216,52 @@ class AutonomousDirector:
                             "execution_log": execution_log
                         }
 
-                    if is_quota:
-                        logger.warning(f"⚠️ [DIRECTOR] Quota exhausted on {self.model_name} (turn {turn}). Rotating...")
-                        turn_tried_models.add(self.model_name)
-                        session_tried_models.add(self.model_name)
+                    turn_tried_models.add(self.model_name)
+                    session_tried_models.add(self.model_name)
 
-                        # Ban in global governor with 429 renewal cooldown (45-90s)
+                    if is_quota or is_server_error or is_deprecated:
+                        err_type = "429" if is_quota else ("model_deprecated" if is_deprecated else "5xx")
+                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} failed ({api_err}). Notifying Governor to rotate...")
+
+                        # Delegate model banning & rotation decision strictly to the Governor
                         if _HAS_GOVERNOR and gemini_router is not None:
-                            gemini_router.mark_model_banned(self.model_name, error_type="429")
+                            gemini_router.mark_model_banned(self.model_name, error_type=err_type)
                             next_model = gemini_router.get_available_model(
-                                task_type="reasoning_tools",
-                                session_id="director_session",
-                                exclude_models=turn_tried_models
+                                task_type="reasoning",
+                                exclude_models=session_tried_models
                             )
                         else:
                             next_model = None
 
-                        # If all known models exhausted, refresh live models from Google API
-                        if not next_model and refresh_gemini_models_cache is not None:
-                            logger.info("🔄 [DIRECTOR] All active models exhausted. Refreshing live models from API...")
-                            try:
-                                refreshed = refresh_gemini_models_cache(force=True)
-                                disc = refreshed.get("models", [])
-                                for m in disc:
-                                    if m not in turn_tried_models and ("flash" in m.lower() or "pro" in m.lower()):
-                                        next_model = m
-                                        break
-                            except Exception:
-                                pass
+                        # If Governor indicates all models are currently cooling down, wait for renewal window
+                        if not next_model and (is_quota or is_server_error):
+                            logger.warning("⏳ [DIRECTOR] All eligible models in Governor are cooling down. Waiting 15s for Governor renewal window...")
+                            time.sleep(15.0)
+                            if _HAS_GOVERNOR and gemini_router is not None:
+                                next_model = gemini_router.get_available_model(
+                                    task_type="reasoning",
+                                    exclude_models=turn_tried_models
+                                )
 
-                        if not next_model:
-                            logger.error("🛑 [DIRECTOR] All Gemini models currently rate-limited (429).")
-                            return {
-                                "status": "quota_exhausted",
-                                "message": "All Gemini models rate-limited (429). Please wait for the quota renewal window (60s).",
-                                "turns_executed": turn,
-                                "execution_log": execution_log
-                            }
-
-                        logger.info(f"🔀 [DIRECTOR ROTATION] {self.model_name} ➔ {next_model}")
-                        self.model_name = next_model
-
-                        # SAFE CHAT HISTORY MIGRATION:
-                        # In google.genai, chat.get_history() contains only previously completed turns.
-                        # Preserving this exact history ensures preceding FunctionCalls match the pending FunctionResponse.
-                        try:
-                            raw_history = chat.get_history() or []
-                            chat = self.client.chats.create(
-                                model=self.model_name,
-                                config=config,
-                                history=raw_history
-                            )
-                            logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
-                        except Exception as hist_err:
-                            logger.warning(f"⚠️ History migration failed ({hist_err}). Starting fresh session on {self.model_name}")
-                            chat = self.client.chats.create(
-                                model=self.model_name,
-                                config=config
-                            )
-
-                        time.sleep(1.0)  # Graceful backoff
-                        continue
-
-                    # Model incompatibility or sunset error (e.g. 404 deprecated, thought_signature, or audio/bidi streaming)
-                    is_incompatible = any(k in err_str for k in (
-                        "thought_signature", "thought signature", "not supported for this model",
-                        "unsupported", "bidigeneratecontent", "only supports", "websocket",
-                        "live api", "404", "not_found", "not found", "no longer available", "deprecated"
-                    )) or ("invalid_argument" in err_str and ("400" in err_str or "supports" in err_str))
-
-                    if is_incompatible:
-                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} is incompatible with generateContent ({api_err}). Banning and rotating...")
-                        turn_tried_models.add(self.model_name)
-                        session_tried_models.add(self.model_name)
-                        if _HAS_GOVERNOR and gemini_router is not None:
-                            gemini_router.mark_model_banned(self.model_name, error_type="model_deprecated")
-                            next_model = gemini_router.get_available_model(
-                                task_type="reasoning_tools",
-                                session_id="director_session",
-                                exclude_models=turn_tried_models
-                            )
-                        else:
-                            next_model = None
-
-                        if not next_model and refresh_gemini_models_cache is not None:
-                            try:
-                                refreshed = refresh_gemini_models_cache(force=True)
-                                for m in refreshed.get("models", []):
-                                    if (
-                                        m not in turn_tried_models
-                                        and ("flash" in m.lower() or "pro" in m.lower())
-                                        and "latest" not in m.lower()
-                                        and not any(kw in m.lower() for kw in ("thinking", "audio", "bidi", "3."))
-                                    ):
-                                        next_model = m
-                                        break
-                            except Exception:
-                                pass
-
-                        if next_model:
-                            logger.info(f"🔀 [DIRECTOR INCOMPATIBILITY ROTATION] {self.model_name} ➔ {next_model}")
+                        if next_model and next_model != self.model_name:
+                            logger.info(f"🔀 [DIRECTOR GOVERNOR ROTATION] {self.model_name} ➔ {next_model}")
                             self.model_name = next_model
 
-                            # If incompatibility is due to thought_signature, start fresh with summary
-                            # instead of carrying over historical un-signed functionCall parts.
-                            if "thought_signature" in err_str or "thought signature" in err_str:
-                                logger.info("🧹 [DIRECTOR] Starting fresh chat session with execution summary to bypass thought_signature requirements.")
-                                chat = self.client.chats.create(model=self.model_name, config=config)
-                                summary_lines = [f"- {e.get('tool')}: status={e.get('status')}" for e in execution_log]
-                                current_prompt = (
+                            # Start clean chat session on rotated model
+                            chat = self.client.chats.create(model=self.model_name, config=config)
+                            if execution_log:
+                                summary_lines = [f"- {e.get('tool')}: status={e.get('result_status')}" for e in execution_log]
+                                current_input = (
                                     f"Original Goal: {goal}\n"
-                                    f"Actions successfully completed so far:\n" + "\n".join(summary_lines) +
-                                    f"\nPlease continue directly with the remaining workflow (e.g. tool_audit_clip, tool_publish_clip, or conclusion)."
+                                    f"Completed workflow steps so far:\n" + "\n".join(summary_lines) +
+                                    f"\nPlease continue directly with the remaining workflow without repeating completed steps."
                                 )
                             else:
-                                try:
-                                    raw_history = chat.get_history() or []
-                                    chat = self.client.chats.create(
-                                        model=self.model_name,
-                                        config=config,
-                                        history=raw_history
-                                    )
-                                    logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
-                                except Exception as hist_err:
-                                    logger.warning(f"⚠️ History migration failed ({hist_err}). Fresh session on {self.model_name}")
-                                    chat = self.client.chats.create(model=self.model_name, config=config)
+                                current_input = goal
                             time.sleep(1.0)
                             continue
 
-
-                    # Server temporary failure (500, 503, overloaded, timeout)
-                    is_server_error = any(k in err_str for k in ("503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error", "deadline_exceeded", "timed out"))
-                    if is_server_error:
-                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} hit temporary server error ({api_err}). Rotating...")
-                        turn_tried_models.add(self.model_name)
-                        session_tried_models.add(self.model_name)
-                        if _HAS_GOVERNOR and gemini_router is not None:
-                            gemini_router.mark_model_banned(self.model_name, error_type="5xx")
-                            next_model = gemini_router.get_available_model(
-                                task_type="reasoning_tools",
-                                session_id="director_session",
-                                exclude_models=turn_tried_models
-                            )
-                        else:
-                            next_model = None
-
-                        if next_model:
-                            logger.info(f"🔀 [DIRECTOR SERVER ERROR ROTATION] {self.model_name} ➔ {next_model}")
-                            self.model_name = next_model
-                            try:
-                                raw_history = chat.get_history() or []
-                                chat = self.client.chats.create(
-                                    model=self.model_name,
-                                    config=config,
-                                    history=raw_history
-                                )
-                                logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
-                            except Exception as hist_err:
-                                logger.warning(f"⚠️ History migration failed ({hist_err}). Fresh session on {self.model_name}")
-                                chat = self.client.chats.create(model=self.model_name, config=config)
-                            time.sleep(1.0)
-                            continue
-
-                    # Other non-quota fatal error
+                    # Unrecoverable error
                     logger.error(f"❌ [DIRECTOR API ERROR] Gemini call failed: {api_err}")
                     return {
                         "status": "error",
@@ -404,11 +280,13 @@ class AutonomousDirector:
 
             response = turn_response
 
-
             # Check if model wants to call tools
             function_calls = response.function_calls
             if not function_calls:
-                final_text = response.text or "Goal execution completed."
+                try:
+                    final_text = response.text or "Goal execution completed."
+                except Exception:
+                    final_text = "Goal execution completed."
                 logger.info(f"🏁 [DIRECTOR FINISHED] Final response reached in {turn} turn(s).")
                 _notify("director_completed", {"final_text": final_text, "turns": turn})
 

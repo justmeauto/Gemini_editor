@@ -777,7 +777,7 @@ class GeminiGovernor:
 
 
 
-            if error_type in ("429", "rate_limit", "quota"):
+            if error_type == "429":
 
                 state["429_count"] += 1
 
@@ -799,9 +799,9 @@ class GeminiGovernor:
 
                 state["ban_remaining_seconds"] = duration_sec
 
-                logger.warning(f"🚫 Model {model_name} BANNED for {duration_sec}s due to 429/quota.")
+                logger.warning(f"🚫 Model {model_name} BANNED for {duration_sec}s due to 429.")
 
-            elif error_type in ("timeout", "deadline_exceeded"):
+            elif error_type == "timeout":
 
                 state["status"] = "BANNED"
 
@@ -809,7 +809,7 @@ class GeminiGovernor:
 
                 logger.warning(f"⏳ Model {model_name} isolated for 30s due to Timeout.")
 
-            elif error_type in ("5xx", "500", "503", "504", "server_error", "overloaded"):
+            elif error_type == "5xx":
 
                 state["status"] = "BANNED"
 
@@ -817,10 +817,10 @@ class GeminiGovernor:
 
                 logger.warning(f"🔥 Model {model_name} isolated for 90s due to Server Error.")
 
-            elif error_type in ("404", "400", "not_found", "model_deprecated", "incompatible"):
+            elif error_type in ("404", "400", "not_found", "model_deprecated"):
                 state["status"] = "BANNED"
                 state["ban_remaining_seconds"] = 86400  # 24-hour ban for deprecated/missing model
-                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to 404/400/Incompatible error.")
+                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to 404/400 Deprecation error.")
                 if refresh_gemini_models_cache:
                     try:
                         refresh_gemini_models_cache(force=True)
@@ -906,8 +906,6 @@ class GeminiGovernor:
             # Task Boosting (V4.0 — Dynamic JSON & Full Roster Matrix)
             boosts = getattr(self, "TASK_MODEL_RATINGS", {})
             task_boost = boosts.get(task_type, {})
-            if not task_boost and task_type == "reasoning_tools":
-                task_boost = boosts.get("reasoning", {})
 
 
 
@@ -950,38 +948,24 @@ class GeminiGovernor:
                     continue
 
                 name_lower = name.lower()
-                # Skip specialized non-generative, audio-streaming, or experimental endpoints
+                # Skip specialized non-generative endpoints
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                    "robotics", "computer-use", "live-translate", "image-preview",
-                    "thinking", "3.1-flash", "3.5-flash", "preview-image",
-                    "native-audio", "bidi", "audio", "realtime", "live"
+                    "robotics", "computer-use", "live-translate"
                 )):
-                    continue
-
-                # For reasoning_tools, strictly skip any preview, audio, thinking endpoints, unpinned -latest aliases, or sunsetted pro models
-                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image", "audio", "bidi", "live", "latest", "pro")):
                     continue
 
                 # For vision tasks, skip audio-only endpoints
                 if task_type in ("watermark", "vision") and "audio" in name_lower:
                     continue
 
-                # 🛡️ CAPABILITY GUARD: For watermark, vision, and tool-reasoning,
-                # prioritize Flash/Pro models. Only allow Lite as a fallback if all non-lite models are banned.
-                if task_type in ("watermark", "vision", "reasoning_tools") and "lite" in name_lower:
-                    has_active_full_model = any(
-                        s.get("status") != "BANNED"
-                        and "lite" not in n.lower()
-                        and n not in exclude_set
-                        and not any(kw in n.lower() for kw in (
-                            "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001", "tts"
-                        ))
-                        for n, s in self.model_states.items()
-                    )
-                    if has_active_full_model:
-                        continue
+                # 🛡️ FATAL FLAW FIX (REMOVED LITE RESTRICTION FOR MULTI-MODEL ROTATION)
+                # The Free Tier flash-lite endpoints consistently throw 5xx Server Errors
+                # when fed multi-image logic (watermark/vision). Force skip them.
+                # [OVERRIDE: Allowed as fallback for multi-model rotation if user requests]
+                # if task_type in ["watermark", "master", "vision"] and "lite" in name:
+                #    continue
 
                
 
@@ -1074,11 +1058,10 @@ class GeminiGovernor:
                
 
                 # 8. Apply Cost Weighting
+
                 c_type = "pro" if "pro" in name else ("lite" if "lite" in name else "flash")
-                if task_type in ("watermark", "vision", "reasoning_tools"):
-                    cost_inv = 1.0  # Equal footing: capability over cost discount
-                else:
-                    cost_inv = 1.0 / cost_weights.get(c_type, 0.7)
+
+                cost_inv = 1.0 / cost_weights.get(c_type, 0.7)
 
 
 
@@ -1308,79 +1291,6 @@ class GeminiGovernor:
     def _timeout_handler(self, signum, frame):
 
         raise TimeoutError("Gemini API call timed out after 10s")
-
-    def upload_file(self, file_path: str, mime_type: Optional[str] = None) -> Any:
-        """
-        Uploads a media file (e.g. 480p proxy video) to the Gemini File API.
-        Supports modern google.genai and legacy google.generativeai SDKs.
-        Polls until file is in ACTIVE state (up to 25s for video processing).
-        Returns the uploaded File object on success, or None on failure/missing SDK.
-        """
-        if not file_path or not os.path.isfile(file_path):
-            logger.warning(f"📤 [GeminiGovernor] upload_file: file does not exist: {file_path}")
-            return None
-
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "").strip()
-        if not api_key:
-            logger.debug("📤 [GeminiGovernor] upload_file skipped — no API key set.")
-            return None
-
-        fname = os.path.basename(file_path)
-        fsize_mb = os.path.getsize(file_path) / (1024 * 1024)
-
-        # 1. Modern google.genai SDK
-        if hasattr(genai, "Client"):
-            try:
-                client = genai.Client(
-                    api_key=api_key,
-                    http_options=types.HttpOptions(timeout=60_000) if (types and hasattr(types, "HttpOptions")) else None
-                )
-                logger.info(f"📤 [GeminiGovernor] Uploading media to Gemini File API: {fname} ({fsize_mb:.2f} MB)...")
-                uploaded = client.files.upload(file=file_path)
-
-                # Wait for video processing if not immediately active
-                start_t = time.time()
-                while time.time() - start_t < 25.0:
-                    info = client.files.get(name=uploaded.name)
-                    state = getattr(info, "state", None)
-                    state_name = getattr(state, "name", str(state))
-                    if state_name == "ACTIVE":
-                        logger.info(f"✅ [GeminiGovernor] Video proxy ready & ACTIVE on Gemini: {uploaded.name}")
-                        return uploaded
-                    elif state_name == "FAILED":
-                        logger.warning(f"❌ [GeminiGovernor] Video processing failed on Gemini server: {info}")
-                        return None
-                    time.sleep(1.0)
-
-                logger.info(f"✅ [GeminiGovernor] Video proxy uploaded: {uploaded.name}")
-                return uploaded
-            except Exception as e:
-                logger.warning(f"⚠️ [GeminiGovernor] genai.Client upload_file failed for {fname}: {e}")
-                return None
-
-        # 2. Legacy google.generativeai SDK fallback
-        elif hasattr(genai, "upload_file"):
-            try:
-                genai.configure(api_key=api_key)
-                logger.info(f"📤 [GeminiGovernor] (Legacy) Uploading media: {fname} ({fsize_mb:.2f} MB)...")
-                uploaded = genai.upload_file(file_path, mime_type=mime_type)
-                start_t = time.time()
-                while time.time() - start_t < 25.0:
-                    if getattr(uploaded.state, "name", "") == "ACTIVE":
-                        logger.info(f"✅ [GeminiGovernor] (Legacy) Video ready: {uploaded.name}")
-                        return uploaded
-                    elif getattr(uploaded.state, "name", "") == "FAILED":
-                        logger.warning("❌ [GeminiGovernor] (Legacy) Video processing failed.")
-                        return None
-                    time.sleep(1.0)
-                    uploaded = genai.get_file(uploaded.name)
-                return uploaded
-            except Exception as e:
-                logger.warning(f"⚠️ [GeminiGovernor] Legacy upload_file failed for {fname}: {e}")
-                return None
-
-        logger.debug("📤 [GeminiGovernor] No supported SDK found for upload_file.")
-        return None
 
 
 
