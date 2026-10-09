@@ -79,11 +79,17 @@ def tool_ingest_source(
             if d and d not in clip_dirs:
                 clip_dirs.append(os.path.abspath(d))
 
+        if res.get("clip_dir") and os.path.abspath(res["clip_dir"]) not in clip_dirs:
+            clip_dirs.append(os.path.abspath(res["clip_dir"]))
+
+        primary_dir = clip_dirs[0] if clip_dirs else ""
+
         return {
             "status": "success",
-            "message": f"Successfully ingested {len(files)} clip(s).",
+            "message": f"Successfully ingested {len(files)} clip(s). For rendering, use clip_dir='{primary_dir}'.",
             "source": source_clean,
             "count": len(files),
+            "clip_dir": primary_dir,
             "clip_dirs": clip_dirs,
             "downloaded_files": [os.path.abspath(f) for f in files]
         }
@@ -114,11 +120,39 @@ def tool_render_edit(
     try:
         from Phase_2.phase2_orchestrator import run_phase2_pipeline
 
-        clip_dir_abs = os.path.abspath(clip_dir.strip().strip("'").strip('"'))
-        if not os.path.isdir(clip_dir_abs):
+        raw_dir = clip_dir.strip().strip("'").strip('"') if clip_dir else ""
+        clip_dir_abs = os.path.abspath(raw_dir) if raw_dir else ""
+
+        # Smart directory resolution: resolve raw shortcode or relative name against downloads/
+        if not clip_dir_abs or not os.path.isdir(clip_dir_abs):
+            candidates = [
+                os.path.join(_REPO_ROOT, "downloads", raw_dir),
+                os.path.join(_REPO_ROOT, "downloads", f"manual_{raw_dir}"),
+                os.path.join(_REPO_ROOT, "downloads", f"actress_{raw_dir}"),
+            ]
+            downloads_base = os.path.join(_REPO_ROOT, "downloads")
+            if os.path.exists(downloads_base):
+                subdirs = [os.path.join(downloads_base, d) for d in os.listdir(downloads_base) if os.path.isdir(os.path.join(downloads_base, d))]
+                # Sort subdirs by modification time (most recent first)
+                subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                for sd in subdirs:
+                    bname = os.path.basename(sd)
+                    if raw_dir and (raw_dir in bname or bname.endswith(f"_{raw_dir}")):
+                        candidates.insert(0, sd)
+                # If no directory specified, fallback to most recent downloaded directory
+                if not raw_dir and subdirs:
+                    candidates.append(subdirs[0])
+
+            for cand in candidates:
+                if cand and os.path.isdir(cand):
+                    clip_dir_abs = os.path.abspath(cand)
+                    logger.info(f"📂 [TOOL: RENDER] Resolved clip_dir '{raw_dir}' ➔ '{clip_dir_abs}'")
+                    break
+
+        if not clip_dir_abs or not os.path.isdir(clip_dir_abs):
             return {
                 "status": "error",
-                "message": f"Clip directory does not exist: {clip_dir_abs}"
+                "message": f"Clip directory does not exist: '{clip_dir_abs or raw_dir}'. Please verify Phase 1 downloaded the clip."
             }
 
         res = run_phase2_pipeline(

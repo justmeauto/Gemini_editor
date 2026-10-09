@@ -90,25 +90,25 @@ def run_phase1_pipeline(
             # Step 1: Config
             resolve_target_accounts(target_accounts=[owner], max_limit=1, callback=event_callback)
 
-            # Step 2: Deduplication Check
+            # Step 2: Deduplication Check & Local Disk Verification
             dedup_info = check_deduplication(shortcode, owner=owner, downloads_dir=downloads_dir, callback=event_callback)
             clip_dir = dedup_info["clip_dir"]
+            video_path = dedup_info.get("video_path")
 
-            # ── GUARD: skip processing if already seen ──────────────────────
-            if dedup_info.get("is_duplicate"):
-                logger.info(f"♻️ [WORKER 2 - DEDUP] Shortcode '{shortcode}' already processed. Skipping download.")
+            # In Manual mode, the user specifically requested this video.
+            # If it already exists on local disk with content, reuse the local media.
+            # If NOT on local disk, ALWAYS download it regardless of past vault/pool records.
+            if dedup_info.get("already_on_disk") and video_path and os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+                logger.info(f"📂 [WORKER 2 - CACHE HIT] Clip '{shortcode}' already exists locally at '{video_path}'. Reusing local media.")
+            else:
+                # Step 3: Harvester (Skipped in Manual Mode)
                 if event_callback:
-                    event_callback("phase1", "skipped", {"message": f"Duplicate detected: '{shortcode}' already in pool. Skipping.", "shortcode": shortcode})
-                return {"success": False, "mode": "manual", "downloaded_files": [], "error": f"Duplicate: '{shortcode}' already processed."}
+                    event_callback("step_03", "success", {"message": "Manual URL mode: Skipping Apify scraper step."})
 
-            # Step 3: Harvester (Skipped in Manual Mode)
-            if event_callback:
-                event_callback("step_03", "success", {"message": "Manual URL mode: Skipping Apify scraper step."})
-
-            # Step 4: Download Video Stream
-            meta = {"shortcode": shortcode, "url": url, "ownerUsername": owner, "platform": platform}
-            dl_info = download_stream(url, clip_dir, metadata=meta, callback=event_callback)
-            video_path = dl_info.get("video_path")
+                # Step 4: Download Video Stream
+                meta = {"shortcode": shortcode, "url": url, "ownerUsername": owner, "platform": platform}
+                dl_info = download_stream(url, clip_dir, metadata=meta, callback=event_callback)
+                video_path = dl_info.get("video_path")
 
             if video_path and os.path.exists(video_path):
                 downloaded_files.append(os.path.abspath(video_path))
@@ -128,7 +128,8 @@ def run_phase1_pipeline(
                 "count": len(downloaded_files),
                 "downloaded_files": downloaded_files,
                 "downloads_dir": downloads_dir,
-                "error": dl_info.get("error") if not downloaded_files else None
+                "clip_dir": clip_dir,
+                "error": None if downloaded_files else f"Failed to download or locate video stream for '{shortcode}'."
             }
 
         except Exception as err:
