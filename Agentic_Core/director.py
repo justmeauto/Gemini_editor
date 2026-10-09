@@ -318,6 +318,39 @@ class AutonomousDirector:
                             time.sleep(1.0)
                             continue
 
+                    # Server temporary failure (500, 503, overloaded, timeout)
+                    is_server_error = any(k in err_str for k in ("503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error", "deadline_exceeded", "timed out"))
+                    if is_server_error:
+                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} hit temporary server error ({api_err}). Rotating...")
+                        turn_tried_models.add(self.model_name)
+                        session_tried_models.add(self.model_name)
+                        if _HAS_GOVERNOR and gemini_router is not None:
+                            gemini_router.mark_model_banned(self.model_name, error_type="5xx")
+                            next_model = gemini_router.get_available_model(
+                                task_type="reasoning_tools",
+                                session_id="director_session",
+                                exclude_models=turn_tried_models
+                            )
+                        else:
+                            next_model = None
+
+                        if next_model:
+                            logger.info(f"🔀 [DIRECTOR SERVER ERROR ROTATION] {self.model_name} ➔ {next_model}")
+                            self.model_name = next_model
+                            try:
+                                raw_history = chat.get_history() or []
+                                chat = self.client.chats.create(
+                                    model=self.model_name,
+                                    config=config,
+                                    history=raw_history
+                                )
+                                logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
+                            except Exception as hist_err:
+                                logger.warning(f"⚠️ History migration failed ({hist_err}). Fresh session on {self.model_name}")
+                                chat = self.client.chats.create(model=self.model_name, config=config)
+                            time.sleep(1.0)
+                            continue
+
                     # Other non-quota fatal error
                     logger.error(f"❌ [DIRECTOR API ERROR] Gemini call failed: {api_err}")
                     return {
