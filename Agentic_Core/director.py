@@ -285,11 +285,11 @@ class AutonomousDirector:
                         time.sleep(1.0)  # Graceful backoff
                         continue
 
-                    # Model incompatibility error (e.g. experimental preview requiring thought_signature, or audio/bidi streaming)
+                    # Model incompatibility or sunset error (e.g. 404 deprecated, thought_signature, or audio/bidi streaming)
                     is_incompatible = any(k in err_str for k in (
                         "thought_signature", "thought signature", "not supported for this model",
                         "unsupported", "bidigeneratecontent", "only supports", "websocket",
-                        "live api"
+                        "live api", "404", "not_found", "not found", "no longer available", "deprecated"
                     )) or ("invalid_argument" in err_str and ("400" in err_str or "supports" in err_str))
 
                     if is_incompatible:

@@ -527,10 +527,10 @@ def get_models_by_capability(
         capability_map[task_type] = [m for m, _ in candidates]
 
     # Special category: reasoning_tools (Function Calling for Agent ReAct loop)
-    # Strictly exclude unpinned -latest aliases, thinking models, or audio/bidi endpoints
+    # Strictly exclude pro (sunsetted for new users), unpinned -latest aliases, thinking models, or audio/bidi endpoints
     valid_tool_candidates = [
         m for m in models
-        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image", "audio", "native-audio", "bidi", "live", "latest"))
+        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image", "audio", "native-audio", "bidi", "live", "latest", "pro"))
     ]
 
     def _rank_tool_flash(name: str) -> float:
@@ -546,11 +546,10 @@ def get_models_by_capability(
     flash_tool_models = [m for m in valid_tool_candidates if "flash" in m.lower() and "lite" not in m.lower()]
     flash_tool_models.sort(key=_rank_tool_flash, reverse=True)
 
-    pro_tool_models = [m for m in valid_tool_candidates if "pro" in m.lower()]
     lite_tool_models = [m for m in valid_tool_candidates if "lite" in m.lower()]
-    other_models = [m for m in valid_tool_candidates if m not in flash_tool_models and m not in pro_tool_models and m not in lite_tool_models]
+    other_models = [m for m in valid_tool_candidates if m not in flash_tool_models and m not in lite_tool_models]
 
-    capability_map["reasoning_tools"] = flash_tool_models + pro_tool_models + other_models + lite_tool_models
+    capability_map["reasoning_tools"] = flash_tool_models + other_models + lite_tool_models
 
     # Special category: vision / watermark — prioritize Flash/Pro, strictly deprioritize Lite
     if "watermark" in capability_map:

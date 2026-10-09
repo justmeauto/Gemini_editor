@@ -960,8 +960,8 @@ class GeminiGovernor:
                 )):
                     continue
 
-                # For reasoning_tools, strictly skip any preview, audio, thinking endpoints, or unpinned -latest aliases
-                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image", "audio", "bidi", "live", "latest")):
+                # For reasoning_tools, strictly skip any preview, audio, thinking endpoints, unpinned -latest aliases, or sunsetted pro models
+                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image", "audio", "bidi", "live", "latest", "pro")):
                     continue
 
                 # For vision tasks, skip audio-only endpoints
