@@ -285,10 +285,15 @@ class AutonomousDirector:
                         time.sleep(1.0)  # Graceful backoff
                         continue
 
-                    # Model incompatibility error (e.g. experimental preview requiring thought_signature)
-                    is_incompatible = any(k in err_str for k in ("thought_signature", "thought signature", "not supported for this model", "unsupported"))
+                    # Model incompatibility error (e.g. experimental preview requiring thought_signature, or audio/bidi streaming)
+                    is_incompatible = any(k in err_str for k in (
+                        "thought_signature", "thought signature", "not supported for this model",
+                        "unsupported", "bidigeneratecontent", "only supports", "websocket",
+                        "live api"
+                    )) or ("invalid_argument" in err_str and ("400" in err_str or "supports" in err_str))
+
                     if is_incompatible:
-                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} is incompatible with tool calling ({api_err}). Banning and rotating...")
+                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} is incompatible with generateContent ({api_err}). Banning and rotating...")
                         turn_tried_models.add(self.model_name)
                         session_tried_models.add(self.model_name)
                         if _HAS_GOVERNOR and gemini_router is not None:
@@ -300,6 +305,16 @@ class AutonomousDirector:
                             )
                         else:
                             next_model = None
+
+                        if not next_model and refresh_gemini_models_cache is not None:
+                            try:
+                                refreshed = refresh_gemini_models_cache(force=True)
+                                for m in refreshed.get("models", []):
+                                    if m not in turn_tried_models and ("flash" in m.lower() or "pro" in m.lower()):
+                                        next_model = m
+                                        break
+                            except Exception:
+                                pass
 
                         if next_model:
                             logger.info(f"🔀 [DIRECTOR INCOMPATIBILITY ROTATION] {self.model_name} ➔ {next_model}")
@@ -317,6 +332,7 @@ class AutonomousDirector:
                                 chat = self.client.chats.create(model=self.model_name, config=config)
                             time.sleep(1.0)
                             continue
+
 
                     # Server temporary failure (500, 503, overloaded, timeout)
                     is_server_error = any(k in err_str for k in ("503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error", "deadline_exceeded", "timed out"))

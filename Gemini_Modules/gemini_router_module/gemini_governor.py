@@ -777,7 +777,7 @@ class GeminiGovernor:
 
 
 
-            if error_type == "429":
+            if error_type in ("429", "rate_limit", "quota"):
 
                 state["429_count"] += 1
 
@@ -799,9 +799,9 @@ class GeminiGovernor:
 
                 state["ban_remaining_seconds"] = duration_sec
 
-                logger.warning(f"🚫 Model {model_name} BANNED for {duration_sec}s due to 429.")
+                logger.warning(f"🚫 Model {model_name} BANNED for {duration_sec}s due to 429/quota.")
 
-            elif error_type == "timeout":
+            elif error_type in ("timeout", "deadline_exceeded"):
 
                 state["status"] = "BANNED"
 
@@ -809,7 +809,7 @@ class GeminiGovernor:
 
                 logger.warning(f"⏳ Model {model_name} isolated for 30s due to Timeout.")
 
-            elif error_type == "5xx":
+            elif error_type in ("5xx", "500", "503", "504", "server_error", "overloaded"):
 
                 state["status"] = "BANNED"
 
@@ -817,10 +817,10 @@ class GeminiGovernor:
 
                 logger.warning(f"🔥 Model {model_name} isolated for 90s due to Server Error.")
 
-            elif error_type in ("404", "400", "not_found", "model_deprecated"):
+            elif error_type in ("404", "400", "not_found", "model_deprecated", "incompatible"):
                 state["status"] = "BANNED"
                 state["ban_remaining_seconds"] = 86400  # 24-hour ban for deprecated/missing model
-                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to 404/400 Deprecation error.")
+                logger.warning(f"🚫 Model {model_name} PERMANENTLY BANNED due to 404/400/Incompatible error.")
                 if refresh_gemini_models_cache:
                     try:
                         refresh_gemini_models_cache(force=True)
@@ -950,17 +950,18 @@ class GeminiGovernor:
                     continue
 
                 name_lower = name.lower()
-                # Skip specialized non-generative or experimental endpoints
+                # Skip specialized non-generative, audio-streaming, or experimental endpoints
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
                     "robotics", "computer-use", "live-translate", "image-preview",
-                    "thinking", "3.1-flash", "3.5-flash", "preview-image"
+                    "thinking", "3.1-flash", "3.5-flash", "preview-image",
+                    "native-audio", "bidi", "audio", "realtime", "live"
                 )):
                     continue
 
-                # For reasoning_tools, strictly skip any 3.x or thinking preview endpoints
-                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image")):
+                # For reasoning_tools, strictly skip any preview, audio, or thinking endpoints
+                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image", "audio", "bidi", "live")):
                     continue
 
                 # For vision tasks, skip audio-only endpoints

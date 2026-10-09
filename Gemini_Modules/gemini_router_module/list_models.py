@@ -229,6 +229,10 @@ def discover_api_models(api_key: str = "") -> List[str]:
         for m in all_models:
             name = getattr(m, "name", "") or getattr(m, "display_name", "")
             name = name.replace("models/", "").strip()
+            # If supported_actions is provided, ensure it supports generateContent
+            actions = getattr(m, "supported_actions", None)
+            if actions and "generateContent" not in actions:
+                continue
             if _is_valid_generative_model(name):
                 discovered.append(name)
         if discovered:
@@ -280,17 +284,19 @@ def _is_valid_generative_model(model_name: str) -> bool:
     name = model_name.lower()
     if not name.startswith("gemini"):
         return False
-    # Exclude non-generative, specialized image-only, experimental preview, or thinking models
+    # Exclude non-generative, audio-streaming, specialized image-only, or experimental models
     excluded_keywords = [
         "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
         "computer-use", "live-translate", "image-preview", "image",
-        "thinking", "3.1-flash", "3.5-flash", "preview-image"
+        "thinking", "3.1-flash", "3.5-flash", "preview-image",
+        "native-audio", "audio", "bidi", "realtime", "live"
     ]
     for kw in excluded_keywords:
         if kw in name:
             return False
     return True
+
 
 
 def _sort_models_by_tier(models: List[str]) -> List[str]:
@@ -521,10 +527,10 @@ def get_models_by_capability(
         capability_map[task_type] = [m for m, _ in candidates]
 
     # Special category: reasoning_tools (Function Calling for Agent ReAct loop)
-    # Strictly exclude any models requiring thought_signature or image endpoints
+    # Strictly exclude any models requiring thought_signature, image, or audio/bidi endpoints
     valid_tool_candidates = [
         m for m in models
-        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image"))
+        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image", "audio", "native-audio", "bidi", "live"))
     ]
 
     def _rank_tool_flash(name: str) -> float:
