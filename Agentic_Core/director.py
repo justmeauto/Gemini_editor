@@ -25,6 +25,25 @@ from google.genai import types
 
 from .tool_adapters import get_agent_tools, TOOL_DISPATCH_MAP
 
+try:
+    from Gemini_Modules.gemini_router_module.gemini_governor import gemini_router, GeminiGovernor
+    from Gemini_Modules.gemini_router_module.list_models import (
+        get_active_models_and_ratings,
+        refresh_gemini_models_cache,
+        get_models_by_capability,
+    )
+    _HAS_GOVERNOR = True
+except ImportError:
+    gemini_router = None
+    GeminiGovernor = None
+    get_active_models_and_ratings = None
+    refresh_gemini_models_cache = None
+    get_models_by_capability = None
+    _HAS_GOVERNOR = False
+
+# RPM guard: Minimum delay between director turns to prevent hitting 15 RPM burst limit
+_MIN_TURN_INTERVAL_SEC = 1.0
+
 
 DIRECTOR_SYSTEM_INSTRUCTION = """
 You are the Autonomous Creative Director for Gemini Editor — a professional automated video production system.
@@ -84,18 +103,35 @@ class AutonomousDirector:
 
     def __init__(
         self,
-        model_name: str = "gemini-2.5-flash",
+        model_name: Optional[str] = None,
         api_key: Optional[str] = None
     ):
-        self.model_name = model_name
         self.api_key = api_key or _resolve_gemini_api_key()
         if not self.api_key:
             raise ValueError(
                 "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Credentials/.env or system environment."
             )
 
+        # Resolve initial model dynamically from governor if not explicitly specified
+        if not model_name:
+            if _HAS_GOVERNOR and gemini_router is not None:
+                model_name = gemini_router.get_available_model(task_type="reasoning_tools")
+            if not model_name:
+                model_name = "gemini-2.5-flash"
+
+        self.model_name = model_name
         self.client = genai.Client(api_key=self.api_key)
         self.tools = get_agent_tools()
+
+        # Activate video session budget tracking in governor
+        if _HAS_GOVERNOR and gemini_router is not None:
+            try:
+                gemini_router.begin_video_session(
+                    video_id=f"agent_run_{int(time.time())}",
+                    video_duration=60.0
+                )
+            except Exception:
+                pass
 
     def run_goal(
         self,
@@ -104,7 +140,8 @@ class AutonomousDirector:
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
-        Executes an autonomous goal from start to finish.
+        Executes an autonomous goal from start to finish with dynamic model routing,
+        quota exhaustion recovery, and rate-limit guardrails.
         """
         start_time = time.time()
         logger.info(f"\n{'='*70}\n🤖 [AUTONOMOUS DIRECTOR] Commencing Goal: '{goal}'\n{'='*70}")
@@ -115,6 +152,15 @@ class AutonomousDirector:
                     progress_callback(event, data)
                 except Exception as _cb_err:
                     logger.debug(f"Progress callback error: {_cb_err}")
+
+        # Resolve best available model from governor for this session
+        if _HAS_GOVERNOR and gemini_router is not None:
+            active_model = gemini_router.get_available_model(
+                task_type="reasoning_tools",
+                session_id="director_session"
+            )
+            if active_model:
+                self.model_name = active_model
 
         _notify("director_started", {"goal": goal, "model": self.model_name})
 
@@ -133,25 +179,131 @@ class AutonomousDirector:
         turn = 0
         execution_log: List[Dict[str, Any]] = []
         last_call_signature: Optional[str] = None
+        session_tried_models: set = set()
 
         # First prompt
         current_input: Any = goal
 
         while turn < max_turns:
             turn += 1
-            logger.info(f"🔄 [DIRECTOR TURN {turn}/{max_turns}] Waiting for model decision...")
-            _notify("turn_start", {"turn": turn, "max_turns": max_turns})
+            turn_start = time.time()
+            logger.info(f"🔄 [DIRECTOR TURN {turn}/{max_turns}] Model={self.model_name} | Waiting for decision...")
+            _notify("turn_start", {"turn": turn, "max_turns": max_turns, "model": self.model_name})
 
-            try:
-                response = chat.send_message(current_input)
-            except Exception as api_err:
-                logger.error(f"❌ [DIRECTOR API ERROR] Gemini call failed: {api_err}")
+            turn_response = None
+            turn_tried_models: set = set()
+
+            # Reliable model execution with quota rotation
+            while True:
+                try:
+                    response = chat.send_message(current_input)
+                    turn_response = response
+
+                    # Report success to governor to decay penalties
+                    if _HAS_GOVERNOR and gemini_router is not None:
+                        with gemini_router.state_lock:
+                            st = gemini_router.model_states.get(self.model_name)
+                            if st:
+                                st["success_count"] += 1
+                                st["total_calls"] += 1
+                                st["last_used_at"] = time.monotonic()
+                    break
+
+                except Exception as api_err:
+                    err_str = str(api_err).lower()
+                    is_quota = any(k in err_str for k in ("429", "quota", "resource_exhausted", "rate_limit"))
+                    is_auth = any(k in err_str for k in ("api key", "unauthorized", "permission_denied"))
+
+                    if is_auth and not is_quota:
+                        logger.error(f"❌ [DIRECTOR] Fatal API authentication error: {api_err}")
+                        return {
+                            "status": "error",
+                            "message": f"API authentication error during turn {turn}: {str(api_err)}",
+                            "turns_executed": turn,
+                            "execution_log": execution_log
+                        }
+
+                    if is_quota:
+                        logger.warning(f"⚠️ [DIRECTOR] Quota exhausted on {self.model_name} (turn {turn}). Rotating...")
+                        turn_tried_models.add(self.model_name)
+                        session_tried_models.add(self.model_name)
+
+                        # Ban in global governor with 429 renewal cooldown (45-90s)
+                        if _HAS_GOVERNOR and gemini_router is not None:
+                            gemini_router.mark_model_banned(self.model_name, error_type="429")
+                            next_model = gemini_router.get_available_model(
+                                task_type="reasoning_tools",
+                                session_id="director_session",
+                                exclude_models=turn_tried_models
+                            )
+                        else:
+                            next_model = None
+
+                        # If all known models exhausted, refresh live models from Google API
+                        if not next_model and refresh_gemini_models_cache is not None:
+                            logger.info("🔄 [DIRECTOR] All active models exhausted. Refreshing live models from API...")
+                            try:
+                                refreshed = refresh_gemini_models_cache(force=True)
+                                disc = refreshed.get("models", [])
+                                for m in disc:
+                                    if m not in turn_tried_models and ("flash" in m.lower() or "pro" in m.lower()):
+                                        next_model = m
+                                        break
+                            except Exception:
+                                pass
+
+                        if not next_model:
+                            logger.error("🛑 [DIRECTOR] All Gemini models currently rate-limited (429).")
+                            return {
+                                "status": "quota_exhausted",
+                                "message": "All Gemini models rate-limited (429). Please wait for the quota renewal window (60s).",
+                                "turns_executed": turn,
+                                "execution_log": execution_log
+                            }
+
+                        logger.info(f"🔀 [DIRECTOR ROTATION] {self.model_name} ➔ {next_model}")
+                        self.model_name = next_model
+
+                        # SAFE CHAT HISTORY MIGRATION:
+                        # In google.genai, chat.get_history() contains only previously completed turns.
+                        # Preserving this exact history ensures preceding FunctionCalls match the pending FunctionResponse.
+                        try:
+                            raw_history = chat.get_history() or []
+                            chat = self.client.chats.create(
+                                model=self.model_name,
+                                config=config,
+                                history=raw_history
+                            )
+                            logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
+                        except Exception as hist_err:
+                            logger.warning(f"⚠️ History migration failed ({hist_err}). Starting fresh session on {self.model_name}")
+                            chat = self.client.chats.create(
+                                model=self.model_name,
+                                config=config
+                            )
+
+                        time.sleep(1.0)  # Graceful backoff
+                        continue
+
+                    # Non-quota error
+                    logger.error(f"❌ [DIRECTOR API ERROR] Gemini call failed: {api_err}")
+                    return {
+                        "status": "error",
+                        "message": f"Gemini API error during turn {turn}: {str(api_err)}",
+                        "turns_executed": turn,
+                        "execution_log": execution_log
+                    }
+
+            if turn_response is None:
                 return {
                     "status": "error",
-                    "message": f"Gemini API error during turn {turn}: {str(api_err)}",
+                    "message": "Turn loop completed without valid response.",
                     "turns_executed": turn,
                     "execution_log": execution_log
                 }
+
+            response = turn_response
+
 
             # Check if model wants to call tools
             function_calls = response.function_calls
@@ -240,6 +392,11 @@ class AutonomousDirector:
 
             # Feed tool results back into the chat
             current_input = tool_response_parts
+
+            # RPM Guard: Pace turns to stay within 15 RPM rate limit
+            elapsed_turn = time.time() - turn_start
+            if elapsed_turn < _MIN_TURN_INTERVAL_SEC:
+                time.sleep(_MIN_TURN_INTERVAL_SEC - elapsed_turn)
 
         # Exhausted turns
         logger.warning(f"⚠️ [DIRECTOR TIMEOUT] Reached max turns ({max_turns}) without completion.")

@@ -492,3 +492,53 @@ def get_active_models_and_ratings(force: bool = False) -> Tuple[List[str], Dict[
     
     refreshed = refresh_gemini_models_cache(force=force)
     return refreshed.get("models", DEFAULT_MODELS_LIST), refreshed.get("task_ratings", DEFAULT_TASK_MODEL_RATINGS)
+
+
+def get_models_by_capability(
+    api_key: str = "",
+    force_refresh: bool = False
+) -> Dict[str, List[str]]:
+    """
+    Returns live-discovered Gemini models grouped by their best capability category.
+    Only models present in the discovered/active list are included.
+    
+    Returns dict mapping capability/task_type -> list of model names sorted best to worst.
+    Categories include: reasoning, reasoning_tools, vision, watermark, caption,
+                         creative, narrative, analysis, price, cheap, master.
+    """
+    models, ratings = get_active_models_and_ratings(force=force_refresh)
+    capability_map: Dict[str, List[str]] = {}
+
+    for task_type, task_ratings in ratings.items():
+        # Live gate: only include models actually discovered and present in active list
+        candidates = [
+            (m, score) for m, score in task_ratings.items()
+            if m in models
+        ]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        capability_map[task_type] = [m for m, _ in candidates]
+
+    # Special category: reasoning_tools (Function Calling for Agent ReAct loop)
+    # Priority: Flash > Pro > Lite (Lite has higher failure rates on complex tool schemas)
+    flash_tool_models = [m for m in models if "flash" in m.lower() and "lite" not in m.lower()]
+    pro_tool_models = [m for m in models if "pro" in m.lower()]
+    lite_tool_models = [m for m in models if "lite" in m.lower()]
+    other_models = [m for m in models if m not in flash_tool_models and m not in pro_tool_models and m not in lite_tool_models]
+
+    capability_map["reasoning_tools"] = flash_tool_models + pro_tool_models + other_models + lite_tool_models
+
+    # Special category: vision / watermark — prioritize Flash/Pro, strictly deprioritize Lite
+    if "watermark" in capability_map:
+        # Filter or push Lite to end
+        wm_non_lite = [m for m in capability_map["watermark"] if "lite" not in m.lower()]
+        wm_lite = [m for m in capability_map["watermark"] if "lite" in m.lower()]
+        capability_map["watermark"] = wm_non_lite + wm_lite
+
+    # Fallback ensure every standard category has candidates
+    all_tasks = list(DEFAULT_TASK_MODEL_RATINGS.keys()) + ["reasoning_tools"]
+    for task in all_tasks:
+        if task not in capability_map or not capability_map[task]:
+            capability_map[task] = _sort_models_by_tier(models)
+
+    return capability_map
+

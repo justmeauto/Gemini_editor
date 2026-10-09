@@ -906,6 +906,8 @@ class GeminiGovernor:
             # Task Boosting (V4.0 — Dynamic JSON & Full Roster Matrix)
             boosts = getattr(self, "TASK_MODEL_RATINGS", {})
             task_boost = boosts.get(task_type, {})
+            if not task_boost and task_type == "reasoning_tools":
+                task_boost = boosts.get("reasoning", {})
 
 
 
@@ -960,12 +962,20 @@ class GeminiGovernor:
                 if task_type in ("watermark", "vision") and "audio" in name_lower:
                     continue
 
-                # 🛡️ FATAL FLAW FIX (REMOVED LITE RESTRICTION FOR MULTI-MODEL ROTATION)
-                # The Free Tier flash-lite endpoints consistently throw 5xx Server Errors
-                # when fed multi-image logic (watermark/vision). Force skip them.
-                # [OVERRIDE: Allowed as fallback for multi-model rotation if user requests]
-                # if task_type in ["watermark", "master", "vision"] and "lite" in name:
-                #    continue
+                # 🛡️ CAPABILITY GUARD: For watermark, vision, and tool-reasoning,
+                # prioritize Flash/Pro models. Only allow Lite as a fallback if all non-lite models are banned.
+                if task_type in ("watermark", "vision", "reasoning_tools") and "lite" in name_lower:
+                    has_active_full_model = any(
+                        s.get("status") != "BANNED"
+                        and "lite" not in n.lower()
+                        and n not in exclude_set
+                        and not any(kw in n.lower() for kw in (
+                            "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001", "tts"
+                        ))
+                        for n, s in self.model_states.items()
+                    )
+                    if has_active_full_model:
+                        continue
 
                
 
@@ -1058,10 +1068,11 @@ class GeminiGovernor:
                
 
                 # 8. Apply Cost Weighting
-
                 c_type = "pro" if "pro" in name else ("lite" if "lite" in name else "flash")
-
-                cost_inv = 1.0 / cost_weights.get(c_type, 0.7)
+                if task_type in ("watermark", "vision", "reasoning_tools"):
+                    cost_inv = 1.0  # Equal footing: capability over cost discount
+                else:
+                    cost_inv = 1.0 / cost_weights.get(c_type, 0.7)
 
 
 

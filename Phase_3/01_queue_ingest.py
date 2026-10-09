@@ -37,12 +37,26 @@ def ingest_to_publish_queue(
     clean_title = title or os.path.splitext(os.path.basename(video_path))[0]
     
     try:
-        item = PublishQueue.add(
-            video_path=video_path,
-            channel_title=clean_title,
-            channel_folder=channel_folder,
-            meta=metadata or {}
-        )
+        try:
+            item = PublishQueue.add(
+                video_path=video_path,
+                channel_title=clean_title,
+                channel_folder=channel_folder,
+                meta=metadata or {}
+            )
+        except TypeError:
+            # Fallback for environments or shims where PublishQueue.add does not accept 'meta'
+            try:
+                item = PublishQueue.add(
+                    video_path=video_path,
+                    channel_title=clean_title,
+                    channel_folder=channel_folder
+                )
+            except TypeError:
+                item = PublishQueue.add(video_path=video_path)
+            if isinstance(item, dict) and metadata:
+                item["meta"] = metadata
+
         item_id = item.get('id', 'enqueued') if isinstance(item, dict) else 'enqueued'
         logger.info(f"✅ Step 01 Queue Ingest: Enqueued '{clean_title}' -> queue item {item_id}")
         return {

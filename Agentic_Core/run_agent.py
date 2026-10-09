@@ -38,7 +38,7 @@ logger = logging.getLogger("AgenticCore.Runner")
 def run_agentic_goal(
     goal: str,
     max_turns: int = 10,
-    model_name: str = "gemini-2.5-flash",
+    model_name: Optional[str] = None,
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
 ) -> Dict[str, Any]:
     """
@@ -51,7 +51,7 @@ def run_agentic_goal(
 async def run_agentic_goal_async(
     goal: str,
     max_turns: int = 10,
-    model_name: str = "gemini-2.5-flash",
+    model_name: Optional[str] = None,
     progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
 ) -> Dict[str, Any]:
     """
@@ -73,7 +73,7 @@ def main():
     parser.add_argument("--source", type=str, default="", help="Optional source URL or account handle.")
     parser.add_argument("--directive", type=str, default="", help="Optional creative editing directive.")
     parser.add_argument("--turns", type=int, default=10, help="Maximum turns allowed for the goal (default: 10).")
-    parser.add_argument("--model", type=str, default="gemini-2.5-flash", help="Gemini model name.")
+    parser.add_argument("--model", type=str, default="", help="Optional Gemini model override (default: dynamic governor selection).")
     parser.add_argument("--dry-run", action="store_true", help="Validate tool declarations and client without executing pipeline.")
 
     args = parser.parse_args()
