@@ -276,15 +276,16 @@ def discover_api_models(api_key: str = "") -> List[str]:
 
 
 def _is_valid_generative_model(model_name: str) -> bool:
-    """Filters out embeddings, audio-only, imagen, and legacy non-gemini models."""
+    """Filters out embeddings, audio-only, imagen, preview-only, and non-general gemini models."""
     name = model_name.lower()
     if not name.startswith("gemini"):
         return False
-    # Exclude non-generative or specialized preview endpoints
+    # Exclude non-generative, specialized image-only, experimental preview, or thinking models
     excluded_keywords = [
         "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
-        "computer-use", "live-translate"
+        "computer-use", "live-translate", "image-preview", "image",
+        "thinking", "3.1-flash", "3.5-flash", "preview-image"
     ]
     for kw in excluded_keywords:
         if kw in name:
@@ -320,15 +321,16 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
     for m in models:
         m_lower = m.lower()
         
-        # Base version score multiplier (e.g. 2.5 > 2.0 > 1.5)
-        if "3." in m_lower or "3-" in m_lower:
-            version_score = 3.0
-        elif "2.5" in m_lower:
+        # Base version score multiplier: prioritize rock-solid production versions
+        if "2.5" in m_lower:
             version_score = 2.5
-        elif "2.0" in m_lower or "2-" in m_lower:
+        elif "2.0" in m_lower or "2-" in m_lower or "flash-latest" in m_lower:
+            version_score = 2.2
+        elif "pro-latest" in m_lower:
             version_score = 2.0
         else:
-            version_score = 1.5
+            version_score = 1.0  # Fallback for other variants
+
 
         is_lite = "lite" in m_lower
         is_pro = "pro" in m_lower
@@ -519,11 +521,28 @@ def get_models_by_capability(
         capability_map[task_type] = [m for m, _ in candidates]
 
     # Special category: reasoning_tools (Function Calling for Agent ReAct loop)
-    # Priority: Flash > Pro > Lite (Lite has higher failure rates on complex tool schemas)
-    flash_tool_models = [m for m in models if "flash" in m.lower() and "lite" not in m.lower()]
-    pro_tool_models = [m for m in models if "pro" in m.lower()]
-    lite_tool_models = [m for m in models if "lite" in m.lower()]
-    other_models = [m for m in models if m not in flash_tool_models and m not in pro_tool_models and m not in lite_tool_models]
+    # Strictly exclude any models requiring thought_signature or image endpoints
+    valid_tool_candidates = [
+        m for m in models
+        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image"))
+    ]
+
+    def _rank_tool_flash(name: str) -> float:
+        nl = name.lower()
+        if "2.5-flash" in nl and "lite" not in nl:
+            return 3.0
+        if "2.0-flash" in nl and "lite" not in nl:
+            return 2.5
+        if "flash-latest" in nl:
+            return 2.0
+        return 1.0
+
+    flash_tool_models = [m for m in valid_tool_candidates if "flash" in m.lower() and "lite" not in m.lower()]
+    flash_tool_models.sort(key=_rank_tool_flash, reverse=True)
+
+    pro_tool_models = [m for m in valid_tool_candidates if "pro" in m.lower()]
+    lite_tool_models = [m for m in valid_tool_candidates if "lite" in m.lower()]
+    other_models = [m for m in valid_tool_candidates if m not in flash_tool_models and m not in pro_tool_models and m not in lite_tool_models]
 
     capability_map["reasoning_tools"] = flash_tool_models + pro_tool_models + other_models + lite_tool_models
 

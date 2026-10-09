@@ -950,12 +950,17 @@ class GeminiGovernor:
                     continue
 
                 name_lower = name.lower()
-                # Skip specialized non-generative endpoints
+                # Skip specialized non-generative or experimental endpoints
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                    "robotics", "computer-use", "live-translate"
+                    "robotics", "computer-use", "live-translate", "image-preview",
+                    "thinking", "3.1-flash", "3.5-flash", "preview-image"
                 )):
+                    continue
+
+                # For reasoning_tools, strictly skip any 3.x or thinking preview endpoints
+                if task_type == "reasoning_tools" and any(kw in name_lower for kw in ("3.", "3-", "image")):
                     continue
 
                 # For vision tasks, skip audio-only endpoints
