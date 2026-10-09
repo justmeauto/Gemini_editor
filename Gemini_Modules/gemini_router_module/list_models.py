@@ -229,6 +229,9 @@ def discover_api_models(api_key: str = "") -> List[str]:
         for m in all_models:
             name = getattr(m, "name", "") or getattr(m, "display_name", "")
             name = name.replace("models/", "").strip()
+            actions = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None)
+            if actions and "generateContent" not in actions:
+                continue
             if _is_valid_generative_model(name):
                 discovered.append(name)
         if discovered:
@@ -276,15 +279,16 @@ def discover_api_models(api_key: str = "") -> List[str]:
 
 
 def _is_valid_generative_model(model_name: str) -> bool:
-    """Filters out embeddings, audio-only, imagen, experimental 3.x previews, and legacy non-gemini models."""
+    """Filters out embeddings, audio-only, imagen, experimental 3.x previews, WebSocket bidi, and legacy non-gemini models."""
     name = model_name.lower()
     if not name.startswith("gemini"):
         return False
-    # Exclude non-generative or experimental preview endpoints
+    # Exclude non-generative, audio-only, or experimental preview endpoints
     excluded_keywords = [
         "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
-        "computer-use", "live-translate", "3.", "3-", "thinking"
+        "computer-use", "live-translate", "3.", "3-", "thinking",
+        "audio", "native-audio", "bidi", "realtime"
     ]
     for kw in excluded_keywords:
         if kw in name:

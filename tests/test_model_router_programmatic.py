@@ -27,6 +27,8 @@ def test_preview_models_excluded_from_discovery():
     assert not _is_valid_generative_model("gemini-3.1-pro-preview")
     assert not _is_valid_generative_model("gemini-3-flash-preview")
     assert not _is_valid_generative_model("gemini-2.5-flash-thinking")
+    assert not _is_valid_generative_model("gemini-2.5-flash-native-audio-preview-09-2025")
+    assert not _is_valid_generative_model("gemini-2.0-flash-realtime-exp")
     assert not _is_valid_generative_model("text-embedding-004")
     assert _is_valid_generative_model("gemini-2.5-flash")
     assert _is_valid_generative_model("gemini-2.0-flash")
