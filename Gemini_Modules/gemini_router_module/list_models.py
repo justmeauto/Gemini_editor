@@ -527,10 +527,10 @@ def get_models_by_capability(
         capability_map[task_type] = [m for m, _ in candidates]
 
     # Special category: reasoning_tools (Function Calling for Agent ReAct loop)
-    # Strictly exclude any models requiring thought_signature, image, or audio/bidi endpoints
+    # Strictly exclude unpinned -latest aliases, thinking models, or audio/bidi endpoints
     valid_tool_candidates = [
         m for m in models
-        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image", "audio", "native-audio", "bidi", "live"))
+        if not any(kw in m.lower() for kw in ("thinking", "image", "3.", "3-", "preview-image", "audio", "native-audio", "bidi", "live", "latest"))
     ]
 
     def _rank_tool_flash(name: str) -> float:
@@ -538,8 +538,8 @@ def get_models_by_capability(
         if "2.5-flash" in nl and "lite" not in nl:
             return 3.0
         if "2.0-flash" in nl and "lite" not in nl:
-            return 2.5
-        if "flash-latest" in nl:
+            return 2.8
+        if "flash" in nl and "lite" not in nl:
             return 2.0
         return 1.0
 

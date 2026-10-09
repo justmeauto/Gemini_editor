@@ -310,7 +310,12 @@ class AutonomousDirector:
                             try:
                                 refreshed = refresh_gemini_models_cache(force=True)
                                 for m in refreshed.get("models", []):
-                                    if m not in turn_tried_models and ("flash" in m.lower() or "pro" in m.lower()):
+                                    if (
+                                        m not in turn_tried_models
+                                        and ("flash" in m.lower() or "pro" in m.lower())
+                                        and "latest" not in m.lower()
+                                        and not any(kw in m.lower() for kw in ("thinking", "audio", "bidi", "3."))
+                                    ):
                                         next_model = m
                                         break
                             except Exception:
@@ -319,17 +324,30 @@ class AutonomousDirector:
                         if next_model:
                             logger.info(f"🔀 [DIRECTOR INCOMPATIBILITY ROTATION] {self.model_name} ➔ {next_model}")
                             self.model_name = next_model
-                            try:
-                                raw_history = chat.get_history() or []
-                                chat = self.client.chats.create(
-                                    model=self.model_name,
-                                    config=config,
-                                    history=raw_history
-                                )
-                                logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
-                            except Exception as hist_err:
-                                logger.warning(f"⚠️ History migration failed ({hist_err}). Fresh session on {self.model_name}")
+
+                            # If incompatibility is due to thought_signature, start fresh with summary
+                            # instead of carrying over historical un-signed functionCall parts.
+                            if "thought_signature" in err_str or "thought signature" in err_str:
+                                logger.info("🧹 [DIRECTOR] Starting fresh chat session with execution summary to bypass thought_signature requirements.")
                                 chat = self.client.chats.create(model=self.model_name, config=config)
+                                summary_lines = [f"- {e.get('tool')}: status={e.get('status')}" for e in execution_log]
+                                current_prompt = (
+                                    f"Original Goal: {goal}\n"
+                                    f"Actions successfully completed so far:\n" + "\n".join(summary_lines) +
+                                    f"\nPlease continue directly with the remaining workflow (e.g. tool_audit_clip, tool_publish_clip, or conclusion)."
+                                )
+                            else:
+                                try:
+                                    raw_history = chat.get_history() or []
+                                    chat = self.client.chats.create(
+                                        model=self.model_name,
+                                        config=config,
+                                        history=raw_history
+                                    )
+                                    logger.info(f"✅ History migrated ({len(raw_history)} turns) to {self.model_name}")
+                                except Exception as hist_err:
+                                    logger.warning(f"⚠️ History migration failed ({hist_err}). Fresh session on {self.model_name}")
+                                    chat = self.client.chats.create(model=self.model_name, config=config)
                             time.sleep(1.0)
                             continue
 
