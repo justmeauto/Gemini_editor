@@ -276,15 +276,15 @@ def discover_api_models(api_key: str = "") -> List[str]:
 
 
 def _is_valid_generative_model(model_name: str) -> bool:
-    """Filters out embeddings, audio-only, imagen, and legacy non-gemini models."""
+    """Filters out embeddings, audio-only, imagen, experimental 3.x previews, and legacy non-gemini models."""
     name = model_name.lower()
     if not name.startswith("gemini"):
         return False
-    # Exclude non-generative or specialized preview endpoints
+    # Exclude non-generative or experimental preview endpoints
     excluded_keywords = [
         "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
-        "computer-use", "live-translate"
+        "computer-use", "live-translate", "3.", "3-", "thinking"
     ]
     for kw in excluded_keywords:
         if kw in name:
@@ -320,10 +320,8 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
     for m in models:
         m_lower = m.lower()
         
-        # Base version score multiplier (e.g. 2.5 > 2.0 > 1.5)
-        if "3." in m_lower or "3-" in m_lower:
-            version_score = 3.0
-        elif "2.5" in m_lower:
+        # Base version score multiplier: prioritize rock-solid production versions (2.5 > 2.0 > 1.5)
+        if "2.5" in m_lower:
             version_score = 2.5
         elif "2.0" in m_lower or "2-" in m_lower:
             version_score = 2.0

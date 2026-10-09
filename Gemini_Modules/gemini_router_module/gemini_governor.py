@@ -948,11 +948,11 @@ class GeminiGovernor:
                     continue
 
                 name_lower = name.lower()
-                # Skip specialized non-generative endpoints
+                # Skip specialized non-generative or experimental preview endpoints
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                    "robotics", "computer-use", "live-translate"
+                    "robotics", "computer-use", "live-translate", "3.", "3-", "thinking"
                 )):
                     continue
 
@@ -1127,7 +1127,7 @@ class GeminiGovernor:
             non_gen_kws = (
                 "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                 "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                "robotics", "computer-use", "live-translate"
+                "robotics", "computer-use", "live-translate", "3.", "3-", "thinking"
             )
 
             valid_models = []
