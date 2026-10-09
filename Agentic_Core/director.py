@@ -247,8 +247,13 @@ class AutonomousDirector:
 
                         # If Governor indicates all models are currently cooling down, wait for renewal window
                         if not next_model and (is_quota or is_server_error):
-                            logger.warning("⏳ [DIRECTOR] All eligible models in Governor are cooling down. Waiting 15s for Governor renewal window...")
-                            time.sleep(15.0)
+                            cooldown_wait = 15.0
+                            if _HAS_GOVERNOR and gemini_router is not None and hasattr(gemini_router, "get_min_cooldown_remaining"):
+                                min_cd = gemini_router.get_min_cooldown_remaining(task_type="reasoning")
+                                if 0 < min_cd <= 60:
+                                    cooldown_wait = min_cd + 1.0
+                            logger.warning(f"⏳ [DIRECTOR] All eligible models in Governor are cooling down. Waiting {cooldown_wait:.1f}s for Governor renewal window...")
+                            time.sleep(cooldown_wait)
                             if _HAS_GOVERNOR and gemini_router is not None:
                                 next_model = gemini_router.get_available_model(
                                     task_type="reasoning",

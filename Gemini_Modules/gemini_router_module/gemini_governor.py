@@ -910,16 +910,19 @@ class GeminiGovernor:
 
 
             # Cost Weights (Inverse)
-
-            cost_weights = {
-
-                "pro": 1.0,
-
-                "flash": 0.7,
-
-                "lite": 0.3
-
-            }
+            # For complex multi-turn reasoning, tools, and heavy vision, prioritize robust production Flash models
+            if task_type in ("reasoning", "watermark", "vision", "master"):
+                cost_weights = {
+                    "flash": 0.6,
+                    "lite": 0.9,
+                    "pro": 1.2
+                }
+            else:
+                cost_weights = {
+                    "pro": 1.0,
+                    "flash": 0.7,
+                    "lite": 0.3
+                }
 
 
 
@@ -1112,6 +1115,15 @@ class GeminiGovernor:
 
 
                 return best_model
+
+            # If all candidate models are currently banned or cooling down
+            if not best_model and not exclude_set:
+                if refresh_gemini_models_cache:
+                    try:
+                        refresh_gemini_models_cache(force=True)
+                        self._initialize_models()
+                    except Exception:
+                        pass
             return None
 
     def get_valid_models_for_task(self, task_type: str) -> List[str]:
@@ -1152,6 +1164,31 @@ class GeminiGovernor:
 
             valid_models.sort(key=_rank_key, reverse=True)
             return valid_models
+
+    def get_min_cooldown_remaining(self, task_type: str = "reasoning") -> float:
+        """
+        Returns the minimum remaining cooldown/ban time in seconds across models eligible for task_type.
+        Returns 0.0 if any model is available immediately.
+        """
+        with self.state_lock:
+            self._tick_ban_timers_unlocked()
+            eligible_bans = []
+            for name, state in self.model_states.items():
+                name_lower = name.lower()
+                if any(kw in name_lower for kw in (
+                    "embedding", "embed", "imagen", "bison", "aqa", "gecko",
+                    "text-001", "tts", "preview-tts", "customtools", "transcribe",
+                    "robotics", "computer-use", "live-translate", "3.", "3-", "thinking"
+                )):
+                    continue
+                if state["status"] == "BANNED":
+                    rem = state.get("ban_remaining_seconds", 0)
+                    if 0 < rem < 86400:  # Ignore permanent deprecation bans
+                        eligible_bans.append(rem)
+                else:
+                    return 0.0
+            return float(min(eligible_bans)) if eligible_bans else 15.0
+
 
     def simplify_prompt(self, prompt: Any, tier: str = "high") -> Any:
 

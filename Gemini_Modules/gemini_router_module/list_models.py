@@ -108,13 +108,13 @@ DEFAULT_TASK_MODEL_RATINGS = {
         "gemini-pro-latest": 1.1,
     },
     "reasoning": {
-        "gemini-2.5-flash-lite": 3.0,
-        "gemini-2.0-flash-lite": 2.9,
-        "gemini-2.5-flash": 2.8,
-        "gemini-2.0-flash": 2.7,
-        "gemini-flash-latest": 2.6,
-        "gemini-2.5-pro": 1.7,
-        "gemini-pro-latest": 1.1,
+        "gemini-2.5-flash": 3.8,
+        "gemini-2.0-flash": 3.6,
+        "gemini-flash-latest": 3.5,
+        "gemini-2.5-flash-lite": 2.8,
+        "gemini-2.0-flash-lite": 2.7,
+        "gemini-2.5-pro": 2.0,
+        "gemini-pro-latest": 1.2,
     },
     "cheap": {
         "gemini-2.5-flash-lite": 3.9,
@@ -146,12 +146,12 @@ DEFAULT_TASK_MODEL_RATINGS = {
         "gemini-pro-latest": 1.1,
     },
     "vision": {
-        "gemini-2.5-flash-lite": 3.8,
-        "gemini-2.0-flash-lite": 3.7,
-        "gemini-2.5-flash": 3.5,
-        "gemini-2.0-flash": 3.3,
-        "gemini-flash-latest": 3.2,
-        "gemini-2.5-pro": 1.5,
+        "gemini-2.5-flash": 3.8,
+        "gemini-2.0-flash": 3.6,
+        "gemini-flash-latest": 3.5,
+        "gemini-2.5-flash-lite": 2.6,
+        "gemini-2.0-flash-lite": 2.5,
+        "gemini-2.5-pro": 1.8,
         "gemini-pro-latest": 1.1,
     },
     "caption": {
@@ -340,13 +340,13 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
         else:
             matrix["creative"][m] = 1.5 if is_pro else 1.0
 
-        # 2. reasoning (High-quota Flash/Lite first, Pro fallback)
-        if is_lite:
-            matrix["reasoning"][m] = round(version_score + 0.5, 1)
-        elif is_flash:
+        # 2. reasoning (Production Flash highest for tool calling & multi-turn stability, Lite secondary, Pro fallback)
+        if is_flash:
+            matrix["reasoning"][m] = round(version_score + 1.3, 1)
+        elif is_lite:
             matrix["reasoning"][m] = round(version_score + 0.3, 1)
         else:
-            matrix["reasoning"][m] = round(version_score - 0.8, 1)
+            matrix["reasoning"][m] = round(version_score - 0.5, 1)
 
         # 3. cheap (Lite dominates)
         if is_lite:
@@ -372,11 +372,11 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
         else:
             matrix["watermark"][m] = 1.5 if is_pro else 1.1
 
-        # 6. vision (High quota Lite & Flash)
-        if is_lite:
+        # 6. vision (Production Flash highest for multi-image stability, Lite secondary)
+        if is_flash:
             matrix["vision"][m] = round(version_score + 1.3, 1)
-        elif is_flash:
-            matrix["vision"][m] = round(version_score + 1.0, 1)
+        elif is_lite:
+            matrix["vision"][m] = round(version_score + 0.3, 1)
         else:
             matrix["vision"][m] = 1.5 if is_pro else 1.1
 
@@ -490,3 +490,18 @@ def get_active_models_and_ratings(force: bool = False) -> Tuple[List[str], Dict[
     
     refreshed = refresh_gemini_models_cache(force=force)
     return refreshed.get("models", DEFAULT_MODELS_LIST), refreshed.get("task_ratings", DEFAULT_TASK_MODEL_RATINGS)
+
+
+def get_models_by_capability(capability: str = "reasoning") -> List[str]:
+    """
+    Returns an ordered list of active models sorted by their affinity/score
+    for a given capability (e.g. 'reasoning', 'vision', 'watermark', 'creative').
+    Filters out experimental 3.x and non-generative endpoints.
+    """
+    models, ratings = get_active_models_and_ratings()
+    cap_ratings = ratings.get(capability, {})
+    valid = [m for m in models if _is_valid_generative_model(m)]
+    if not cap_ratings:
+        return valid
+    return sorted(valid, key=lambda m: cap_ratings.get(m, 0.0), reverse=True)
+
