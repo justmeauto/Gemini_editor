@@ -98,111 +98,130 @@ _LAST_REFRESH_TIME = 0.0
 
 DEFAULT_TASK_MODEL_RATINGS = {
     "creative": {
+        "gemini-3.8-flash-lite": 4.3,
+        "gemini-3.5-flash-lite": 4.0,
+        "gemini-3.8-flash": 4.0,
+        "gemini-3.5-flash": 3.7,
         "gemini-2.5-flash-lite": 3.0,
         "gemini-flash-lite-latest": 2.9,
         "gemini-2.0-flash-lite": 2.8,
         "gemini-2.5-flash": 2.7,
         "gemini-2.0-flash": 2.6,
         "gemini-flash-latest": 2.5,
-        "gemini-2.5-pro": 1.5,
-        "gemini-pro-latest": 1.1,
     },
     "reasoning": {
+        "gemini-3.8-flash": 5.1,
+        "gemini-3.5-flash": 4.8,
+        "gemini-3.8-flash-lite": 4.1,
+        "gemini-3.5-flash-lite": 3.8,
         "gemini-2.5-flash": 3.8,
         "gemini-2.0-flash": 3.6,
         "gemini-flash-latest": 3.5,
         "gemini-2.5-flash-lite": 2.8,
         "gemini-2.0-flash-lite": 2.7,
-        "gemini-2.5-pro": 2.0,
-        "gemini-pro-latest": 1.2,
+        "gemini-flash-lite-latest": 2.2,
     },
     "cheap": {
+        "gemini-3.8-flash-lite": 5.2,
+        "gemini-3.5-flash-lite": 4.9,
         "gemini-2.5-flash-lite": 3.9,
         "gemini-flash-lite-latest": 3.8,
         "gemini-2.0-flash-lite": 3.7,
         "gemini-2.0-flash-lite-001": 3.6,
+        "gemini-3.8-flash": 3.3,
+        "gemini-3.5-flash": 3.0,
         "gemini-2.5-flash": 2.0,
         "gemini-2.0-flash": 1.8,
-        "gemini-flash-latest": 1.6,
     },
     "master": {
+        "gemini-3.8-flash": 4.5,
+        "gemini-3.5-flash": 4.2,
+        "gemini-3.8-flash-lite": 4.0,
+        "gemini-3.5-flash-lite": 3.7,
         "gemini-2.5-flash": 3.2,
         "gemini-2.0-flash": 3.0,
         "gemini-flash-latest": 2.9,
         "gemini-2.5-flash-lite": 2.7,
         "gemini-2.0-flash-lite": 2.6,
-        "gemini-2.5-pro": 1.7,
-        "gemini-pro-latest": 1.1,
     },
     "watermark": {
+        "gemini-3.8-flash": 5.3,
+        "gemini-3.5-flash": 5.0,
         "gemini-2.5-flash": 4.0,
+        "gemini-3.8-flash-lite": 3.8,
         "gemini-2.0-flash": 3.8,
         "gemini-flash-latest": 3.6,
+        "gemini-3.5-flash-lite": 3.5,
         "gemini-2.5-flash-lite": 2.5,
         "gemini-2.0-flash-lite": 2.4,
-        "gemini-2.0-flash-lite-001": 2.3,
-        "gemini-flash-lite-latest": 2.2,
-        "gemini-2.5-pro": 1.5,
-        "gemini-pro-latest": 1.1,
     },
     "vision": {
+        "gemini-3.8-flash": 5.1,
+        "gemini-3.5-flash": 4.8,
+        "gemini-3.8-flash-lite": 4.1,
         "gemini-2.5-flash": 3.8,
+        "gemini-3.5-flash-lite": 3.8,
         "gemini-2.0-flash": 3.6,
         "gemini-flash-latest": 3.5,
         "gemini-2.5-flash-lite": 2.6,
         "gemini-2.0-flash-lite": 2.5,
-        "gemini-2.5-pro": 1.8,
-        "gemini-pro-latest": 1.1,
     },
     "caption": {
+        "gemini-3.8-flash": 4.8,
+        "gemini-3.5-flash": 4.5,
+        "gemini-3.8-flash-lite": 4.3,
+        "gemini-3.5-flash-lite": 4.0,
         "gemini-2.5-flash": 3.5,
         "gemini-2.0-flash": 3.3,
         "gemini-flash-latest": 3.2,
         "gemini-2.5-flash-lite": 3.0,
         "gemini-2.0-flash-lite": 2.9,
-        "gemini-flash-lite-latest": 2.8,
-        "gemini-2.5-pro": 1.4,
-        "gemini-pro-latest": 1.0,
     },
     "narrative": {
+        "gemini-3.8-flash": 4.6,
+        "gemini-3.5-flash": 4.3,
+        "gemini-3.8-flash-lite": 4.1,
+        "gemini-3.5-flash-lite": 3.8,
         "gemini-2.5-flash": 3.3,
         "gemini-2.0-flash": 3.1,
         "gemini-flash-latest": 3.0,
         "gemini-2.5-flash-lite": 2.8,
         "gemini-2.0-flash-lite": 2.7,
-        "gemini-2.5-pro": 1.6,
-        "gemini-pro-latest": 1.1,
     },
     "price": {
+        "gemini-3.8-flash-lite": 5.1,
+        "gemini-3.5-flash-lite": 4.8,
+        "gemini-3.8-flash": 4.6,
+        "gemini-3.5-flash": 4.3,
         "gemini-2.5-flash-lite": 3.8,
         "gemini-2.0-flash-lite": 3.7,
         "gemini-flash-lite-latest": 3.6,
         "gemini-2.5-flash": 3.3,
         "gemini-2.0-flash": 3.1,
-        "gemini-2.5-pro": 1.4,
-        "gemini-pro-latest": 1.1,
     },
     "analysis": {
+        "gemini-3.8-flash-lite": 5.0,
+        "gemini-3.8-flash": 4.7,
+        "gemini-3.5-flash-lite": 4.7,
+        "gemini-3.5-flash": 4.4,
         "gemini-2.5-flash-lite": 3.7,
         "gemini-2.0-flash-lite": 3.6,
         "gemini-2.5-flash": 3.4,
         "gemini-2.0-flash": 3.2,
         "gemini-flash-latest": 3.0,
-        "gemini-2.5-pro": 1.5,
-        "gemini-pro-latest": 1.0,
     },
 }
 
 DEFAULT_MODELS_LIST = [
-    "gemini-2.5-pro",
-    "gemini-pro-latest",
+    "gemini-3.8-flash",
+    "gemini-3.8-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-001",
-    "gemini-flash-latest",
     "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite-001",
+    "gemini-flash-latest",
     "gemini-flash-lite-latest",
 ]
 
@@ -279,7 +298,7 @@ def discover_api_models(api_key: str = "") -> List[str]:
 
 
 def _is_valid_generative_model(model_name: str) -> bool:
-    """Filters out embeddings, audio-only, imagen, experimental 3.x previews, WebSocket bidi, and legacy non-gemini models."""
+    """Filters out embeddings, audio-only, imagen, WebSocket bidi, and non-gemini endpoints."""
     name = model_name.lower()
     if not name.startswith("gemini"):
         return False
@@ -287,7 +306,7 @@ def _is_valid_generative_model(model_name: str) -> bool:
     excluded_keywords = [
         "embedding", "embed", "imagen", "image", "preview-image", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
-        "computer-use", "live-translate", "3.", "3-", "thinking",
+        "computer-use", "live-translate", "thinking",
         "audio", "native-audio", "bidi", "realtime", "omni"
     ]
     for kw in excluded_keywords:
@@ -297,21 +316,38 @@ def _is_valid_generative_model(model_name: str) -> bool:
 
 
 def _sort_models_by_tier(models: List[str]) -> List[str]:
-    """Sorts discovered models into Pro -> Flash -> Lite tiers."""
-    pro_models = [m for m in models if "pro" in m.lower()]
-    lite_models = [m for m in models if "lite" in m.lower()]
-    flash_models = [m for m in models if "flash" in m.lower() and "lite" not in m.lower()]
-    other_models = [m for m in models if m not in pro_models and m not in flash_models and m not in lite_models]
+    """Sorts discovered models into Flash -> Lite -> Other -> Pro tiers, prioritizing higher version numbers."""
+    def _version_key(name: str) -> float:
+        nl = name.lower()
+        if "3.8" in nl or "3-8" in nl:
+            return 3.8
+        if "3.5" in nl or "3-5" in nl:
+            return 3.5
+        if "3." in nl or "3-" in nl:
+            return 3.0
+        if "2.5" in nl or "2-5" in nl:
+            return 2.5
+        if "2.0" in nl or "2-" in nl:
+            return 2.0
+        if "latest" in nl:
+            return 2.4
+        return 1.0
 
-    # Combine known production list with newly discovered models
-    combined = []
+    flash_models = sorted([m for m in models if "flash" in m.lower() and "lite" not in m.lower()], key=_version_key, reverse=True)
+    lite_models = sorted([m for m in models if "lite" in m.lower()], key=_version_key, reverse=True)
+    other_models = sorted([m for m in models if "pro" not in m.lower() and "flash" not in m.lower() and "lite" not in m.lower()], key=_version_key, reverse=True)
+    pro_models = sorted([m for m in models if "pro" in m.lower()], key=_version_key, reverse=True)
+
+    # Free/high-RPM tiers first (Flash -> Lite), with paid/expensive Pro models at the very bottom
+    ordered = []
+    # Include default known models if discovered
     for m in DEFAULT_MODELS_LIST:
-        if m in models:
-            combined.append(m)
-    for m in pro_models + flash_models + lite_models + other_models:
-        if m not in combined:
-            combined.append(m)
-    return combined
+        if m in models and m not in ordered:
+            ordered.append(m)
+    for m in flash_models + lite_models + other_models + pro_models:
+        if m not in ordered:
+            ordered.append(m)
+    return ordered
 
 
 def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
@@ -324,8 +360,14 @@ def calculate_task_matrix(models: List[str]) -> Dict[str, Dict[str, float]]:
     for m in models:
         m_lower = m.lower()
         
-        # Base version score multiplier: prioritize rock-solid production versions (2.5 > 2.0 > 1.5)
-        if "2.5" in m_lower:
+        # Base version score multiplier: prioritize latest generation models (3.8 > 3.5 > 3.0 > 2.5 > 2.0 > 1.5)
+        if "3.8" in m_lower or "3-8" in m_lower:
+            version_score = 3.8
+        elif "3.5" in m_lower or "3-5" in m_lower:
+            version_score = 3.5
+        elif "3." in m_lower or "3-" in m_lower:
+            version_score = 3.0
+        elif "2.5" in m_lower or "2-5" in m_lower:
             version_score = 2.5
         elif "2.0" in m_lower or "2-" in m_lower:
             version_score = 2.0
@@ -508,4 +550,26 @@ def get_models_by_capability(capability: str = "reasoning") -> List[str]:
     if not cap_ratings:
         return valid
     return sorted(valid, key=lambda m: cap_ratings.get(m, 0.0), reverse=True)
+
+
+if __name__ == "__main__":
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print("Discovering & Refreshing active Gemini models...")
+    res = refresh_gemini_models_cache(force=True)
+    print("\nVALID GENERATIVE MODELS LIST (Tier-sorted & filtered):")
+    print(json.dumps(res.get("models", []), indent=2))
+    
+    print("\n📊 CAPABILITY RANKINGS (Top models per task):")
+    ranked_summary = {}
+    for t in res.get("task_ratings", {}).keys():
+        top_m = get_models_by_capability(t)
+        ranked_summary[t] = [
+            {"model": m, "score": res["task_ratings"][t].get(m, 0.0)}
+            for m in top_m
+        ]
+    print(json.dumps(ranked_summary, indent=2))
+
 

@@ -465,21 +465,40 @@ class GeminiGovernor:
 
 
 
-    def _initialize_models(self):
-        """Pre-initialize supported models with dynamic discovery and default states."""
-        models = [
-            "gemini-2.5-pro",
-            "gemini-pro-latest",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-001",
-            "gemini-flash-latest",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-lite",
-            "gemini-2.0-flash-lite-001",
-            "gemini-flash-lite-latest",
+    def _get_models_cache_path(self) -> str:
+        """Locates storage/gemini_models_cache.json."""
+        if os.getenv("GEMINI_CACHE_FILE"):
+            return os.path.abspath(os.getenv("GEMINI_CACHE_FILE"))
+        cands = [
+            os.path.join(os.getcwd(), "storage", "gemini_models_cache.json"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "gemini_models_cache.json"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "storage", "gemini_models_cache.json"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "storage", "gemini_models_cache.json"),
         ]
-        if get_active_models_and_ratings:
+        for c in cands:
+            if os.path.exists(c):
+                return c
+        return cands[0]
+
+    def _initialize_models(self):
+        """Initializes supported models directly from storage/gemini_models_cache.json with dynamic discovery fallback."""
+        models = []
+        cache_path = self._get_models_cache_path()
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cache_data = json.load(f)
+                    if isinstance(cache_data, dict):
+                        models = cache_data.get("models", [])
+                        ratings = cache_data.get("task_ratings", {})
+                        if ratings:
+                            self.TASK_MODEL_RATINGS = ratings
+                        logger.info(f"📋 [GOVERNOR] Successfully loaded {len(models)} models directly from JSON cache: {cache_path}")
+            except Exception as exc:
+                logger.warning(f"⚠️ [GOVERNOR] Error reading JSON models cache {cache_path}: {exc}")
+
+        # If cache file wasn't found or empty, delegate to list_models module dynamically
+        if not models and get_active_models_and_ratings:
             try:
                 disc_models, ratings = get_active_models_and_ratings()
                 if disc_models:
@@ -487,7 +506,7 @@ class GeminiGovernor:
                 if ratings:
                     self.TASK_MODEL_RATINGS = ratings
             except Exception as exc:
-                logger.warning(f"Dynamic model rating lookup failed: {exc}")
+                logger.warning(f"Dynamic model lookup failed: {exc}")
 
         with self.state_lock:
             for m in models:
@@ -955,7 +974,7 @@ class GeminiGovernor:
                 if any(kw in name_lower for kw in (
                     "embedding", "embed", "imagen", "image", "preview-image", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
-                    "robotics", "computer-use", "live-translate", "3.", "3-", "thinking",
+                    "robotics", "computer-use", "live-translate", "thinking",
                     "audio", "native-audio", "bidi", "realtime", "omni"
                 )):
                     continue
