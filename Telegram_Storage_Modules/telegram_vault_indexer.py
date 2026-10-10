@@ -488,12 +488,18 @@ class TelegramVaultIndexer:
         if resolved_file_id:
             try:
                 from Telegram_Storage_Modules.telegram_http import is_file_oversized, is_mtproto_configured
-                if is_file_oversized(resolved_file_id) and not is_mtproto_configured():
-                    logger.warning(
-                        "⚠️ [VAULT BGM HYDRATION] File '%s' (file_id: %s) exceeds Telegram 20MB Bot API limit without MTProto. Skipping hydration.",
-                        filename, resolved_file_id[:15]
-                    )
-                    return None
+                if is_file_oversized(resolved_file_id):
+                    if not is_mtproto_configured():
+                        logger.warning(
+                            "⚠️ [VAULT BGM HYDRATION] File '%s' (file_id: %s) exceeds Telegram 20MB Bot API limit without MTProto. Skipping hydration.",
+                            filename, resolved_file_id[:15]
+                        )
+                        return None
+                    else:
+                        logger.info(
+                            "🚀 [VAULT BGM HYDRATION] File '%s' (file_id: %s) exceeds 20MB Bot API limit. Hydrating via Pyrogram MTProto stream...",
+                            filename, resolved_file_id[:15]
+                        )
             except Exception:
                 pass
 

@@ -17,7 +17,7 @@ import asyncio
 import concurrent.futures
 import urllib.request
 import urllib.error
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("vault.telegram_http")
 
@@ -73,18 +73,64 @@ def _run_coro_safely(coro):
         return loop.run_until_complete(coro)
 
 
-# Automatically load environment variables from Credentials/.env or .env
+# Automatically load environment variables from Credentials/.env, .env, or telegram_config.json
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-try:
-    from dotenv import load_dotenv
-    for env_path in [
-        os.path.join(_REPO_ROOT, "Credentials", ".env"),
-        os.path.join(_REPO_ROOT, ".env"),
+
+
+def _load_telegram_credentials() -> None:
+    """Loads Telegram credentials from .env, Credentials/.env, telegram_config.json, or TELEGRAM_CONFIG_JSON."""
+    try:
+        from dotenv import load_dotenv
+        for env_path in [
+            os.path.join(_REPO_ROOT, "Credentials", ".env"),
+            os.path.join(_REPO_ROOT, ".env"),
+        ]:
+            if os.path.exists(env_path):
+                load_dotenv(env_path, override=False)
+    except ImportError:
+        pass
+
+    def _apply_config_dict(cfg: Dict[str, Any]) -> None:
+        key_mappings = {
+            "TELEGRAM_API_ID": ["TELEGRAM_API_ID", "api_id", "telegram_api_id", "app_id"],
+            "TELEGRAM_API_HASH": ["TELEGRAM_API_HASH", "api_hash", "telegram_api_hash", "app_hash"],
+            "TELEGRAM_BOT_TOKEN": ["TELEGRAM_BOT_TOKEN", "bot_token", "token"],
+            "TELEGRAM_STORAGE_GROUP_ID": ["TELEGRAM_STORAGE_GROUP_ID", "storage_group_id", "group_id", "chat_id"],
+            "TELEGRAM_ADMIN_ID": ["TELEGRAM_ADMIN_ID", "admin_id"],
+            "TELEGRAM_PUBLIC_GROUP_ID": ["TELEGRAM_PUBLIC_GROUP_ID", "public_group_id"],
+        }
+        for target_env, candidates in key_mappings.items():
+            if not os.getenv(target_env):
+                for c in candidates:
+                    val = cfg.get(c)
+                    if val is not None and str(val).strip():
+                        os.environ[target_env] = str(val).strip()
+                        break
+
+    for cfg_path in [
+        os.path.join(_REPO_ROOT, "Credentials", "telegram_config.json"),
+        os.path.join(_REPO_ROOT, "telegram_config.json"),
     ]:
-        if os.path.exists(env_path):
-            load_dotenv(env_path, override=True)
-except ImportError:
-    pass
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    if isinstance(cfg, dict):
+                        _apply_config_dict(cfg)
+            except Exception as e:
+                logger.debug("Notice loading %s: %s", cfg_path, e)
+
+    raw_json = os.getenv("TELEGRAM_CONFIG_JSON", "").strip()
+    if raw_json and raw_json.startswith("{"):
+        try:
+            cfg = json.loads(raw_json)
+            if isinstance(cfg, dict):
+                _apply_config_dict(cfg)
+        except Exception as e:
+            logger.debug("Notice parsing TELEGRAM_CONFIG_JSON: %s", e)
+
+
+_load_telegram_credentials()
 
 
 def _token() -> str:
@@ -105,17 +151,53 @@ def _api_url(method: str) -> str:
     return f"https://api.telegram.org/bot{_token()}/{method}"
 
 
-def is_mtproto_configured() -> bool:
-    """Returns True if valid TELEGRAM_API_ID and TELEGRAM_API_HASH are configured for MTProto."""
+DEFAULT_TELEGRAM_API_ID = 2040
+DEFAULT_TELEGRAM_API_HASH = "b1844dd134348e3da5c715c5acc94cf8"
+ANDROID_TELEGRAM_API_ID = 6
+ANDROID_TELEGRAM_API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
+
+
+def get_mtproto_credentials() -> Tuple[int, str]:
+    """
+    Resolves MTProto api_id and api_hash.
+    Priority:
+      1. Environment variables (TELEGRAM_API_ID, TELEGRAM_API_HASH)
+      2. Credentials/telegram_config.json or TELEGRAM_CONFIG_JSON
+      3. Built-in official Telegram Desktop / Android client credentials fallback
+    """
+    _load_telegram_credentials()
     api_id = os.getenv("TELEGRAM_API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH")
-    if not api_id or not api_hash:
+
+    clean_id = str(api_id).strip() if api_id is not None else ""
+    clean_hash = str(api_hash).strip() if api_hash is not None else ""
+
+    if clean_id == "6":
+        hash_val = clean_hash if (clean_hash and clean_hash not in ("dummy", "None", "dummy_hash")) else ANDROID_TELEGRAM_API_HASH
+        return (6, hash_val)
+
+    if clean_id and clean_id not in ("", "dummy", "None", "0"):
+        try:
+            int_id = int(clean_id)
+            if clean_hash and clean_hash not in ("", "dummy", "None", "dummy_hash"):
+                return (int_id, clean_hash)
+        except ValueError:
+            pass
+
+    return (DEFAULT_TELEGRAM_API_ID, DEFAULT_TELEGRAM_API_HASH)
+
+
+def is_mtproto_configured() -> bool:
+    """Returns True if Pyrogram is available and MTProto can be used."""
+    try:
+        import pyrogram  # noqa: F401
+    except ImportError:
         return False
-    clean_id = str(api_id).strip()
-    clean_hash = str(api_hash).strip()
-    if clean_id in ("", "6", "dummy", "None", "0"):
-        return False
-    if clean_hash in ("", "dummy", "None", "dummy_hash"):
+    try:
+        t = _token()
+        if not t:
+            return False
+    except Exception:
         return False
     return True
 
@@ -150,14 +232,14 @@ def upload_file_with_pyrogram(
 
         token = _token()
         if not is_mtproto_configured():
-            logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto upload.")
+            logger.warning("[telegram_http] Pyrogram MTProto is not available. Skipping Pyrogram MTProto upload.")
             return None
-        api_id = os.getenv("TELEGRAM_API_ID")
-        api_hash = os.getenv("TELEGRAM_API_HASH")
+        api_id, api_hash = get_mtproto_credentials()
 
         async def _async_upload():
+            session_name = f"vault_pyro_up_{uuid.uuid4().hex[:8]}"
             async with Client(
-                "vault_pyrogram_session",
+                session_name,
                 api_id=int(api_id),
                 api_hash=api_hash,
                 bot_token=token,
@@ -324,7 +406,7 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
     """
     logger.info("[telegram_http] Initiating Pyrogram MTProto download for large file_id=%s...", file_id[:12])
     if not is_mtproto_configured():
-        logger.warning("[telegram_http] TELEGRAM_API_ID / TELEGRAM_API_HASH not configured or using dummy values. Skipping Pyrogram MTProto download.")
+        logger.warning("[telegram_http] Pyrogram MTProto is not available. Skipping Pyrogram MTProto download.")
         return False
 
     try:
@@ -332,12 +414,12 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
         from pyrogram import Client
 
         token = _token()
-        api_id = os.getenv("TELEGRAM_API_ID")
-        api_hash = os.getenv("TELEGRAM_API_HASH")
+        api_id, api_hash = get_mtproto_credentials()
 
         async def _async_download():
+            session_name = f"vault_pyro_dl_{uuid.uuid4().hex[:8]}"
             async with Client(
-                "vault_pyrogram_session",
+                session_name,
                 api_id=int(api_id),
                 api_hash=api_hash,
                 bot_token=token,
@@ -345,14 +427,27 @@ def _download_with_pyrogram(file_id: str, dest_path: str) -> bool:
             ) as app:
                 os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
                 tmp_path = dest_path + ".tmp"
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                 downloaded_file = await app.download_media(message=file_id, file_name=tmp_path)
-                actual_path = (
-                    downloaded_file
-                    if (downloaded_file and os.path.exists(str(downloaded_file)))
-                    else (tmp_path if os.path.exists(tmp_path) else None)
-                )
-                if actual_path:
+                actual_path = None
+                try:
+                    if downloaded_file and isinstance(downloaded_file, (str, os.PathLike)) and os.path.exists(str(downloaded_file)):
+                        actual_path = str(downloaded_file)
+                except Exception:
+                    pass
+                if not actual_path and os.path.exists(tmp_path):
+                    actual_path = tmp_path
+                if actual_path and os.path.exists(actual_path) and os.path.getsize(actual_path) > 0:
                     if os.path.abspath(actual_path) != os.path.abspath(dest_path):
+                        if os.path.exists(dest_path):
+                            try:
+                                os.remove(dest_path)
+                            except Exception:
+                                pass
                         os.replace(actual_path, dest_path)
                     logger.info("[telegram_http] Pyrogram MTProto download successful -> %s", dest_path)
                     return True
@@ -379,10 +474,16 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
     Downloads a Telegram file by file_id to dest_path.
 
     Automatically falls back to Pyrogram MTProto download if:
+      - File is known to be oversized (>20MB)
       - HTTP 400: Telegram's 20MB Bot API getFile limit is hit.
     """
     token = _token()
     headers = {"User-Agent": "AMTCE-Vault/2.0"}
+
+    # Proactive MTProto routing for files already confirmed to exceed 20MB Bot API limit
+    if is_file_oversized(file_id) and is_mtproto_configured():
+        logger.info("[telegram_http] File '%s' is known to exceed 20MB Bot API limit. Delegating directly to Pyrogram MTProto...", file_id[:12])
+        return _download_with_pyrogram(file_id, dest_path)
 
     # --- Attempt 1: requests (better SSL on Windows) ---
     try:
@@ -443,6 +544,7 @@ def download_file_by_id(file_id: str, dest_path: str) -> bool:
             return True
         except urllib.error.HTTPError as he:
             if he.code == 400:
+                _OVERSIZED_FILE_IDS.add(file_id)
                 if not is_mtproto_configured():
                     logger.warning("[telegram_http] 20MB getFile limit (urllib) hit for file_id=%s and MTProto is not configured. Download impossible via Bot API.", file_id[:12])
                     return False

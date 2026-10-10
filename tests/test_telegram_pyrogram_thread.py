@@ -48,12 +48,13 @@ def test_download_with_pyrogram_in_worker_thread():
 
     def worker():
         with patch("Telegram_Storage_Modules.telegram_http._token", return_value="dummy_token"):
-            with patch("pyrogram.Client.start", new_callable=AsyncMock):
-                with patch("pyrogram.Client.stop", new_callable=AsyncMock):
-                    with patch("pyrogram.Client.download_media", new_callable=AsyncMock) as mock_dl:
-                        with patch("os.path.exists", return_value=True):
+            mock_app = AsyncMock()
+            mock_app.download_media.return_value = "dummy.mp4"
+            with patch("pyrogram.Client.__aenter__", new_callable=AsyncMock, return_value=mock_app):
+                with patch("pyrogram.Client.__aexit__", new_callable=AsyncMock, return_value=None):
+                    with patch("os.path.exists", return_value=True):
+                        with patch("os.path.getsize", return_value=1024):
                             with patch("os.replace", return_value=None):
-                                mock_dl.return_value = "dummy.mp4"
                                 res = th._download_with_pyrogram("BAACAgUAAyEGdummy", "test_dest.mp4")
                                 result["success"] = res
 

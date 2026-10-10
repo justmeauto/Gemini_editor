@@ -956,7 +956,7 @@ class GeminiGovernor:
                     "embedding", "embed", "imagen", "bison", "aqa", "gecko",
                     "text-001", "tts", "preview-tts", "customtools", "transcribe",
                     "robotics", "computer-use", "live-translate", "3.", "3-", "thinking",
-                    "audio", "native-audio", "bidi", "realtime"
+                    "audio", "native-audio", "bidi", "realtime", "omni"
                 )):
                     continue
 

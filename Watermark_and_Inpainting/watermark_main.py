@@ -78,7 +78,7 @@ def run_watermark_removal(
     log(f"📦 Output: {os.path.basename(output_path)}")
 
     # Step 1: AI Detection
-    if predetected_watermarks is not None:
+    if predetected_watermarks:
         log(f"💎 Step 1: Reusing {len(predetected_watermarks)} pre-detected watermark bounding box(es) (duplicate detection skipped).")
         watermarks = predetected_watermarks
     else:

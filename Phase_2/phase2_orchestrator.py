@@ -119,6 +119,14 @@ def run_phase2_pipeline(
             working_video_path = video_path
             watermark_boxes = []
 
+            # Check if user explicitly requested inpainting in directive
+            is_inpaint_requested = bool(
+                user_edit_directive and any(
+                    kw in user_edit_directive.lower()
+                    for kw in ["inpaint", "watermark", "clean", "logo", "remove watermark", "erase"]
+                )
+            )
+
             # Check candidate clean video files on local disk
             candidate_clean = [
                 clean_raw_path,
@@ -129,15 +137,29 @@ def run_phase2_pipeline(
                 os.path.join(clip_dir, f"auto_{shortcode_stem}.mp4"),
                 os.path.join(clip_dir, "video_inpainted_clean.mp4"),
             ]
-            for c_cand in candidate_clean:
-                if "_master.mp4" in c_cand.lower():
-                    continue
-                if os.path.exists(c_cand) and os.path.getsize(c_cand) > 1024:
-                    clean_raw_path = c_cand
-                    break
+
+            if is_inpaint_requested:
+                logger.info(f"🧼 [INPAINT DIRECTIVE OVERRIDE] User requested inpainting: '{user_edit_directive}'. Invalidating clean video cache.")
+                for c_cand in candidate_clean:
+                    if os.path.exists(c_cand):
+                        try:
+                            os.remove(c_cand)
+                            coords_f = c_cand + ".coords.json"
+                            if os.path.exists(coords_f):
+                                os.remove(coords_f)
+                        except Exception as _rm_err:
+                            logger.debug(f"Cache purge notice: {_rm_err}")
+                clean_raw_path = os.path.join(clip_dir, clean_filename)
+            else:
+                for c_cand in candidate_clean:
+                    if "_master.mp4" in c_cand.lower():
+                        continue
+                    if os.path.exists(c_cand) and os.path.getsize(c_cand) > 1024:
+                        clean_raw_path = c_cand
+                        break
 
             # 1. Check Telegram Storage Vault for pre-cleaned video (wm_clean_file_id) if not on local disk
-            if not os.path.exists(clean_raw_path) or os.path.getsize(clean_raw_path) <= 1024:
+            if not is_inpaint_requested and (not os.path.exists(clean_raw_path) or os.path.getsize(clean_raw_path) <= 1024):
                 try:
                     from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
                     _v_indexer = TelegramVaultIndexer()
@@ -149,7 +171,7 @@ def run_phase2_pipeline(
                     logger.debug(f"[UPFRONT INPAINTING] Vault clean check notice: {_vi_err}")
 
             # 2. If clean video already exists, reuse it and load sidecar coordinates
-            if os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024 and os.path.abspath(clean_raw_path) != os.path.abspath(target_output):
+            if not is_inpaint_requested and os.path.exists(clean_raw_path) and os.path.getsize(clean_raw_path) > 1024 and os.path.abspath(clean_raw_path) != os.path.abspath(target_output):
                 working_video_path = clean_raw_path
                 logger.info(f"⚡ [UPFRONT INPAINTING CACHE] Reusing clean inpainted raw video: {os.path.basename(working_video_path)}")
                 coords_sidecar = clean_raw_path + ".coords.json"
@@ -169,7 +191,8 @@ def run_phase2_pipeline(
                     from Watermark_and_Inpainting.watermark_main import run_watermark_removal
 
                     logger.info(f"🧼 [UPFRONT INPAINTING] Running watermark detection & inpainting on: {os.path.basename(video_path)}")
-                    items, _ = detect_watermark_from_video(video_path=video_path)
+                    detect_kw = user_edit_directive if is_inpaint_requested else ""
+                    items, _ = detect_watermark_from_video(video_path=video_path, keywords=detect_kw)
                     if items:
                         watermark_boxes = items
                         logger.info(f"💎 [STEP 02 WATERMARK DETECTED] Found {len(items)} watermark bounding box vector(s).")
@@ -177,8 +200,9 @@ def run_phase2_pipeline(
                     inpainted_path, _ = run_watermark_removal(
                         input_path=video_path,
                         output_path=clean_raw_path,
-                        predetected_watermarks=items,
-                        retry_level=0
+                        predetected_watermarks=items if items else None,
+                        keywords=detect_kw,
+                        retry_level=1 if is_inpaint_requested else 0
                     )
                     if inpainted_path and os.path.exists(inpainted_path) and os.path.getsize(inpainted_path) > 1024:
                         working_video_path = inpainted_path
@@ -197,18 +221,19 @@ def run_phase2_pipeline(
                             except Exception as _ce:
                                 logger.debug(f"Coords sidecar read notice: {_ce}")
 
-                        # Upload clean inpainted source to Telegram Vault
-                        try:
-                            from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
-                            vault_idx = TelegramVaultIndexer()
-                            clean_fid = vault_idx.update_inpainted_clean_source_in_vault(
-                                clean_video_path=clean_raw_path,
-                                clip_folder_name=folder_name
-                            )
-                            if clean_fid:
-                                logger.info(f"☁️ [CLEAN VAULT UPLOAD] Uploaded clean video to vault (file_id: {clean_fid[:15]}...)")
-                        except Exception as _clean_up_err:
-                            logger.warning(f"⚠️ [UPFRONT INPAINTING] Clean vault upload notice: {_clean_up_err}")
+                        # Upload clean inpainted source to Telegram Vault ONLY if watermarks were actually detected and cleaned
+                        if watermark_boxes:
+                            try:
+                                from Telegram_Storage_Modules.telegram_vault_indexer import TelegramVaultIndexer
+                                vault_idx = TelegramVaultIndexer()
+                                clean_fid = vault_idx.update_inpainted_clean_source_in_vault(
+                                    clean_video_path=clean_raw_path,
+                                    clip_folder_name=folder_name
+                                )
+                                if clean_fid:
+                                    logger.info(f"☁️ [CLEAN VAULT UPLOAD] Uploaded clean video to vault (file_id: {clean_fid[:15]}...)")
+                            except Exception as _clean_up_err:
+                                logger.warning(f"⚠️ [UPFRONT INPAINTING] Clean vault upload notice: {_clean_up_err}")
                 except Exception as _inp_err:
                     logger.warning(f"⚠️ [UPFRONT INPAINTING] Notice: {_inp_err}")
 
