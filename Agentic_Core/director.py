@@ -96,7 +96,8 @@ class AutonomousDirector:
     def __init__(
         self,
         model_name: Optional[str] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        allow_model_rotation: Optional[bool] = None,
     ):
         self.api_key = api_key or _resolve_gemini_api_key()
         if not self.api_key:
@@ -104,9 +105,18 @@ class AutonomousDirector:
                 "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Credentials/.env or system environment."
             )
 
-        # Resolve initial model dynamically from governor if not explicitly specified
+        # Agent model rotation permission: disabled by default to keep Director on designated stable model
+        if allow_model_rotation is not None:
+            self.allow_model_rotation = allow_model_rotation
+        else:
+            self.allow_model_rotation = os.getenv("ALLOW_AGENT_MODEL_ROTATION", "false").lower() in ("1", "true", "yes")
+
+        # Resolve initial model: locked to designated model unless rotation is explicitly allowed
         if not model_name:
-            if _HAS_GOVERNOR and gemini_router is not None:
+            env_model = os.getenv("GEMINI_DIRECTOR_MODEL") or os.getenv("GEMINI_MODEL")
+            if env_model:
+                model_name = env_model
+            elif self.allow_model_rotation and _HAS_GOVERNOR and gemini_router is not None:
                 model_name = gemini_router.get_available_model(task_type="reasoning")
             if not model_name:
                 model_name = "gemini-2.5-flash"
@@ -145,8 +155,8 @@ class AutonomousDirector:
                 except Exception as _cb_err:
                     logger.debug(f"Progress callback error: {_cb_err}")
 
-        # Resolve best available model from governor for this session
-        if _HAS_GOVERNOR and gemini_router is not None:
+        # Resolve best available model from governor for this session if rotation is permitted
+        if self.allow_model_rotation and _HAS_GOVERNOR and gemini_router is not None:
             active_model = gemini_router.get_available_model(
                 task_type="reasoning"
             )
@@ -233,6 +243,23 @@ class AutonomousDirector:
 
                     if is_quota or is_server_error or is_deprecated:
                         err_type = "429" if is_quota else ("model_deprecated" if is_deprecated else "5xx")
+
+                        if not self.allow_model_rotation:
+                            cooldown_wait = 15.0
+                            if _HAS_GOVERNOR and gemini_router is not None and hasattr(gemini_router, "get_min_cooldown_remaining"):
+                                try:
+                                    min_cd = float(gemini_router.get_min_cooldown_remaining(task_type="reasoning"))
+                                    if 0 < min_cd <= 60:
+                                        cooldown_wait = min_cd + 1.0
+                                except (TypeError, ValueError):
+                                    pass
+                            logger.warning(
+                                f"⏳ [DIRECTOR] Model {self.model_name} rate limit / error ({api_err}). "
+                                f"Agent model rotation is disabled. Waiting {cooldown_wait:.1f}s before retrying on {self.model_name}..."
+                            )
+                            time.sleep(cooldown_wait)
+                            continue
+
                         logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} failed ({api_err}). Notifying Governor to rotate...")
 
                         # Delegate model banning & rotation decision strictly to the Governor

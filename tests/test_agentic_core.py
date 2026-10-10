@@ -102,17 +102,26 @@ def test_dispatch_agent_goal_routing():
         asyncio.run(_test_coro())
 
 
+def test_director_rotation_disabled_by_default():
+    """Verify director locks model to gemini-2.5-flash and disables rotation by default."""
+    with patch("Agentic_Core.director.gemini_router") as mock_router:
+        director = AutonomousDirector(api_key="test_key_abc")
+        assert director.model_name == "gemini-2.5-flash"
+        assert director.allow_model_rotation is False
+        mock_router.get_available_model.assert_not_called()
+
+
 def test_director_initialization_from_governor():
-    """Verify director delegates initial model selection to gemini_router Governor."""
+    """Verify director delegates initial model selection to gemini_router Governor when rotation is permitted."""
     with patch("Agentic_Core.director.gemini_router") as mock_router:
         mock_router.get_available_model.return_value = "gemini-2.0-flash"
-        director = AutonomousDirector(api_key="test_key_abc")
+        director = AutonomousDirector(api_key="test_key_abc", allow_model_rotation=True)
         assert director.model_name == "gemini-2.0-flash"
         mock_router.get_available_model.assert_called_with(task_type="reasoning")
 
 
 def test_director_quota_rotation_delegation():
-    """Verify that on 429 quota exhaustion, director marks model banned in Governor and rotates."""
+    """Verify that on 429 quota exhaustion with rotation permitted, director marks model banned in Governor and rotates."""
     with patch("Agentic_Core.director.gemini_router") as mock_router:
         # Initial model
         mock_router.get_available_model.side_effect = [
@@ -121,7 +130,7 @@ def test_director_quota_rotation_delegation():
             "gemini-2.0-flash",  # after 429 rotation
         ]
 
-        director = AutonomousDirector(api_key="test_key_abc")
+        director = AutonomousDirector(api_key="test_key_abc", allow_model_rotation=True)
         director.client = MagicMock()
 
         # Mock client.chats.create
@@ -146,7 +155,7 @@ def test_director_quota_rotation_delegation():
 
 
 def test_director_deprecated_model_rotation_delegation():
-    """Verify that on 404 NOT_FOUND, director marks model permanently banned in Governor and rotates."""
+    """Verify that on 404 NOT_FOUND with rotation permitted, director marks model permanently banned in Governor and rotates."""
     with patch("Agentic_Core.director.gemini_router") as mock_router:
         mock_router.get_available_model.side_effect = [
             "gemini-2.5-pro",    # initial
@@ -154,7 +163,7 @@ def test_director_deprecated_model_rotation_delegation():
             "gemini-2.5-flash",  # after 404 rotation
         ]
 
-        director = AutonomousDirector(api_key="test_key_abc")
+        director = AutonomousDirector(api_key="test_key_abc", allow_model_rotation=True)
         director.client = MagicMock()
 
         mock_chat1 = MagicMock()

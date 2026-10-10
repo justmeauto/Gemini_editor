@@ -285,10 +285,10 @@ def _is_valid_generative_model(model_name: str) -> bool:
         return False
     # Exclude non-generative, audio-only, or experimental preview endpoints
     excluded_keywords = [
-        "embedding", "embed", "imagen", "bison", "aqa", "gecko", "text-001",
+        "embedding", "embed", "imagen", "image", "preview-image", "bison", "aqa", "gecko", "text-001",
         "tts", "preview-tts", "customtools", "transcribe", "robotics",
         "computer-use", "live-translate", "3.", "3-", "thinking",
-        "audio", "native-audio", "bidi", "realtime"
+        "audio", "native-audio", "bidi", "realtime", "omni"
     ]
     for kw in excluded_keywords:
         if kw in name:
