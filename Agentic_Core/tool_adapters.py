@@ -46,7 +46,32 @@ def tool_ingest_source(
     try:
         from Phase_1.phase1_orchestrator import run_phase1_pipeline
 
-        source_clean = source.strip()
+        source_clean = source.strip().strip("'").strip('"')
+
+        # Local upload (file or clip directory): Phase 1 is NOT needed — Phase 2 accepts raw clips directly
+        # (same behaviour as the legacy direct upload flow). Never treat a filesystem path as a creator handle.
+        _looks_like_path = (os.sep in source_clean) or source_clean.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
+        if _looks_like_path and not source_clean.lower().startswith("http"):
+            local_abs = os.path.abspath(source_clean)
+            if os.path.isdir(local_abs):
+                vids = [os.path.join(local_abs, f) for f in os.listdir(local_abs) if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))]
+                if not vids:
+                    return {"status": "failed", "message": f"No video file found in directory '{local_abs}'.", "source": source_clean}
+                local_abs_dir, local_files = local_abs, [vids[0]]
+            elif os.path.isfile(local_abs):
+                local_abs_dir, local_files = os.path.dirname(local_abs), [local_abs]
+            else:
+                return {"status": "failed", "message": f"Local path does not exist: '{local_abs}'.", "source": source_clean}
+            return {
+                "status": "success",
+                "message": f"Local upload detected. Skip scraping. Render with clip_dir='{local_abs_dir}'.",
+                "source": source_clean,
+                "count": 1,
+                "clip_dir": local_abs_dir,
+                "clip_dirs": [local_abs_dir],
+                "downloaded_files": local_files,
+            }
+
         is_url = source_clean.startswith("http://") or source_clean.startswith("https://")
 
         if is_url:
@@ -86,7 +111,11 @@ def tool_ingest_source(
 
         return {
             "status": "success",
-            "message": f"Successfully ingested {len(files)} clip(s). For rendering, use clip_dir='{primary_dir}'.",
+            "message": (
+                f"Successfully ingested {len(files)} clip(s). "
+                + (f"Render EACH of these clip_dirs one at a time: {clip_dirs}." if len(clip_dirs) > 1
+                   else f"For rendering, use clip_dir='{primary_dir}'.")
+            ),
             "source": source_clean,
             "count": len(files),
             "clip_dir": primary_dir,
@@ -307,7 +336,7 @@ def tool_publish_clip(
         store = ClipIntelligenceStore()
         intel = store.load(clip_id, clip_folder or None) or {}
 
-        pub_res = run_phase3_orchestration(video_path_abs, intelligence=intel)
+        pub_res = run_phase3_orchestration(video_path_abs, intelligence=intel, platforms=platforms)
 
         return {
             "status": pub_res.get("status", "success"),

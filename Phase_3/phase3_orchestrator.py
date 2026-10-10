@@ -15,7 +15,7 @@ import os
 import time
 import logging
 import importlib
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterable
 
 step01 = importlib.import_module("Phase_3.01_queue_ingest")
 step02 = importlib.import_module("Phase_3.02_monetization_gate")
@@ -36,10 +36,26 @@ def notify_tracker(step: str, status: str, details: dict):
         pass
 
 
+_PLATFORM_ALIASES = {
+    "meta": "meta", "instagram": "meta", "ig": "meta", "facebook": "meta", "fb": "meta", "reels": "meta",
+    "tiktok": "tiktok",
+    "youtube": "youtube", "youtube_shorts": "youtube", "shorts": "youtube", "yt": "youtube",
+}
+
+
+def normalize_platforms(platforms: Optional[Iterable[str]]) -> Optional[set]:
+    """None / empty -> None (publish everywhere, legacy behaviour). Else a set of {meta,tiktok,youtube}."""
+    if not platforms:
+        return None
+    out = {_PLATFORM_ALIASES[str(p).strip().lower()] for p in platforms if str(p).strip().lower() in _PLATFORM_ALIASES}
+    return out or None
+
+
 class Phase3Orchestrator:
     """Master Orchestrator for Phase 3 Publishing & RAG Memory Feedback."""
 
-    def run(self, video_path: str, intelligence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run(self, video_path: str, intelligence: Optional[Dict[str, Any]] = None,
+            platforms: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         """
         Execute full Phase 3 distribution & publishing pipeline.
 
@@ -51,6 +67,8 @@ class Phase3Orchestrator:
             Dict containing pipeline results, upload status, and RAG stats.
         """
         start_time = time.time()
+        selected = normalize_platforms(platforms)   # None => all platforms
+        _skipped = {"status": "skipped", "reason": "platform not requested"}
         clip_id = os.path.basename(os.path.dirname(video_path)) or os.path.splitext(os.path.basename(video_path))[0]
         intel = intelligence or {}
 
@@ -80,12 +98,12 @@ class Phase3Orchestrator:
 
         # ── Step 04: Meta (Instagram / Facebook) Publisher ────────────────────
         notify_tracker("step_04_meta_publisher", "running", {})
-        s4_res = step04.publish_to_meta(video_path, s3_res.get("caption", ""))
+        s4_res = step04.publish_to_meta(video_path, s3_res.get("caption", "")) if (selected is None or "meta" in selected) else _skipped
         notify_tracker("step_04_meta_publisher", "completed", s4_res)
 
         # ── Step 05: TikTok Publisher ─────────────────────────────────────────
         notify_tracker("step_05_tiktok_publisher", "running", {})
-        s5_res = step05.publish_to_tiktok(video_path, s3_res.get("title", ""), s3_res.get("caption", ""))
+        s5_res = step05.publish_to_tiktok(video_path, s3_res.get("title", ""), s3_res.get("caption", "")) if (selected is None or "tiktok" in selected) else _skipped
         notify_tracker("step_05_tiktok_publisher", "completed", s5_res)
 
         # ── Step 06: YouTube Shorts Publisher ─────────────────────────────────
@@ -96,7 +114,7 @@ class Phase3Orchestrator:
             title=yt_payload.get("title", s3_res.get("title", "")),
             description=yt_payload.get("description", s3_res.get("caption", "")),
             tags=yt_payload.get("tags", [])
-        )
+        ) if (selected is None or "youtube" in selected) else _skipped
         notify_tracker("step_06_youtube_publisher", "completed", s6_res)
 
         # Aggregate publish results
@@ -130,7 +148,8 @@ class Phase3Orchestrator:
         }
 
 
-def run_phase3_orchestration(video_path: str, intelligence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Convenience wrapper for executing Phase 3 orchestration."""
+def run_phase3_orchestration(video_path: str, intelligence: Optional[Dict[str, Any]] = None,
+                             platforms: Optional[Iterable[str]] = None) -> Dict[str, Any]:
+    """Convenience wrapper for executing Phase 3 orchestration (platforms=None publishes everywhere)."""
     orchestrator = Phase3Orchestrator()
-    return orchestrator.run(video_path, intelligence=intelligence)
+    return orchestrator.run(video_path, intelligence=intelligence, platforms=platforms)

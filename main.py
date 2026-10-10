@@ -1809,6 +1809,63 @@ async def _wizard_credentials_step(msg, chat_id: int, text: str):
     return False
 
 
+_BG_AGENT_TASKS: set = set()   # strong refs: asyncio only keeps weak refs, un-referenced tasks can be GC'd mid-run
+
+
+def _run_reedit_direct(session_id: str, directive: str) -> Dict[str, Any]:
+    """Deterministic re-edit (preset buttons / custom directive): NO LLM round trips."""
+    from Agentic_Core.tool_adapters import tool_reedit_session
+    t0 = time.time()
+    with _PIPELINE_SEMAPHORE:
+        r = tool_reedit_session(session_id=session_id, edit_directive=directive)
+    ok = r.get("status") == "success"
+    return {
+        "status": "success" if ok else "error",
+        "final_summary": r.get("message") or "Re-edit finished.",
+        "message": r.get("message"),
+        "turns_executed": 0,
+        "execution_time_sec": round(time.time() - t0, 2),
+        "rendered_video_path": r.get("rendered_video_path") or r.get("new_master_video"),
+        "session_id": r.get("session_id") or session_id,
+        "retry_count": r.get("retry_count"),
+        "audit_passed": None,
+    }
+
+
+def _run_director_in_slot(goal: str, progress_callback=None) -> Dict[str, Any]:
+    """Free-form goals only: LLM Director, bounded by the same concurrency semaphore as the pipeline."""
+    from Agentic_Core.run_agent import run_agentic_goal
+    with _PIPELINE_SEMAPHORE:
+        return run_agentic_goal(goal, max_turns=10, progress_callback=progress_callback)
+
+
+def _dispatch_direct_route(route, chat_id: int) -> str:
+    """
+    Fast path for URL / @handle / batch / upload goals: run the proven legacy pipeline in a
+    semaphore-bounded worker thread (it delivers the reel + review keyboard to Telegram itself).
+    Returns a short human-readable description of what was started.
+    """
+    kind = route.kind
+    if kind == "url":
+        kwargs = dict(mode="manual", url=route.url, platform=route.platform, requestor_chat_id=chat_id)
+        if route.directive:
+            kwargs["user_edit_directive"] = route.directive
+        _dispatch_pipeline_in_background(**kwargs)
+        return f"URL pipeline started ({route.platform})" + (f" with directive: {route.directive[:120]}" if route.directive else "")
+    if kind in ("handle", "batch") and route.handles:
+        _dispatch_pipeline_in_background(mode="auto", target_accounts=route.handles, platform=route.platform, requestor_chat_id=chat_id)
+        return "Creator pipeline started for " + ", ".join("@" + h for h in route.handles)
+    if kind == "batch":
+        _dispatch_pipeline_in_background(mode="auto", platform=route.platform, requestor_chat_id=chat_id)
+        return "Scheduled-pool batch pipeline started"
+    if kind == "upload":
+        if not (route.path and os.path.isfile(route.path)):
+            raise FileNotFoundError(f"Uploaded video not found on disk: {route.path}")
+        _dispatch_pipeline_in_background(mode="manual", input_path=route.path, platform=route.platform, requestor_chat_id=chat_id)
+        return "Uploaded-video pipeline started"
+    raise ValueError(f"Not a direct route: {kind}")
+
+
 async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None, context=None):
     """
     Universal dispatcher that hands off any user goal, UI button click, or custom prompt to the Gemini Autonomous Director
@@ -1825,6 +1882,14 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
     global _global_bot_instance
     effective_bot = (context.bot if (context and hasattr(context, "bot")) else None) or _global_bot_instance
 
+    # Deterministic routing: the LLM Director is ONLY used for genuinely open-ended free text.
+    from Agentic_Core.goal_router import classify_goal
+    route = classify_goal(user_goal)
+    _plan_line = (
+        "⚡ *Direct pipeline (no AI planner) starting...*" if route.is_direct
+        else "⏳ *Planning and coordinating tools with Gemini...*"
+    )
+
     if query:
         try:
             await query.answer("🤖 Agent activated...", show_alert=False)
@@ -1837,18 +1902,18 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
                 status_msg = await query.message.reply_text(
                     f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n"
                     f"🎯 *Goal:* `{user_goal[:300]}`\n"
-                    f"⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                    f"{_plan_line}"
                 )
             elif msg:
                 status_msg = await msg.reply_text(
                     f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n"
                     f"🎯 *Goal:* `{user_goal[:300]}`\n"
-                    f"⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                    f"{_plan_line}"
                 )
             else:
                 status_msg = await effective_bot.send_message(
                     chat_id=chat_id,
-                    text=f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n🎯 *Goal:* `{user_goal[:300]}`\n⏳ *Planning and coordinating tools with Gemini 2.5 Flash...*"
+                    text=f"🤖 **[GEMINI AGENT ACTIVATED]**\n\n🎯 *Goal:* `{user_goal[:300]}`\n{_plan_line}"
                 )
         except Exception as _sm_err:
             logger.warning(f"Failed to post initial agent status: {_sm_err}")
@@ -1873,6 +1938,8 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
                         evt_text += f"\n⚙️ *Running Tool:* `{data['tool']}`"
                     elif "turn" in data:
                         evt_text += f"\n🧠 *Turn:* {data['turn']}/{data.get('max_turns', 10)}"
+                    elif "wait" in data:
+                        evt_text += f"\n⏳ *API retry {data.get('attempt')}/{data.get('max')} in {data['wait']:.0f}s ({data.get('reason')})*"
                     try:
                         await status_msg.edit_text(
                             f"🤖 **[AGENT IN PROGRESS]**\n\n"
@@ -1887,11 +1954,23 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
             def _progress_cb(event, data):
                 asyncio.run_coroutine_threadsafe(_async_notify(event, data), loop)
 
-            res = await run_agentic_goal_async(
-                goal=user_goal,
-                max_turns=10,
-                progress_callback=_progress_cb
-            )
+            if route.is_direct and route.kind != "reedit":
+                # URL / @handle / batch / upload -> proven pipeline, zero LLM round trips
+                started = await asyncio.to_thread(_dispatch_direct_route, route, chat_id)
+                logger.info(f"⚡ [DIRECT ROUTE] {route.kind}: {started}")
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(
+                            f"⚡ **[DIRECT PIPELINE]**\n\n🎯 *Goal:* `{user_goal[:300]}`\n✅ {started}\n"
+                            f"📬 *The finished reel will be delivered here automatically.*"
+                        )
+                    except Exception:
+                        pass
+                return
+            elif route.kind == "reedit":
+                res = await asyncio.to_thread(_run_reedit_direct, route.session_id, route.directive)
+            else:
+                res = await asyncio.to_thread(_run_director_in_slot, user_goal, _progress_cb)
 
             status = res.get("status", "completed")
             summary = res.get("final_summary") or res.get("message") or "Goal execution completed."
@@ -1901,7 +1980,7 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
             sess_id = res.get("session_id")
 
             final_report = (
-                f"✅ **[AGENT PRODUCTION COMPLETE]**\n\n"
+                f"{'✅ **[PRODUCTION COMPLETE]**' if status == 'success' else '⚠️ **[PRODUCTION ENDED: ' + str(status).upper() + ']**'}\n\n"
                 f"🎯 *Goal:* `{user_goal[:300]}`\n"
                 f"⚡ *Status:* `{status}`\n"
                 f"⏱️ *Duration:* `{elapsed}s` ({turns} turns)\n\n"
@@ -1949,7 +2028,9 @@ async def _dispatch_agent_goal(update, user_goal: str, existing_status_msg=None,
                 except Exception:
                     pass
 
-    asyncio.create_task(_run_agent_task())
+    _task = asyncio.create_task(_run_agent_task())
+    _BG_AGENT_TASKS.add(_task)
+    _task.add_done_callback(_BG_AGENT_TASKS.discard)
 
 
 async def handle_telegram_incoming_msg(update, context):
@@ -3343,13 +3424,14 @@ if __name__ == "__main__":
             except Exception as _sw_err:
                 logger.debug(f"Startup disk sweeper notice: {_sw_err}")
 
-            if not args.legacy:
+            _cli_use_agent = False
+            if not args.legacy and target_input and not (target_url or target_file or target_accs):
+                from Agentic_Core.goal_router import classify_goal
+                _cli_use_agent = classify_goal(target_input).kind == "freeform"
+            if _cli_use_agent:
                 from Agentic_Core.run_agent import run_agentic_goal
-                agent_goal = target_input
-                if not agent_goal and target_accs:
-                    agent_goal = f"Scrape {', '.join(target_accs)}, edit with dynamic rhythm, audit quality, and publish"
-                logger.info(f"🤖 [CLI UNIVERSAL AGENT] Dispatching autonomous goal: '{agent_goal}'")
-                run_agentic_goal(agent_goal)
+                logger.info(f"🤖 [CLI AGENT] Free-form goal -> LLM Director: '{target_input}'")
+                run_agentic_goal(target_input)
             else:
                 run_master_pipeline(mode=mode_to_use, url=target_url, input_path=target_file, target_accounts=target_accs)
 

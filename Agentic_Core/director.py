@@ -36,6 +36,40 @@ except ImportError:
 # RPM guard: Minimum delay between director turns to prevent hitting 15 RPM burst limit
 _MIN_TURN_INTERVAL_SEC = 1.0
 
+# ── Hard limits that make a "frozen" Director impossible ─────────────────────
+# Previously the API-error handler was `while True: ... continue` with no cap, so
+# any deterministic 400/404 (e.g. thought_signature) retried forever (15s sleeps).
+_MAX_API_RETRIES = int(os.getenv("DIRECTOR_MAX_API_RETRIES", "3"))        # transient errors per turn
+_DEADLINE_SEC = float(os.getenv("DIRECTOR_DEADLINE_SEC", "900"))           # wall-clock budget for whole goal
+_HTTP_TIMEOUT_SEC = float(os.getenv("DIRECTOR_HTTP_TIMEOUT_SEC", "90"))    # per Gemini HTTP request
+_MAX_IDENTICAL_CALLS = 2                                                   # same tool+args max executions per goal
+_PUBLISH_WORDS = ("publish", "post ", "upload", "broadcast", "share to", "go live")
+
+
+def classify_api_error(err: Exception) -> str:
+    """
+    Classify a Gemini SDK error. Returns one of:
+      auth | signature | quota | server | model_gone | fatal
+    Only 'quota' and 'server' are retried (bounded). Everything else fails fast
+    (or recovers once) instead of looping forever.
+    """
+    s = str(err).lower()
+    is_quota = any(k in s for k in ("429", "quota", "resource_exhausted", "rate_limit", "rate limit"))
+    if any(k in s for k in ("api key", "api_key_invalid", "unauthorized", "permission_denied")) and not is_quota:
+        return "auth"
+    if "thought_signature" in s or "thought signature" in s:
+        return "signature"
+    if is_quota:
+        return "quota"
+    if any(k in s for k in (
+        "503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error",
+        "deadline_exceeded", "timed out", "timeout", "connection", "remoteprotocol", "readerror", "reset by peer",
+    )):
+        return "server"
+    if any(k in s for k in ("404", "not_found", "not found", "no longer available", "unsupported", "bidigeneratecontent")):
+        return "model_gone"
+    return "fatal"
+
 
 DIRECTOR_SYSTEM_INSTRUCTION = """
 You are the Autonomous Creative Director for Gemini Editor — a professional automated video production system.
@@ -97,7 +131,6 @@ class AutonomousDirector:
         self,
         model_name: Optional[str] = None,
         api_key: Optional[str] = None,
-        allow_model_rotation: Optional[bool] = None,
     ):
         self.api_key = api_key or _resolve_gemini_api_key()
         if not self.api_key:
@@ -105,24 +138,19 @@ class AutonomousDirector:
                 "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in Credentials/.env or system environment."
             )
 
-        # Agent model rotation permission: disabled by default to keep Director on designated stable model
-        if allow_model_rotation is not None:
-            self.allow_model_rotation = allow_model_rotation
-        else:
-            self.allow_model_rotation = os.getenv("ALLOW_AGENT_MODEL_ROTATION", "false").lower() in ("1", "true", "yes")
-
-        # Resolve initial model: locked to designated model unless rotation is explicitly allowed
         if not model_name:
             env_model = os.getenv("GEMINI_DIRECTOR_MODEL") or os.getenv("GEMINI_MODEL")
-            if env_model:
-                model_name = env_model
-            elif self.allow_model_rotation and _HAS_GOVERNOR and gemini_router is not None:
-                model_name = gemini_router.get_available_model(task_type="reasoning")
-            if not model_name:
-                model_name = "gemini-2.5-flash"
+            model_name = env_model or "gemini-2.5-flash"
 
         self.model_name = model_name
-        self.client = genai.Client(api_key=self.api_key)
+        try:
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=int(_HTTP_TIMEOUT_SEC * 1000)),
+            )
+        except Exception:
+            # Older SDKs without HttpOptions(timeout=...) — fall back (deadline still protects us)
+            self.client = genai.Client(api_key=self.api_key)
         self.tools = get_agent_tools()
 
         # Activate video session budget tracking in governor
@@ -135,6 +163,57 @@ class AutonomousDirector:
             except Exception:
                 pass
 
+    @staticmethod
+    def _inject_thought_signatures(chat) -> None:
+        """Gemini 3.x requires thought_signature on function_call parts in history."""
+        for attr in ("_curated_history", "_comprehensive_history"):
+            hist = getattr(chat, attr, None)
+            if hist and isinstance(hist, list):
+                for content in hist:
+                    for part in getattr(content, "parts", []) or []:
+                        if getattr(part, "function_call", None) is not None and not getattr(part, "thought_signature", None):
+                            try:
+                                part.thought_signature = b"skip_thought_signature_validator"
+                            except Exception:
+                                pass
+
+    def _report_success(self) -> None:
+        if _HAS_GOVERNOR and gemini_router is not None:
+            try:
+                with gemini_router.state_lock:
+                    st = gemini_router.model_states.get(self.model_name)
+                    if st:
+                        st["success_count"] += 1
+                        st["total_calls"] += 1
+                        st["last_used_at"] = time.monotonic()
+            except Exception:
+                pass
+
+    def _make_config(self) -> "types.GenerateContentConfig":
+        """Director only routes tool calls — thinking tokens just add latency. Disable on 2.5 Flash."""
+        kwargs: Dict[str, Any] = dict(
+            system_instruction=DIRECTOR_SYSTEM_INSTRUCTION,
+            tools=self.tools,
+            temperature=0.2,
+        )
+        name = (self.model_name or "").lower()
+        if "2.5" in name and "flash" in name and os.getenv("DIRECTOR_THINKING", "off").lower() != "on":
+            try:
+                kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass
+        return types.GenerateContentConfig(**kwargs)
+
+    @staticmethod
+    def _summary_input(goal: str, execution_log: List[Dict[str, Any]]) -> str:
+        if not execution_log:
+            return goal
+        lines = [f"- {e.get('tool')}: status={e.get('result_status')}" for e in execution_log]
+        return (
+            f"Original Goal: {goal}\nCompleted workflow steps so far:\n" + "\n".join(lines) +
+            "\nContinue directly with the remaining workflow without repeating completed steps."
+        )
+
     def run_goal(
         self,
         goal: str,
@@ -142,8 +221,8 @@ class AutonomousDirector:
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
-        Executes an autonomous goal from start to finish with dynamic model routing,
-        quota exhaustion recovery, and rate-limit guardrails.
+        Executes an autonomous goal from start to finish with bounded retries,
+        quota exhaustion detection, and rate-limit guardrails.
         """
         start_time = time.time()
         logger.info(f"\n{'='*70}\n🤖 [AUTONOMOUS DIRECTOR] Commencing Goal: '{goal}'\n{'='*70}")
@@ -155,22 +234,10 @@ class AutonomousDirector:
                 except Exception as _cb_err:
                     logger.debug(f"Progress callback error: {_cb_err}")
 
-        # Resolve best available model from governor for this session if rotation is permitted
-        if self.allow_model_rotation and _HAS_GOVERNOR and gemini_router is not None:
-            active_model = gemini_router.get_available_model(
-                task_type="reasoning"
-            )
-            if active_model:
-                self.model_name = active_model
-
         _notify("director_started", {"goal": goal, "model": self.model_name})
 
         # Configure Chat with Function Calling
-        config = types.GenerateContentConfig(
-            system_instruction=DIRECTOR_SYSTEM_INSTRUCTION,
-            tools=self.tools,
-            temperature=0.2,
-        )
+        config = self._make_config()
 
         chat = self.client.chats.create(
             model=self.model_name,
@@ -180,7 +247,22 @@ class AutonomousDirector:
         turn = 0
         execution_log: List[Dict[str, Any]] = []
         last_call_signature: Optional[str] = None
-        session_tried_models: set = set()
+        call_counts: Dict[str, int] = {}
+        deadline = start_time + _DEADLINE_SEC
+        signature_recovered = False
+        publish_allowed = any(w in (goal.lower() + " ") for w in _PUBLISH_WORDS)
+
+        def _fail(kind: str, message: str, turn_no: int) -> Dict[str, Any]:
+            logger.error(f"❌ [DIRECTOR {kind.upper()}] {message}")
+            _notify("director_failed", {"kind": kind, "message": message})
+            return {
+                "status": "error" if kind != "timeout" else "timeout",
+                "error_kind": kind,
+                "message": message,
+                "turns_executed": turn_no,
+                "execution_time_sec": round(time.time() - start_time, 2),
+                "execution_log": execution_log,
+            }
 
         # First prompt
         current_input: Any = goal
@@ -191,128 +273,58 @@ class AutonomousDirector:
             logger.info(f"🔄 [DIRECTOR TURN {turn}/{max_turns}] Model={self.model_name} | Waiting for decision...")
             _notify("turn_start", {"turn": turn, "max_turns": max_turns, "model": self.model_name})
 
-            turn_response = None
-            turn_tried_models: set = set()
+            if time.time() > deadline:
+                return _fail("timeout", f"Director exceeded its {_DEADLINE_SEC:.0f}s deadline before turn {turn}.", turn)
 
-            # Reliable model execution with quota rotation delegated to Governor
+            turn_response = None
+            api_attempts = 0
+
+            # Bounded API call: every failure path either retries a LIMITED number of times,
+            # recovers once, or returns a clean error.
             while True:
                 try:
-                    # Auto-inject thought_signature sentinel into any function_call part missing it in chat history (Gemini 3.x requirement)
-                    for attr in ("_curated_history", "_comprehensive_history"):
-                        hist = getattr(chat, attr, None)
-                        if hist and isinstance(hist, list):
-                            for content in hist:
-                                for part in getattr(content, "parts", []) or []:
-                                    if getattr(part, "function_call", None) is not None and not getattr(part, "thought_signature", None):
-                                        try:
-                                            part.thought_signature = b"skip_thought_signature_validator"
-                                        except Exception:
-                                            pass
-
-                    response = chat.send_message(current_input)
-                    turn_response = response
-
-                    # Report success to governor to decay penalties
-                    if _HAS_GOVERNOR and gemini_router is not None:
-                        with gemini_router.state_lock:
-                            st = gemini_router.model_states.get(self.model_name)
-                            if st:
-                                st["success_count"] += 1
-                                st["total_calls"] += 1
-                                st["last_used_at"] = time.monotonic()
+                    self._inject_thought_signatures(chat)
+                    turn_response = chat.send_message(current_input)
+                    self._report_success()
                     break
 
                 except Exception as api_err:
-                    err_str = str(api_err).lower()
-                    is_quota = any(k in err_str for k in ("429", "quota", "resource_exhausted", "rate_limit"))
-                    is_auth = any(k in err_str for k in ("api key", "unauthorized", "permission_denied"))
-                    is_server_error = any(k in err_str for k in ("503", "500", "504", "overloaded", "service unavailable", "unavailable", "server error", "deadline_exceeded", "timed out"))
-                    is_deprecated = any(k in err_str for k in ("404", "not_found", "not found", "no longer available", "unsupported", "bidigeneratecontent", "thought_signature"))
+                    kind = classify_api_error(api_err)
+                    logger.warning(f"⚠️ [DIRECTOR API {kind.upper()}] model={self.model_name}: {api_err}")
 
-                    if is_auth and not is_quota:
-                        logger.error(f"❌ [DIRECTOR] Fatal API authentication error: {api_err}")
-                        return {
-                            "status": "error",
-                            "message": f"API authentication error during turn {turn}: {str(api_err)}",
-                            "turns_executed": turn,
-                            "execution_log": execution_log
-                        }
+                    if kind in ("auth", "fatal"):
+                        return _fail(kind, f"Gemini API {kind} error on turn {turn}: {api_err}", turn)
 
-                    turn_tried_models.add(self.model_name)
-                    session_tried_models.add(self.model_name)
+                    if kind == "signature":
+                        if signature_recovered:
+                            return _fail("signature", f"thought_signature error persisted after recovery: {api_err}", turn)
+                        signature_recovered = True
+                        logger.info("🩹 [DIRECTOR] Recovering from thought_signature error with a fresh chat (once).")
+                        chat = self.client.chats.create(model=self.model_name, config=self._make_config())
+                        current_input = self._summary_input(goal, execution_log)
+                        continue
 
-                    if is_quota or is_server_error or is_deprecated:
-                        err_type = "429" if is_quota else ("model_deprecated" if is_deprecated else "5xx")
+                    # quota / server / model_gone
+                    api_attempts += 1
 
-                        if not self.allow_model_rotation:
-                            cooldown_wait = 15.0
-                            if _HAS_GOVERNOR and gemini_router is not None and hasattr(gemini_router, "get_min_cooldown_remaining"):
-                                try:
-                                    min_cd = float(gemini_router.get_min_cooldown_remaining(task_type="reasoning"))
-                                    if 0 < min_cd <= 60:
-                                        cooldown_wait = min_cd + 1.0
-                                except (TypeError, ValueError):
-                                    pass
-                            logger.warning(
-                                f"⏳ [DIRECTOR] Model {self.model_name} rate limit / error ({api_err}). "
-                                f"Agent model rotation is disabled. Waiting {cooldown_wait:.1f}s before retrying on {self.model_name}..."
-                            )
-                            time.sleep(cooldown_wait)
-                            continue
+                    # Fast-fail for daily/long-term quota exhaustion (fail immediately rather than burning retries)
+                    err_lower = str(api_err).lower()
+                    if kind == "quota" and any(k in err_lower for k in ("free_tier_requests", "freetier", "limit: 20", "retry in 12h", "retry in 11h", "generativelanguage.googleapis.com")):
+                        return _fail("quota_exhausted", f"Daily quota exhausted on {self.model_name}: {api_err}", turn)
 
-                        logger.warning(f"⚠️ [DIRECTOR] Model {self.model_name} failed ({api_err}). Notifying Governor to rotate...")
+                    if kind == "model_gone":
+                        return _fail("model_gone", f"Model '{self.model_name}' is unavailable: {api_err}", turn)
 
-                        # Delegate model banning & rotation decision strictly to the Governor
-                        if _HAS_GOVERNOR and gemini_router is not None:
-                            gemini_router.mark_model_banned(self.model_name, error_type=err_type)
-                            next_model = gemini_router.get_available_model(
-                                task_type="reasoning",
-                                exclude_models=session_tried_models
-                            )
-                        else:
-                            next_model = None
+                    if api_attempts > _MAX_API_RETRIES:
+                        return _fail(kind, f"Gemini API still failing on {self.model_name} after {_MAX_API_RETRIES} retries ({kind}): {api_err}", turn)
 
-                        # If Governor indicates all models are currently cooling down, wait for renewal window
-                        if not next_model and (is_quota or is_server_error):
-                            cooldown_wait = 15.0
-                            if _HAS_GOVERNOR and gemini_router is not None and hasattr(gemini_router, "get_min_cooldown_remaining"):
-                                min_cd = gemini_router.get_min_cooldown_remaining(task_type="reasoning")
-                                if 0 < min_cd <= 60:
-                                    cooldown_wait = min_cd + 1.0
-                            logger.warning(f"⏳ [DIRECTOR] All eligible models in Governor are cooling down. Waiting {cooldown_wait:.1f}s for Governor renewal window...")
-                            time.sleep(cooldown_wait)
-                            if _HAS_GOVERNOR and gemini_router is not None:
-                                next_model = gemini_router.get_available_model(
-                                    task_type="reasoning",
-                                    exclude_models=turn_tried_models
-                                )
-
-                        if next_model and next_model != self.model_name:
-                            logger.info(f"🔀 [DIRECTOR GOVERNOR ROTATION] {self.model_name} ➔ {next_model}")
-                            self.model_name = next_model
-
-                            # Start clean chat session on rotated model
-                            chat = self.client.chats.create(model=self.model_name, config=config)
-                            if execution_log:
-                                summary_lines = [f"- {e.get('tool')}: status={e.get('result_status')}" for e in execution_log]
-                                current_input = (
-                                    f"Original Goal: {goal}\n"
-                                    f"Completed workflow steps so far:\n" + "\n".join(summary_lines) +
-                                    f"\nPlease continue directly with the remaining workflow without repeating completed steps."
-                                )
-                            else:
-                                current_input = goal
-                            time.sleep(1.0)
-                            continue
-
-                    # Unrecoverable error
-                    logger.error(f"❌ [DIRECTOR API ERROR] Gemini call failed: {api_err}")
-                    return {
-                        "status": "error",
-                        "message": f"Gemini API error during turn {turn}: {str(api_err)}",
-                        "turns_executed": turn,
-                        "execution_log": execution_log
-                    }
+                    base = 5.0 if kind == "quota" else 2.0
+                    wait = min(base * (2 ** (api_attempts - 1)), 30.0)
+                    if time.time() + wait > deadline:
+                        return _fail("timeout", f"Not enough time left to retry ({kind}) within the {_DEADLINE_SEC:.0f}s deadline.", turn)
+                    logger.warning(f"⏳ [DIRECTOR] Retry {api_attempts}/{_MAX_API_RETRIES} on {self.model_name} in {wait:.0f}s ({kind}).")
+                    _notify("api_retry", {"attempt": api_attempts, "max": _MAX_API_RETRIES, "wait": wait, "reason": kind})
+                    time.sleep(wait)
 
             if turn_response is None:
                 return {
@@ -382,8 +394,15 @@ class AutonomousDirector:
 
                 # Duplicate call guardrail (prevent infinite loops)
                 call_sig = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-                if call_sig == last_call_signature:
-                    logger.warning(f"⚠️ [GUARDRAIL HIT] Model requested identical call twice in a row: {call_sig}")
+                call_counts[call_sig] = call_counts.get(call_sig, 0) + 1
+                if tool_name == "tool_publish_clip" and not publish_allowed:
+                    logger.warning("🛑 [GUARDRAIL] Blocked tool_publish_clip: the user's goal never asked to publish.")
+                    tool_result = {
+                        "status": "aborted",
+                        "error": "Publishing was not requested in the user's goal. Do NOT publish. Finish with a summary."
+                    }
+                elif call_sig == last_call_signature or call_counts[call_sig] > _MAX_IDENTICAL_CALLS:
+                    logger.warning(f"⚠️ [GUARDRAIL HIT] Model repeated an identical call: {call_sig}")
                     tool_result = {
                         "status": "aborted",
                         "error": "Duplicate tool call detected. You already called this tool with identical arguments. Change your approach or finish."
